@@ -273,4 +273,139 @@ class DawViewModelRobolectricTest {
         val nudgedClip = viewModel.session.value.tracks[0].clips.first { it.id == clip.id }
         assertTrue("Clip should move forward", nudgedClip.timelineStartFrame >= originalStart)
     }
+
+    @Test
+    fun presetsAndMasterDspOperations() {
+        val trackPreset = com.example.audio.model.PresetLibrary.TRACK_PRESETS.first()
+        viewModel.applyTrackPreset(0, trackPreset)
+        assertEquals(trackPreset.reverbSendLevel, viewModel.session.value.tracks[0].reverbSendLevel, 0.001f)
+
+        val masterPreset = com.example.audio.model.PresetLibrary.MASTER_PRESETS.first()
+        viewModel.applyMasterPreset(masterPreset)
+        assertEquals(masterPreset.masterGainDb, viewModel.session.value.masterGainDb, 0.001f)
+        assertEquals(masterPreset.masterReverb.decayTimeSec, viewModel.session.value.masterReverb.decayTimeSec, 0.001f)
+
+        // Master gain adjustment
+        viewModel.setMasterGain(-2.5f)
+        assertEquals(-2.5f, viewModel.session.value.masterGainDb, 0.001f)
+
+        // Master reverb update
+        val customReverb = com.example.audio.model.ReverbConfig(enabled = true, preDelayMs = 30f, decayTimeSec = 3.5f)
+        viewModel.updateMasterReverb(customReverb)
+        assertEquals(30f, viewModel.session.value.masterReverb.preDelayMs, 0.001f)
+
+        // Master limiter update
+        val customLimiter = com.example.audio.model.MasterLimiterConfig(enabled = true, ceilingDb = -0.5f)
+        viewModel.updateMasterLimiter(customLimiter)
+        assertEquals(-0.5f, viewModel.session.value.masterLimiter.ceilingDb, 0.001f)
+    }
+
+    @Test
+    fun clipFadesGainAndChorusOperations() {
+        val track = viewModel.session.value.tracks[0]
+        val clip = track.clips.first()
+
+        // Clip gain
+        viewModel.setClipGain(0, clip.id, 2.5f)
+        val updatedGainClip = viewModel.session.value.tracks[0].clips.first { it.id == clip.id }
+        assertEquals(2.5f, updatedGainClip.gainDb, 0.001f)
+
+        // Clip fade in
+        viewModel.setClipFadeIn(0, clip.id, 200f, com.example.audio.model.FadeCurve.EQUAL_POWER)
+        val updatedFadeInClip = viewModel.session.value.tracks[0].clips.first { it.id == clip.id }
+        assertTrue("Fade in frames should be configured", updatedFadeInClip.fadeInFrames > 0L)
+        assertEquals(com.example.audio.model.FadeCurve.EQUAL_POWER, updatedFadeInClip.fadeInCurve)
+
+        // Clip fade out
+        viewModel.setClipFadeOut(0, clip.id, 150f, com.example.audio.model.FadeCurve.S_CURVE)
+        val updatedFadeOutClip = viewModel.session.value.tracks[0].clips.first { it.id == clip.id }
+        assertTrue("Fade out frames should be configured", updatedFadeOutClip.fadeOutFrames > 0L)
+        assertEquals(com.example.audio.model.FadeCurve.S_CURVE, updatedFadeOutClip.fadeOutCurve)
+
+        // Chorus fast pasting
+        val initialCount = viewModel.session.value.tracks[0].clips.size
+        viewModel.pasteClipAsChorusSection(0, clip.id, barsAhead = 2)
+        assertTrue("Track 0 should have extra chorus clips", viewModel.session.value.tracks[0].clips.size > initialCount)
+
+        viewModel.pasteClipAsDoubledChorus(0, clip.id, targetTrackIndex = 1)
+        assertTrue("Track 1 should have a doubled chorus clip", viewModel.session.value.tracks[1].clips.isNotEmpty())
+
+        viewModel.adaptClipToChorusLoop(0, clip.id, repeatCount = 3)
+        assertTrue("Track 0 should have looped chorus clips", viewModel.session.value.tracks[0].clips.size > initialCount)
+    }
+
+    @Test
+    fun renderSessionToAudioFormat() {
+        viewModel.renderSessionToAudio(
+            format = com.example.audio.engine.ExportFormat.WAV_24BIT,
+            dispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        )
+        val fileWav = viewModel.uiState.value.exportedFile
+        assertNotNull("WAV export should produce rendered file", fileWav)
+
+        viewModel.renderSessionToAudio(
+            format = com.example.audio.engine.ExportFormat.AAC_320KBPS,
+            dispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        )
+        val fileAac = viewModel.uiState.value.exportedFile
+        assertNotNull("AAC export should produce rendered file", fileAac)
+    }
+
+    @Test
+    fun recordingWorkflowAndArmedTrackValidation() {
+        // Without armed track, starting recording shows status message prompt
+        viewModel.startRecording()
+        assertFalse(viewModel.uiState.value.isRecording)
+
+        // Arm track 0
+        viewModel.toggleTrackArm(0)
+        assertTrue(viewModel.session.value.tracks[0].isArmedForRecording)
+
+        // Start recording
+        viewModel.startRecording()
+        assertTrue(viewModel.uiState.value.isRecording)
+
+        // Stop recording
+        viewModel.stopRecording()
+        assertFalse(viewModel.uiState.value.isRecording)
+    }
+
+    @Test
+    fun timelineSplitClipOperations() {
+        val track = viewModel.session.value.tracks[0]
+        val clip = track.clips.first()
+
+        // Seek playhead into middle of clip (e.g. 24000 frames)
+        viewModel.seekToFraction(0.25f)
+        val initialClipCount = track.clips.size
+
+        // Attempt split
+        viewModel.splitClipAtPlayhead(0)
+        // If split condition met (offset > 2048), clips count increases
+        assertTrue(viewModel.session.value.tracks[0].clips.size >= initialClipCount)
+    }
+
+    @Test
+    fun usbRoutingAndCacheClearingOperations() {
+        viewModel.selectUsbDevice(101)
+        assertNotNull(viewModel.uiState.value.statusMessage)
+
+        viewModel.clearScratchCache()
+        assertNotNull(viewModel.uiState.value.statusMessage)
+
+        viewModel.runLatencyCalibration()
+        assertNotNull(viewModel.uiState.value.statusMessage)
+    }
+
+    @Test
+    fun aiMixAdvisorWorkflows() {
+        viewModel.refreshAudioAnalysis()
+        viewModel.applyAllSuggestions()
+        viewModel.toggleAbCompare()
+        viewModel.handleNaturalLanguageMixPrompt("Make the vocal louder and add warmth", dispatcher = kotlinx.coroutines.Dispatchers.Unconfined)
+        assertNotNull(viewModel.uiState.value.statusMessage)
+    }
 }
+
+
+

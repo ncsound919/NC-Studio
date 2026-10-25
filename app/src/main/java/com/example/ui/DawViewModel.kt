@@ -43,6 +43,7 @@ import com.example.audio.model.TrackData
 import com.example.audio.model.TrackFeatures
 import com.example.audio.model.UsbAudioDeviceInfo
 import com.example.audio.model.UsbRoutingMode
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -869,8 +870,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun handleNaturalLanguageMixPrompt(prompt: String) {
-        viewModelScope.launch(Dispatchers.Default) {
+    fun handleNaturalLanguageMixPrompt(prompt: String, dispatcher: CoroutineDispatcher = Dispatchers.Default) {
+        viewModelScope.launch(dispatcher) {
             val sugs = MixAdvisor.parseNaturalLanguageCommand(prompt, _session.value)
             _suggestions.value = sugs
             _uiState.update { it.copy(statusMessage = "AI generated ${sugs.size} bounded proposals for: \"$prompt\"") }
@@ -1067,8 +1068,11 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(statusMessage = "Applied Master Preset \"${preset.name}\"!") }
     }
 
-    fun renderSessionToAudio(format: com.example.audio.engine.ExportFormat = com.example.audio.engine.ExportFormat.WAV_24BIT) {
-        viewModelScope.launch(Dispatchers.IO) {
+    fun renderSessionToAudio(
+        format: com.example.audio.engine.ExportFormat = com.example.audio.engine.ExportFormat.WAV_24BIT,
+        dispatcher: CoroutineDispatcher = Dispatchers.IO
+    ) {
+        viewModelScope.launch(dispatcher) {
             _uiState.update { it.copy(exportProgress = 0.05f, statusMessage = "Rendering session to ${format.displayName}...") }
             val exportDir = File(getApplication<Application>().filesDir, "exports").apply { mkdirs() }
             val outFile = File(exportDir, "PulseStudio_${System.currentTimeMillis()}${format.extension}")
@@ -1208,7 +1212,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         return ProjectSession(tracks = tracks)
     }
 
-    override fun onCleared() {
+    public override fun onCleared() {
         super.onCleared()
         playbackEngine.stop()
         usbManager.release()

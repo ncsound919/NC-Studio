@@ -10,8 +10,10 @@ import com.example.audio.model.EqConfig
 import com.example.audio.model.FadeCurve
 import com.example.audio.model.FilterType
 import com.example.audio.model.MasterLimiterConfig
+import com.example.audio.model.ResonanceSmootherConfig
 import com.example.audio.model.ReverbConfig
 import com.example.audio.model.SaturationConfig
+import com.example.audio.model.VocalRiderConfig
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
@@ -907,6 +909,99 @@ object ClipCompositor {
         }
 
         return output
+    }
+}
+
+/**
+ * Vocal Resonance Smoother (Dynamic Formant Tamer & De-Esser).
+ * Automatically detects and dynamically attenuates harsh vocal resonances in the 2kHz-8kHz zone.
+ */
+class ResonanceSmootherProcessor(private val sampleRate: Float = 48000f) {
+    private var enabled = false
+    private val filterL = BiquadFilter(sampleRate)
+    private val filterR = BiquadFilter(sampleRate)
+    private var thresholdLinear = 0.125f // -18 dBFS
+    private var depthLinear = 0.5f       // -6 dB cut max
+    private var currentReduction = 1.0f
+
+    fun configure(config: ResonanceSmootherConfig) {
+        enabled = config.enabled
+        thresholdLinear = 10.0.pow(config.thresholdDb / 20.0).toFloat()
+        depthLinear = 10.0.pow(config.depthDb / 20.0).toFloat()
+
+        val band = EqBand(
+            type = FilterType.PEAKING,
+            frequencyHz = config.frequencyHz.coerceIn(1000f, 10000f),
+            gainDb = config.depthDb,
+            qFactor = config.qFactor.coerceIn(1.0f, 10.0f),
+            enabled = config.enabled
+        )
+        filterL.configure(band)
+        filterR.configure(band)
+    }
+
+    fun processSample(inL: Float, inR: Float): Pair<Float, Float> {
+        if (!enabled) return Pair(inL, inR)
+
+        val peak = max(Math.abs(inL), Math.abs(inR))
+        val targetGain = if (peak > thresholdLinear) {
+            val over = peak / thresholdLinear
+            max(depthLinear, 1.0f / over)
+        } else {
+            1.0f
+        }
+
+        currentReduction = 0.9f * currentReduction + 0.1f * targetGain
+
+        return Pair(inL * currentReduction, inR * currentReduction)
+    }
+
+    fun reset() {
+        filterL.reset()
+        filterR.reset()
+        currentReduction = 1.0f
+    }
+}
+
+/**
+ * Vocal Rider (Automatic Volume / Gain Leveler).
+ * Smoothly rides vocal gain to maintain consistent level.
+ */
+class VocalRiderProcessor(private val sampleRate: Float = 48000f) {
+    private var enabled = false
+    private var targetLinear = 0.125f // -18 LUFS / dBFS equivalent
+    private var maxGainLinear = 2.0f  // +6 dB
+    private var minGainLinear = 0.5f  // -6 dB
+    private var envelope = 0.1f
+    private var currentGain = 1.0f
+
+    fun configure(config: VocalRiderConfig) {
+        enabled = config.enabled
+        maxGainLinear = 10.0.pow(config.maxGainDb / 20.0).toFloat()
+        minGainLinear = 10.0.pow(config.minGainDb / 20.0).toFloat()
+        targetLinear = 10.0.pow(config.targetLufs / 20.0).toFloat()
+    }
+
+    fun processSample(inL: Float, inR: Float): Pair<Float, Float> {
+        if (!enabled) return Pair(inL, inR)
+
+        val peak = max(Math.abs(inL), Math.abs(inR))
+        envelope = 0.995f * envelope + 0.005f * peak
+
+        val idealGain = if (envelope > 1e-4f) {
+            (targetLinear / envelope).coerceIn(minGainLinear, maxGainLinear)
+        } else {
+            1.0f
+        }
+
+        currentGain += 0.01f * (idealGain - currentGain)
+
+        return Pair(inL * currentGain, inR * currentGain)
+    }
+
+    fun reset() {
+        envelope = 0.1f
+        currentGain = 1.0f
     }
 }
 

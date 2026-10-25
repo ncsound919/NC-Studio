@@ -7,8 +7,10 @@ import com.example.audio.model.EqBand
 import com.example.audio.model.EqConfig
 import com.example.audio.model.FilterType
 import com.example.audio.model.MasterLimiterConfig
+import com.example.audio.model.ResonanceSmootherConfig
 import com.example.audio.model.ReverbConfig
 import com.example.audio.model.SaturationConfig
+import com.example.audio.model.VocalRiderConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -295,4 +297,120 @@ class AudioDspComprehensiveTest {
         assertTrue("Peak L should be around -6 dBFS, was: ${meter.peakDbL}", abs(meter.peakDbL - (-6.0f)) < 1.0f)
         assertTrue("Integrated LUFS should have registered (> -30 LUFS)", meter.integratedLufs > -30.0f)
     }
+
+    @Test
+    fun panLaw_constantPowerCenterSum() {
+        // Center pan (0.0) should yield equal gains (~ -3dB each, i.e., ~0.707)
+        val (leftCenter, rightCenter) = PanLaw.calculateGains(0.0f)
+        assertEquals(0.7071f, leftCenter, 0.01f)
+        assertEquals(0.7071f, rightCenter, 0.01f)
+
+        // Hard left (-1.0)
+        val (leftLeft, rightLeft) = PanLaw.calculateGains(-1.0f)
+        assertEquals(1.0f, leftLeft, 0.01f)
+        assertEquals(0.0f, rightLeft, 0.01f)
+
+        // Hard right (+1.0)
+        val (leftRight, rightRight) = PanLaw.calculateGains(1.0f)
+        assertEquals(0.0f, leftRight, 0.01f)
+        assertEquals(1.0f, rightRight, 0.01f)
+    }
+
+    @Test
+    fun schroederReverb_preDelayAndDecayTimeParameters() {
+        val reverb = SchroederReverb(sampleRate)
+        // Configure with long pre-delay (50ms = 2400 frames at 48kHz) and long decay (5.0s)
+        reverb.configure(
+            ReverbConfig(
+                enabled = true,
+                roomSize = 0.85f,
+                damping = 0.2f,
+                stereoWidth = 0.95f,
+                returnLevel = 1.0f,
+                preDelayMs = 50f,
+                decayTimeSec = 5.0f,
+                lowCutHz = 100f,
+                highCutHz = 10000f
+            )
+        )
+
+        // Feed impulse
+        val (out1L, out1R) = reverb.processSample(1.0f, 1.0f)
+        // During initial pre-delay window (< 2400 frames), reverb output should be strictly zero or negligible
+        var earlyEnergy = 0.0f
+        for (i in 0 until 100) {
+            val (l, r) = reverb.processSample(0f, 0f)
+            earlyEnergy += l * l + r * r
+        }
+        assertEquals(0f, earlyEnergy, 1e-5f)
+    }
+
+    @Test
+    fun peakLimiter_preventsInterSampleClippingOnMaster() {
+        val limiter = PeakLimiter(sampleRate)
+        limiter.configure(
+            MasterLimiterConfig(
+                enabled = true,
+                ceilingDb = -0.3f, // ~0.965f linear
+                thresholdDb = -1.0f,
+                releaseMs = 40f
+            )
+        )
+
+        var maxOut = 0.0f
+        for (i in 0 until 500) {
+            val (l, r) = limiter.processSample(2.0f, 2.0f)
+            maxOut = maxOf(maxOut, abs(l), abs(r))
+        }
+        assertTrue("Master limiter must clamp peaks to ceiling (~0.965), observed: $maxOut", maxOut <= 0.97f)
+    }
+
+    @Test
+    fun resonanceSmoother_attenuatesHarshResonances() {
+        val smoother = ResonanceSmootherProcessor(sampleRate)
+        smoother.configure(
+            ResonanceSmootherConfig(
+                enabled = true,
+                frequencyHz = 3200f,
+                thresholdDb = -12f,
+                depthDb = -6.0f,
+                qFactor = 5.0f
+            )
+        )
+
+        // Process quiet signal below threshold
+        val (qL, qR) = smoother.processSample(0.01f, 0.01f)
+        assertEquals(0.01f, qL, 0.001f)
+
+        // Process hot resonant signal above threshold
+        var processedL = 0.0f
+        for (i in 0 until 100) {
+            val (l, _) = smoother.processSample(0.8f, 0.8f)
+            processedL = l
+        }
+        assertTrue("Resonance smoother should attenuate harsh peaks", abs(processedL) < 0.8f)
+    }
+
+    @Test
+    fun vocalRider_ridesGainToTargetLevel() {
+        val rider = VocalRiderProcessor(sampleRate)
+        rider.configure(
+            VocalRiderConfig(
+                enabled = true,
+                targetLufs = -18.0f,
+                maxGainDb = 6.0f,
+                minGainDb = -6.0f,
+                sensitivity = 0.5f
+            )
+        )
+
+        // Process quiet vocal snippet
+        var riddenL = 0.0f
+        for (i in 0 until 200) {
+            val (l, _) = rider.processSample(0.05f, 0.05f)
+            riddenL = l
+        }
+        assertTrue("Vocal rider should boost quiet vocals upward", riddenL > 0.05f)
+    }
 }
+

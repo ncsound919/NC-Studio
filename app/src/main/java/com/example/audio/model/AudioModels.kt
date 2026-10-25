@@ -201,6 +201,8 @@ data class TrackData(
     val chorusConfig: ChorusConfig = ChorusConfig(),
     val delayConfig: DuckingDelayConfig = DuckingDelayConfig(),
     val limiterConfig: ChannelLimiterConfig = ChannelLimiterConfig(),
+    val resonanceSmootherConfig: ResonanceSmootherConfig = ResonanceSmootherConfig(),
+    val vocalRiderConfig: VocalRiderConfig = VocalRiderConfig(),
     val clips: List<AudioClip> = emptyList()
 ) {
     val gainLinear: Float
@@ -316,6 +318,28 @@ enum class EditMode(val displayName: String, val description: String) {
     SLIP("Slip Mode", "Clips move and trim freely with sample-level precision"),
     GRID("Grid Mode", "Clips snap strictly to bar and beat grid intervals")
 }
+
+/**
+ * Vocal Resonance Smoother (Dynamic Formant Tamer & De-Esser) configuration.
+ */
+data class ResonanceSmootherConfig(
+    val enabled: Boolean = false,
+    val frequencyHz: Float = 3200f, // 2 kHz to 8 kHz resonance / harshness zone
+    val thresholdDb: Float = -18f,
+    val depthDb: Float = -6.0f,     // Dynamic attenuation when resonance peaks
+    val qFactor: Float = 4.0f       // Narrow notch Q
+)
+
+/**
+ * Vocal Rider (Automatic Volume/Gain Leveler) configuration.
+ */
+data class VocalRiderConfig(
+    val enabled: Boolean = false,
+    val targetLufs: Float = -18.0f, // Target vocal level
+    val maxGainDb: Float = +6.0f,   // Maximum upward riding boost
+    val minGainDb: Float = -6.0f,   // Maximum downward riding cut
+    val sensitivity: Float = 0.5f   // Riding response speed
+)
 
 /**
  * Magnetic grid snapping resolution.
