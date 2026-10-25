@@ -67,7 +67,7 @@ android {
     unitTests {
       isIncludeAndroidResources = true
       all {
-        it.maxHeapSize = "2048m"
+        it.maxHeapSize = "4096m"
       }
     }
   }

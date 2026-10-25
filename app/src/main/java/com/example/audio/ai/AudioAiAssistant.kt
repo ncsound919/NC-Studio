@@ -480,3 +480,77 @@ object MixAdvisor {
         return suggestions
     }
 }
+
+/**
+ * Tool-call parsing + dispatch for local LLM integration.
+ * Parses simple JSON-ish tool calls of the form {"tool": "name", "args": {...}}
+ * from an LLM response and applies them to a session.
+ */
+object ToolCallDispatcher {
+    data class ToolCall(val name: String, val args: Map<String, String> = emptyMap())
+
+    fun parseToolCalls(llmOutput: String): List<ToolCall> {
+        val calls = mutableListOf<ToolCall>()
+        // Find all {"tool": "...", ...} blocks
+        val regex = Regex("\\{[^}]*\"tool\"\\s*:\\s*\"([^\"]+)\"[^}]*\\}")
+        for (match in regex.findAll(llmOutput)) {
+            val name = match.groupValues[1]
+            // extract args: "key": "value" pairs (string values only)
+            val args = mutableMapOf<String, String>()
+            val argRegex = Regex("\"(\\w+)\"\\s*:\\s*\"([^\"]*)\"")
+            for (am in argRegex.findAll(match.value)) {
+                val k = am.groupValues[1]
+                if (k != "tool") args[k] = am.groupValues[2]
+            }
+            calls.add(ToolCall(name, args))
+        }
+        return calls
+    }
+
+    fun executeToolCall(session: ProjectSession, call: ToolCall): ProjectSession {
+        return when (call.name) {
+            "applyTemplate" -> {
+                val templateId = call.args["templateId"] ?: return session
+                val template = com.example.audio.model.MixTemplateLibrary.byId(templateId) ?: return session
+                var tracks = session.tracks.toMutableList()
+                for ((name, tt) in template.trackTemplates) {
+                    val idx = tracks.indexOfFirst { it.name.contains(name, ignoreCase = true) || name.contains(it.name, ignoreCase = true) }
+                    if (idx >= 0) {
+                        tracks[idx] = tracks[idx].copy(gainDb = tt.gainDb, pan = tt.pan, reverbSendLevel = tt.reverbSend)
+                    }
+                }
+                session.copy(tracks = tracks, revision = session.revision + 1)
+            }
+            "setTrackGain" -> {
+                val idx = call.args["trackIndex"]?.toIntOrNull() ?: return session
+                val gain = call.args["gainDb"]?.toFloatOrNull() ?: return session
+                val tracks = session.tracks.toMutableList()
+                val t = tracks.indexOfFirst { it.index == idx }
+                if (t >= 0) tracks[t] = tracks[t].copy(gainDb = gain.coerceIn(-60f, 12f))
+                session.copy(tracks = tracks, revision = session.revision + 1)
+            }
+            "setTrackPan" -> {
+                val idx = call.args["trackIndex"]?.toIntOrNull() ?: return session
+                val pan = call.args["pan"]?.toFloatOrNull() ?: return session
+                val tracks = session.tracks.toMutableList()
+                val t = tracks.indexOfFirst { it.index == idx }
+                if (t >= 0) tracks[t] = tracks[t].copy(pan = pan.coerceIn(-1f, 1f))
+                session.copy(tracks = tracks, revision = session.revision + 1)
+            }
+            "toggleMute" -> {
+                val idx = call.args["trackIndex"]?.toIntOrNull() ?: return session
+                val tracks = session.tracks.toMutableList()
+                val t = tracks.indexOfFirst { it.index == idx }
+                if (t >= 0) tracks[t] = tracks[t].copy(isMuted = !tracks[t].isMuted)
+                session.copy(tracks = tracks, revision = session.revision + 1)
+            }
+            else -> session
+        }
+    }
+
+    fun executeAll(session: ProjectSession, calls: List<ToolCall>): ProjectSession {
+        var s = session
+        for (c in calls) s = executeToolCall(s, c)
+        return s
+    }
+}

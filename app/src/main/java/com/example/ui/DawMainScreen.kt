@@ -380,6 +380,8 @@ fun DawMainScreen(
                             onUpdateDelay = { delay -> viewModel.updateTrackDuckingDelay(selTrack.index, delay) },
                             onUpdateLimiter = { lim -> viewModel.updateTrackLimiter(selTrack.index, lim) },
                             onUpdateReverbSend = { send -> viewModel.setTrackReverbSend(selTrack.index, send) },
+                            onUpdateAutoPitch = { cfg -> viewModel.updateTrackAutoPitch(selTrack.index, cfg) },
+                            onUpdateNoiseReduction = { cfg -> viewModel.updateTrackNoiseReduction(selTrack.index, cfg) },
                             masterReverb = session.masterReverb,
                             onUpdateMasterReverb = { rev -> viewModel.updateMasterReverb(rev) }
                         )
@@ -475,6 +477,7 @@ fun DawMainScreen(
             progress = uiState.exportProgress,
             exportedFile = uiState.exportedFile,
             onStartExport = { fmt -> viewModel.renderSessionToAudio(fmt) },
+            onStartStemsExport = { viewModel.renderStemsExport() },
             onDismiss = { viewModel.showExportDialog(false) }
         )
     }

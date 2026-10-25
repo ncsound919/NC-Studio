@@ -35,13 +35,23 @@ import kotlin.math.pow
  * Features parameter smoothing, 4-band EQ, compressor, reverb send, master limiter,
  * and timing telemetry.
  */
-class AudioTrackPlaybackEngine(val sampleRate: Int = 48000) {
+class AudioTrackPlaybackEngine(
+    val sampleRate: Int = 48000,
+    configuredBufferSizeFrames: Int = 512
+) {
 
     companion object {
         const val MAX_TRACKS = 16
     }
 
     val commandQueue = AudioCommandQueue()
+
+    // Configured engine block size (applied when the render loop initializes AudioTrack)
+    @Volatile
+    var configuredBufferSizeFrames: Int = configuredBufferSizeFrames
+        private set
+
+    val metronome = MetronomeProcessor(sampleRate.toFloat())
 
     private val isRunning = AtomicBoolean(false)
     private val isPlaying = AtomicBoolean(false)
@@ -91,6 +101,14 @@ class AudioTrackPlaybackEngine(val sampleRate: Int = 48000) {
     private var loopEndFrame = sampleRate.toLong() * 16L
     private var totalSessionLengthFrames = sampleRate.toLong() * 16L
 
+    // Click track state (mirrors metronome config for UI visibility)
+    var clickBpm: Float = 120f
+        private set
+    var clickEnabled: Boolean = false
+        private set
+    var clickVolumeDb: Float = -6f
+        private set
+
     // Performance telemetry
     private var underrunCount = 0
     private val callbackTimesMs = FloatArray(100)
@@ -131,14 +149,51 @@ class AudioTrackPlaybackEngine(val sampleRate: Int = 48000) {
     fun isEnginePlaying(): Boolean = isPlaying.get()
     fun getPlayheadPosition(): Long = currentPlayheadFrame.get()
 
-    private fun runAudioLoop() {
-        val bufferSizeFrames = 512
+    private fun buildAudioTrack(bufferFrames: Int): AudioTrack {
         val minBufferSize = AudioTrack.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_OUT_STEREO,
             AudioFormat.ENCODING_PCM_16BIT
         )
-        val audioTrackBufferSize = max(minBufferSize, bufferSizeFrames * 2 * 2 * 4)
+        val audioTrackBufferSize = max(minBufferSize, bufferFrames * 2 * 2 * 4)
+
+        val track = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
+                    .build()
+            )
+            .setBufferSizeInBytes(audioTrackBufferSize)
+            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+
+        if (preferredDevice != null &&
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M
+        ) {
+            track.preferredDevice = preferredDevice
+        }
+        return track
+    }
+
+    private fun runAudioLoop() {
+        val bufferSizeFrames = configuredBufferSizeFrames.coerceIn(64, 4096)
+        val audioTrackBufferSize = max(
+            AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_STEREO,
+                AudioFormat.ENCODING_PCM_16BIT
+            ),
+            bufferSizeFrames * 2 * 2 * 4
+        )
 
         var audioTrack: AudioTrack? = null
         try {
@@ -173,6 +228,7 @@ class AudioTrackPlaybackEngine(val sampleRate: Int = 48000) {
             val reverbSendBufferL = FloatArray(bufferSizeFrames)
             val reverbSendBufferR = FloatArray(bufferSizeFrames)
             val pcmOutputBytes = ShortArray(bufferSizeFrames * 2)
+            val stageOut = FloatArray(2) // reusable stereo stage buffer
 
             var lastRenderTimeNs = System.nanoTime()
 
@@ -251,25 +307,25 @@ class AudioTrackPlaybackEngine(val sampleRate: Int = 48000) {
                         }
 
                         // 1. 4-Band Parametric EQ
-                        val (eqL, eqR) = eq.processSample(rawL, rawR)
+                        eq.processSampleInto(rawL, rawR, stageOut)
 
                         // 2. Tape / Tube Saturation
-                        val (satL, satR) = saturator.processSample(eqL, eqR)
+                        saturator.processSampleInto(stageOut[0], stageOut[1], stageOut)
 
                         // 3. Stereo Dynamic Compressor
-                        val (compL, compR) = comp.processSample(satL, satR)
+                        comp.processSampleInto(stageOut[0], stageOut[1], stageOut)
 
                         // 4. Stereo Chorus / Vocal Doubler
-                        val (choL, choR) = chorus.processSample(compL, compR)
+                        chorus.processSampleInto(stageOut[0], stageOut[1], stageOut)
 
                         // 5. Stereo Ducking Delay
-                        val (dlyL, dlyR) = delay.processSample(choL, choR)
+                        delay.processSampleInto(stageOut[0], stageOut[1], stageOut)
 
                         // 6. Channel Brickwall Limiter
-                        val (limL, limR) = limiter.processSample(dlyL, dlyR)
+                        limiter.processSampleInto(stageOut[0], stageOut[1], stageOut)
 
-                        val processedL = limL * gain * panL
-                        val processedR = limR * gain * panR
+                        val processedL = stageOut[0] * gain * panL
+                        val processedR = stageOut[1] * gain * panR
 
                         val samplePeak = max(Math.abs(processedL), Math.abs(processedR))
                         if (samplePeak > trackPeak) trackPeak = samplePeak
@@ -288,11 +344,20 @@ class AudioTrackPlaybackEngine(val sampleRate: Int = 48000) {
                     trackGainReductions[t] = comp.currentGainReductionDb
                 }
 
-                // 4. Process Master Reverb Send & Return
+                // 4. Process Master Reverb Send & Return (+ sample-locked metronome click)
                 for (i in 0 until bufferSizeFrames) {
-                    val (revL, revR) = masterReverb.processSample(reverbSendBufferL[i], reverbSendBufferR[i])
-                    mixBufferL[i] += revL
-                    mixBufferR[i] += revR
+                    masterReverb.processSampleInto(reverbSendBufferL[i], reverbSendBufferR[i], stageOut)
+                    var finalL = mixBufferL[i] + stageOut[0]
+                    var finalR = mixBufferR[i] + stageOut[1]
+
+                    val click = metronome.processFrame(playhead + i)
+                    if (click != 0f) {
+                        finalL += click
+                        finalR += click
+                    }
+
+                    mixBufferL[i] = finalL
+                    mixBufferR[i] = finalR
                 }
 
                 // 5. Apply Master Fader & Master Limiter & LUFS metering
@@ -304,7 +369,9 @@ class AudioTrackPlaybackEngine(val sampleRate: Int = 48000) {
                     val preLimitL = mixBufferL[i] * masterGain
                     val preLimitR = mixBufferR[i] * masterGain
 
-                    val (postLimitL, postLimitR) = masterLimiter.processSample(preLimitL, preLimitR)
+                    masterLimiter.processSampleInto(preLimitL, preLimitR, stageOut)
+                    val postLimitL = stageOut[0]
+                    val postLimitR = stageOut[1]
 
                     lufsMeter.addSample(postLimitL, postLimitR)
 
@@ -431,6 +498,35 @@ class AudioTrackPlaybackEngine(val sampleRate: Int = 48000) {
                 }
                 is AudioEngineCommand.SetMasterLimiter -> masterLimiter.configure(cmd.config)
                 is AudioEngineCommand.SetMasterReverb -> masterReverb.configure(cmd.config)
+                is AudioEngineCommand.SetClickTrack -> {
+                    metronome.configure(cmd.enabled, cmd.bpm, cmd.volumeDb, cmd.beatsPerBar)
+                    clickBpm = cmd.bpm
+                    clickEnabled = cmd.enabled
+                    clickVolumeDb = cmd.volumeDb
+                }
+                is AudioEngineCommand.SetCountIn -> {
+                    // Count-in uses the same click voice; transport-level scheduling
+                    // (how many beats of pre-roll) is decided by the ViewModel layer.
+                    clickBpm = cmd.bpm
+                    metronome.configure(enabled = true, bpm = cmd.bpm, volumeDb = cmd.volumeDb)
+                }
+                is AudioEngineCommand.SetBufferSize -> {
+                    if (cmd.frames in 64..4096 && cmd.frames != configuredBufferSizeFrames) {
+                        configuredBufferSizeFrames = cmd.frames
+                        // Rebuild AudioTrack on the render thread with the new size
+                        try {
+                            (activeAudioTrack)?.let { current ->
+                                current.pause()
+                                current.flush()
+                                current.release()
+                            }
+                            activeAudioTrack = buildAudioTrack(configuredBufferSizeFrames)
+                            activeAudioTrack?.play()
+                        } catch (_: Exception) {
+                            // Keep running with old buffer size on hardware failure
+                        }
+                    }
+                }
                 is AudioEngineCommand.SetLoopRange -> {
                     loopStartFrame = cmd.startFrame
                     loopEndFrame = cmd.endFrame

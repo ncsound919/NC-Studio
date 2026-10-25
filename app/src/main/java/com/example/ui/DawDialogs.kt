@@ -148,6 +148,7 @@ fun ExportDialog(
     progress: Float,
     exportedFile: File?,
     onStartExport: (com.example.audio.engine.ExportFormat) -> Unit,
+    onStartStemsExport: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var selectedFormat by remember { mutableStateOf(com.example.audio.engine.ExportFormat.WAV_24BIT) }
@@ -290,12 +291,17 @@ fun ExportDialog(
         },
         confirmButton = {
             if (exportedFile == null && progress == 0f) {
-                Button(
-                    onClick = { onStartExport(selectedFormat) },
-                    colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
-                    modifier = Modifier.testTag("confirm_export_button")
-                ) {
-                    Text("Render ${selectedFormat.extension.uppercase()}", color = Color.Black, fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onStartStemsExport) {
+                        Text("Export Stems", color = TextSecondary, fontWeight = FontWeight.Bold)
+                    }
+                    Button(
+                        onClick = { onStartExport(selectedFormat) },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
+                        modifier = Modifier.testTag("confirm_export_button")
+                    ) {
+                        Text("Render ${selectedFormat.extension.uppercase()}", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
                 }
             } else {
                 Button(

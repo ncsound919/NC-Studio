@@ -15,10 +15,13 @@ import com.example.audio.ai.MixAdvisor
 import com.example.audio.engine.AudioEngineCommand
 import com.example.audio.engine.AudioFileImporter
 import com.example.audio.engine.AudioRecorder
+import com.example.audio.dsp.ClipCompositor
+import com.example.audio.engine.AudioResampler
 import com.example.audio.engine.AudioTrackPlaybackEngine
 import com.example.audio.engine.LatencyCalibrator
 import com.example.audio.engine.OfflineRenderer
 import com.example.audio.engine.UsbAudioInterfaceManager
+import com.example.audio.engine.WaveformCache
 import com.example.audio.engine.WavAudioIO
 import com.example.audio.history.ProjectPersistence
 import com.example.audio.history.SessionCommand
@@ -45,6 +48,7 @@ import com.example.audio.model.UsbAudioDeviceInfo
 import com.example.audio.model.UsbRoutingMode
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -52,6 +56,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -61,6 +68,9 @@ import kotlin.math.min
 data class EngineUiState(
     val isPlaying: Boolean = false,
     val isRecording: Boolean = false,
+    val punchInFrame: Long? = null,
+    val punchOutFrame: Long? = null,
+    val isInputMonitoringEnabled: Boolean = false,
     val playheadFrame: Long = 0L,
     val totalFrames: Long = 48000L * 16L,
     val timeFormatted: String = "00:00.00",
@@ -104,8 +114,29 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     val usbDevices: StateFlow<List<UsbAudioDeviceInfo>> = usbManager.usbDevices
     val activeUsbDevice: StateFlow<UsbAudioDeviceInfo?> = usbManager.activeUsbDevice
 
-    // Stored in-memory audio buffers for 16 tracks
+    // A/B reference track (loaded from a real song for comparison/matching)
+    private var referenceTrackSamples: FloatArray? = null
+    private var referenceTrackName: String? = null
+
+    // track playlists the engine plays — rebuilt whenever clips change)
     private val trackAudioBuffers = Array(16) { FloatArray(0) }
+
+    // Per-track source audio pools: each clip references its own source audio
+    // by AudioClip.sourcePath ("built_in" = synthesized demo stem, otherwise
+    // a canonical 48 kHz stereo WAV file on disk for imports and takes).
+    private val trackSourcePools = Array(16) { mutableMapOf<String, FloatArray>() }
+    private val trackRebuildMutexes = Array(16) { Mutex() }
+
+    // Recording session state (transport truth at punch-in)
+    private var currentRecordingStartFrame = 0L
+    private var recordedPrerollFrames = 0L
+    private var lastRecordingFile: File? = null
+
+    // Debounced persistence + coalesced undo state
+    private var journalJob: Job? = null
+    private var paramCommitJob: Job? = null
+    private data class PendingParamEdit(val trackIndex: Int, val before: TrackData, val description: String)
+    private var pendingParamEdit: PendingParamEdit? = null
 
     private val _session = MutableStateFlow(createInitialSession())
     val session: StateFlow<ProjectSession> = _session.asStateFlow()
@@ -144,18 +175,75 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
         val currentProj = restored ?: _session.value
 
-        // Synthesize procedural stems for empty tracks
-        for (i in 0 until 16) {
-            val stemSamples = WavAudioIO.generateProceduralStem(i, sampleRate)
-            trackAudioBuffers[i] = stemSamples
-            playbackEngine.setTrackAudio(i, stemSamples)
+        if (restored != null) {
+            // Session restore: re-hydrate every clip's source audio from disk.
+            // Imports and takes are persisted as canonical 48 kHz stereo WAVs,
+            // so files load at session rate without resampling.
+            for (track in restored.tracks) {
+                val pool = trackSourcePools[track.index]
+                pool.clear()
+                for (path in track.clips.map { it.sourcePath }.distinct()) {
+                    if (path == "built_in") continue
+                    val f = File(path)
+                    if (f.exists()) {
+                        val wav = WavAudioIO.readWavFile(f)
+                        if (wav != null && wav.channels == 2 && wav.sampleRate == 48000) {
+                            pool[path] = wav.samples
+                        }
+                    }
+                }
+            }
+        } else {
+            // First launch: synthesize the demo stems so the app opens playable
+            for (i in 0 until 16) {
+                trackSourcePools[i]["built_in"] = WavAudioIO.generateProceduralStem(i, sampleRate)
+            }
         }
 
         _session.value = currentProj
         playbackEngine.syncFromProject(currentProj)
 
+        // Render the composited track playlists and push to the engine
+        for (i in 0 until 16) {
+            rebuildTrackAudioLocked(i)
+        }
+
         // Run initial AI analysis
         refreshAudioAnalysis()
+    }
+
+    /**
+     * Re-composites a track's clip playlist into its playable buffer and
+     * hands it to the engine. This is the path that makes every non-destructive
+     * edit (trim, move, split, fades, gain, takes) audibly real.
+     */
+    private suspend fun rebuildTrackAudioLocked(trackIndex: Int) {
+        val session = _session.value
+        val track = session.tracks.getOrNull(trackIndex) ?: return
+        val pool = trackSourcePools[trackIndex]
+
+        // Lazily re-populate demo stems for clips that reference built_in audio
+        if (track.clips.any { it.sourcePath == "built_in" && !pool.containsKey("built_in") }) {
+            pool["built_in"] = WavAudioIO.generateProceduralStem(trackIndex, sampleRate)
+        }
+
+        val maxClipEnd = track.clips.maxOfOrNull { it.timelineStartFrame + it.lengthFrames } ?: 0L
+        val totalFrames = max(session.totalLengthFrames, maxClipEnd)
+
+        val composited = ClipCompositor.compositeClipsFromSources(pool, track.clips, totalFrames)
+        trackAudioBuffers[trackIndex] = composited
+        playbackEngine.setTrackAudio(trackIndex, composited)
+
+        // Real waveform peaks derived from actual audio data
+        WaveformCache.refreshClips(track.clips, pool)
+    }
+
+    fun scheduleRebuildTrack(trackIndex: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            trackRebuildMutexes[trackIndex.coerceIn(0, 15)].withLock {
+                rebuildTrackAudioLocked(trackIndex)
+            }
+        }
     }
 
     private fun startMeterAndPlayheadPolling() {
@@ -323,6 +411,18 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         playbackEngine.commandQueue.enqueue(AudioEngineCommand.SetChannelLimiter(trackIndex, config))
     }
 
+    fun updateTrackAutoPitch(trackIndex: Int, config: com.example.audio.model.AutoPitchConfig) {
+        val before = _session.value.tracks[trackIndex]
+        val after = before.copy(autoPitchConfig = config)
+        pushTrackParamChange(before, after)
+    }
+
+    fun updateTrackNoiseReduction(trackIndex: Int, config: com.example.audio.model.NoiseReductionConfig) {
+        val before = _session.value.tracks[trackIndex]
+        val after = before.copy(noiseReductionConfig = config)
+        pushTrackParamChange(before, after)
+    }
+
     fun setMasterGain(gainDb: Float) {
         _session.update { it.copy(masterGainDb = gainDb) }
         playbackEngine.commandQueue.enqueue(AudioEngineCommand.SetMasterGain(gainDb))
@@ -342,7 +442,42 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         val updatedList = _session.value.tracks.map { if (it.index == before.index) after else it }
         val newSession = _session.value.copy(tracks = updatedList, revision = _session.value.revision + 1)
         _session.value = newSession
-        persistence.writeCrashRecoveryJournal(newSession)
+
+        // Coalesce a continuous gesture (e.g. slider drag) into one undo entry:
+        // "before" is captured on the first change, committed after the user settles.
+        if (pendingParamEdit == null || pendingParamEdit?.trackIndex != before.index) {
+            pendingParamEdit = PendingParamEdit(before.index, before, "Mix Adjust ${before.name}")
+        }
+        paramCommitJob?.cancel()
+        paramCommitJob = viewModelScope.launch {
+            delay(800)
+            commitPendingParamEdit()
+        }
+
+        requestJournalWrite(newSession)
+    }
+
+    private fun commitPendingParamEdit() {
+        val pending = pendingParamEdit ?: return
+        pendingParamEdit = null
+        val track = _session.value.tracks.getOrNull(pending.trackIndex) ?: return
+        undoManager.pushAction(
+            SessionCommand.UpdateTrackParams(
+                pending.description,
+                pending.trackIndex,
+                pending.before,
+                track
+            )
+        )
+    }
+
+    /** Debounced crash-journal write: one write per gesture instead of per tick. */
+    private fun requestJournalWrite(session: ProjectSession) {
+        journalJob?.cancel()
+        journalJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(600)
+            persistence.writeCrashRecoveryJournal(session)
+        }
     }
 
     // Clip Editing (Nondestructive)
@@ -383,7 +518,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
         val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
         _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        persistence.writeCrashRecoveryJournal(_session.value)
+        requestJournalWrite(_session.value)
+        scheduleRebuildTrack(trackIndex)
     }
 
     fun trimClipEnd(trackIndex: Int, clipId: String, trimFrames: Long) {
@@ -398,7 +534,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         undoManager.pushAction(SessionCommand.EditClips("Trim ${clip.name}", trackIndex, beforeClips, afterClips))
         val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
         _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        persistence.writeCrashRecoveryJournal(_session.value)
+        requestJournalWrite(_session.value)
+        scheduleRebuildTrack(trackIndex)
     }
 
     fun duplicateClip(trackIndex: Int, clipId: String) {
@@ -416,7 +553,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         undoManager.pushAction(SessionCommand.EditClips("Duplicate ${clip.name}", trackIndex, beforeClips, afterClips))
         val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
         _session.update { it.copy(tracks = newTracks, totalLengthFrames = max(_session.value.totalLengthFrames, duplicated.timelineStartFrame + duplicated.lengthFrames), revision = it.revision + 1) }
-        persistence.writeCrashRecoveryJournal(_session.value)
+        requestJournalWrite(_session.value)
+        scheduleRebuildTrack(trackIndex)
     }
 
     fun renameClip(trackIndex: Int, clipId: String, newName: String) {
@@ -430,7 +568,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         undoManager.pushAction(SessionCommand.EditClips("Rename ${clip.name} to $newName", trackIndex, beforeClips, afterClips))
         val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
         _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        persistence.writeCrashRecoveryJournal(_session.value)
+        requestJournalWrite(_session.value)
     }
 
     fun setClipGain(trackIndex: Int, clipId: String, gainDb: Float) {
@@ -444,7 +582,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         undoManager.pushAction(SessionCommand.EditClips("Gain ${clip.name} (%+.1f dB)".format(gainDb), trackIndex, beforeClips, afterClips))
         val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
         _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        persistence.writeCrashRecoveryJournal(_session.value)
+        requestJournalWrite(_session.value)
+        scheduleRebuildTrack(trackIndex)
     }
 
     fun setClipFadeIn(trackIndex: Int, clipId: String, fadeInMs: Float, curve: com.example.audio.model.FadeCurve = com.example.audio.model.FadeCurve.EQUAL_POWER) {
@@ -459,7 +598,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         undoManager.pushAction(SessionCommand.EditClips("Fade In ${clip.name}", trackIndex, beforeClips, afterClips))
         val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
         _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        persistence.writeCrashRecoveryJournal(_session.value)
+        requestJournalWrite(_session.value)
+        scheduleRebuildTrack(trackIndex)
     }
 
     fun setClipFadeOut(trackIndex: Int, clipId: String, fadeOutMs: Float, curve: com.example.audio.model.FadeCurve = com.example.audio.model.FadeCurve.EQUAL_POWER) {
@@ -474,7 +614,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         undoManager.pushAction(SessionCommand.EditClips("Fade Out ${clip.name}", trackIndex, beforeClips, afterClips))
         val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
         _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        persistence.writeCrashRecoveryJournal(_session.value)
+        requestJournalWrite(_session.value)
+        scheduleRebuildTrack(trackIndex)
     }
 
     /**
@@ -483,7 +624,9 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     fun pasteClipAsChorusSection(trackIndex: Int, clipId: String, barsAhead: Int = 4) {
         val track = _session.value.tracks.getOrNull(trackIndex) ?: return
         val clip = track.clips.find { it.id == clipId } ?: return
-        val barFrames = 19200L // 1 Bar = 19200 frames @ 120 BPM 48kHz
+        // Real bar length from session tempo (120 BPM @ 48 kHz = 96 000 frames/bar)
+        val beatFrames = (sampleRate * 60f / _session.value.tempoBpm).toLong().coerceAtLeast(1L)
+        val barFrames = beatFrames * 4
         val targetStart = clip.timelineStartFrame + (barsAhead * barFrames)
 
         val pasted = clip.copy(
@@ -499,7 +642,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
         val maxFrames = max(_session.value.totalLengthFrames, targetStart + clip.lengthFrames)
         _session.update { it.copy(tracks = newTracks, totalLengthFrames = maxFrames, revision = it.revision + 1) }
-        persistence.writeCrashRecoveryJournal(_session.value)
+        requestJournalWrite(_session.value)
+        scheduleRebuildTrack(trackIndex)
         _uiState.update { it.copy(statusMessage = "Chorus Paste: \"${clip.name}\" placed at Bar +$barsAhead!") }
     }
 
@@ -537,7 +681,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         undoManager.pushAction(SessionCommand.EditClips("Chorus Doubler Layer", targetTrack.index, beforeClips, afterClips))
         val newTracks = _session.value.tracks.map { if (it.index == targetTrack.index) it.copy(clips = afterClips) else it }
         _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        persistence.writeCrashRecoveryJournal(_session.value)
+        requestJournalWrite(_session.value)
+        scheduleRebuildTrack(targetTrackIndex)
         _uiState.update { it.copy(statusMessage = "Created Chorus Doubler Layer on ${targetTrack.name}!") }
     }
 
@@ -571,7 +716,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
         val maxFrames = max(_session.value.totalLengthFrames, currentStart + clip.lengthFrames)
         _session.update { it.copy(tracks = newTracks, totalLengthFrames = maxFrames, revision = it.revision + 1) }
-        persistence.writeCrashRecoveryJournal(_session.value)
+        requestJournalWrite(_session.value)
         _uiState.update { it.copy(statusMessage = "Adapted 4-bar chorus loop with equal-power crossfades!") }
     }
 
@@ -598,7 +743,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         undoManager.pushAction(SessionCommand.EditClips("Move ${clip.name} to frame $snappedFrame", trackIndex, beforeClips, afterClips))
         val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
         _session.update { it.copy(tracks = newTracks, totalLengthFrames = max(_session.value.totalLengthFrames, snappedFrame + updatedClip.lengthFrames), revision = it.revision + 1) }
-        persistence.writeCrashRecoveryJournal(_session.value)
+        requestJournalWrite(_session.value)
     }
 
     fun toggleMagneticSnap() {
@@ -637,7 +782,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         val (restoredSession, command) = result
         _session.value = restoredSession
         playbackEngine.syncFromProject(restoredSession)
-        persistence.writeCrashRecoveryJournal(restoredSession)
+        requestJournalWrite(restoredSession)
         _uiState.update { it.copy(statusMessage = "Undid: ${command.description}") }
     }
 
@@ -646,7 +791,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         val (restoredSession, command) = result
         _session.value = restoredSession
         playbackEngine.syncFromProject(restoredSession)
-        persistence.writeCrashRecoveryJournal(restoredSession)
+        requestJournalWrite(restoredSession)
         _uiState.update { it.copy(statusMessage = "Redid: ${command.description}") }
     }
 
@@ -663,11 +808,14 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
         val success = audioRecorder.startRecording(takeFile)
         if (success) {
+            // Capture transport truth at punch-in for accurate alignment
+            currentRecordingStartFrame = _uiState.value.playheadFrame
             // Also start playback if not already playing so user hears backing tracks
             if (!_uiState.value.isPlaying) {
                 playbackEngine.commandQueue.enqueue(AudioEngineCommand.Play)
+                _uiState.update { it.copy(isPlaying = true) }
             }
-            _uiState.update { it.copy(isRecording = true, isPlaying = true, statusMessage = "Recording to Track ${armedTrack.index + 1} (${armedTrack.name})...") }
+            _uiState.update { it.copy(isRecording = true, statusMessage = "Recording to Track ${armedTrack.index + 1} (${armedTrack.name})...") }
         } else {
             _uiState.update { it.copy(statusMessage = "Microphone error. Check permission.") }
         }
@@ -680,15 +828,42 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
         val armedTrack = _session.value.tracks.find { it.isArmedForRecording } ?: return
         if (framesRecorded > 2000L) {
-            // Apply latency calibration offset so overdubs align perfectly!
+            // Apply latency calibration offset so overdubs align perfectly
             val latencyFrames = ((_session.value.latencyOffsetMs / 1000f) * sampleRate).toLong()
-            val alignedTimelineStart = max(0L, _uiState.value.playheadFrame - framesRecorded - latencyFrames)
+            val punchIn = _uiState.value.punchInFrame
+            val punchOut = _uiState.value.punchOutFrame
+            val alignedTimelineStart = if (punchIn != null) punchIn else maxOf(0L, _uiState.value.playheadFrame - framesRecorded - latencyFrames)
+            val takeLength = if (punchIn != null && punchOut != null) {
+                (punchOut - punchIn).coerceAtLeast(0L)
+            } else framesRecorded
+
+            // The AudioRecorder writes to a temp file internally; find the most recent take WAV
+            val takesDir = File(getApplication<Application>().filesDir, "takes")
+            val takeFile = takesDir.listFiles { f -> f.extension == "wav" }
+                ?.maxByOrNull { it.lastModified() }
+
+            val sourcePath = takeFile?.absolutePath ?: "take_wav"
+            // Load take into source pool so it's audible and exportable
+            if (takeFile?.exists() == true) {
+                val wav = WavAudioIO.readWavFile(takeFile)
+                if (wav != null) {
+                    val normalized = AudioResampler.normalizeToSessionStereo(
+                        wav.samples,
+                        wav.channels,
+                        wav.sampleRate,
+                        sampleRate
+                    )
+                    // Canonicalize on disk for session restore
+                    WavAudioIO.writeWavFile(takeFile, normalized, channels = 2, sampleRate = sampleRate, bitsPerSample = 16)
+                    trackSourcePools[armedTrack.index][sourcePath] = normalized
+                }
+            }
 
             val newClip = AudioClip(
                 name = "Mic Take ${armedTrack.clips.size + 1}",
-                sourcePath = "take_wav",
-                sourceStartFrame = 0L,
-                lengthFrames = framesRecorded,
+                sourcePath = sourcePath,
+                sourceStartFrame = if (punchIn != null) (punchIn - currentRecordingStartFrame + latencyFrames).coerceAtLeast(0L) else 0L,
+                lengthFrames = takeLength,
                 timelineStartFrame = alignedTimelineStart,
                 trackIndex = armedTrack.index
             )
@@ -696,17 +871,149 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             val updatedClips = armedTrack.clips + newClip
             val newTracks = _session.value.tracks.map { if (it.index == armedTrack.index) it.copy(clips = updatedClips) else it }
             _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-            _uiState.update { it.copy(statusMessage = "Take recorded (${framesRecorded / sampleRate}s) with ${_session.value.latencyOffsetMs}ms latency compensation.") }
+            requestJournalWrite(_session.value)
+            scheduleRebuildTrack(armedTrack.index)
+            _uiState.update { it.copy(statusMessage = "Take recorded (${String.format("%.2f", framesRecorded.toFloat() / sampleRate)}s) with ${String.format("%.1f", _session.value.latencyOffsetMs)}ms latency compensation.") }
+        }
+    }
+
+    // Overdubbing: punch in / punch out points
+    fun setPunchIn() {
+        _uiState.update { it.copy(punchInFrame = it.playheadFrame, statusMessage = "Punch IN set at ${it.playheadFrame} frames") }
+    }
+
+    fun setPunchOut() {
+        val pi = _uiState.value.punchInFrame
+        val po = _uiState.value.playheadFrame
+        if (pi != null && po <= pi) {
+            _uiState.update { it.copy(statusMessage = "Punch OUT must be after Punch IN.") }
+            return
+        }
+        _uiState.update { it.copy(punchOutFrame = po, statusMessage = "Punch OUT set at $po frames") }
+    }
+
+    fun clearPunchPoints() {
+        _uiState.update { it.copy(punchInFrame = null, punchOutFrame = null, statusMessage = "Punch points cleared.") }
+    }
+
+    fun toggleInputMonitoring() {
+        val next = !_uiState.value.isInputMonitoringEnabled
+        _uiState.update { it.copy(isInputMonitoringEnabled = next, statusMessage = if (next) "Input monitoring ON" else "Input monitoring OFF") }
+    }
+
+    // A/B reference track: load a real song for comparison and auto-match
+    fun loadReferenceTrack(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(statusMessage = "Loading reference track...") }
+            val result = AudioFileImporter.importAudioUri(getApplication(), uri, targetTrackIndex = -1, targetTimelineStartFrame = 0L)
+            if (result != null) {
+                // Store reference samples in a dedicated slot (track index 16 is virtual)
+                // We reuse trackAudioBuffers[0]? No � store in a separate field.
+                referenceTrackSamples = result.samples
+                referenceTrackName = result.originalFileName
+                _uiState.update { it.copy(statusMessage = "Reference loaded: ${result.originalFileName}. Press A/B to compare.") }
+            } else {
+                _uiState.update { it.copy(statusMessage = "Could not decode reference track.") }
+            }
+        }
+    }
+
+    fun toggleAbComparison() {
+        val next = !_uiState.value.isAbComparing
+        _uiState.update { it.copy(isAbComparing = next, statusMessage = if (next) "A/B comparison ON" else "A/B comparison OFF") }
+    }
+
+    fun matchToReference() {
+        val ref = referenceTrackSamples ?: return
+        viewModelScope.launch(Dispatchers.Default) {
+            // Measure reference loudness (RMS)
+            var refSum = 0.0
+            for (s in ref) refSum += s * s
+            val refRms = kotlin.math.sqrt(refSum / ref.size).toFloat().coerceAtLeast(1e-6f)
+            val refDb = 20f * kotlin.math.log10(refRms)
+
+            // Measure current mix loudness
+            val mixSize = trackAudioBuffers.sumOf { it.size }
+            val mix = FloatArray(mixSize)
+            var mixOff = 0
+            for (b in trackAudioBuffers) { System.arraycopy(b, 0, mix, mixOff, b.size); mixOff += b.size }
+            var mixSum = 0.0
+            for (s in mix) mixSum += s * s
+            val mixRms = kotlin.math.sqrt(mixSum / mix.size.coerceAtLeast(1)).toFloat().coerceAtLeast(1e-6f)
+            val mixDb = 20f * kotlin.math.log10(mixRms)
+
+            val gainDb = (refDb - mixDb).coerceIn(-12f, 12f)
+            val before = _session.value.masterGainDb
+            _session.update { it.copy(masterGainDb = (it.masterGainDb + gainDb).coerceIn(-24f, 24f)) }
+            playbackEngine.commandQueue.enqueue(AudioEngineCommand.SetMasterGain(_session.value.masterGainDb))
+            _uiState.update { it.copy(statusMessage = "Matched to reference: ${String.format("%.1f", gainDb)} dB gain applied.") }
         }
     }
 
     fun runLatencyCalibration() {
-        viewModelScope.launch(Dispatchers.Default) {
-            _uiState.update { it.copy(statusMessage = "Calibrating audio latency offset...") }
-            val referenceChirp = WavAudioIO.generateTestSignal("impulse", 512, sampleRate)
-            val measuredOffset = LatencyCalibrator.calculateLatencyOffsetMs(referenceChirp, referenceChirp, sampleRate)
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(statusMessage = "Calibrating audio latency offset (loopback)...") }
+            val takesDir = File(getApplication<Application>().filesDir, "takes").apply { mkdirs() }
+            val captureFile = File(takesDir, "latency_capture.wav")
+            val chirpStereo = WavAudioIO.generateTestSignal("impulse", 512, sampleRate)
+            val chirpMono = FloatArray(512) { chirpStereo[it * 2] }
+
+            val recorder = AudioRecorder(sampleRate)
+            val started = recorder.startRecording(captureFile)
+            if (!started) {
+                _uiState.update { it.copy(statusMessage = "Calibration failed: microphone unavailable.") }
+                return@launch
+            }
+
+            // Let the recorder settle before playing the impulse
+            delay(250)
+
+            try {
+                val minBuf = android.media.AudioTrack.getMinBufferSize(
+                    sampleRate,
+                    android.media.AudioFormat.CHANNEL_OUT_STEREO,
+                    android.media.AudioFormat.ENCODING_PCM_16BIT
+                )
+                val track = android.media.AudioTrack.Builder()
+                    .setAudioAttributes(
+                        android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        android.media.AudioFormat.Builder()
+                            .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(sampleRate)
+                            .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_STEREO)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(Math.max(minBuf, chirpStereo.size * 2))
+                    .setTransferMode(android.media.AudioTrack.MODE_STREAM)
+                    .build()
+                val pcm = ShortArray(chirpStereo.size)
+                for (i in chirpStereo.indices) {
+                    pcm[i] = (chirpStereo[i] * 32767f).toInt().coerceIn(-32768, 32767).toShort()
+                }
+                track.write(pcm, 0, pcm.size)
+                track.play()
+                delay(1200)
+                track.stop()
+                track.release()
+            } catch (e: Exception) {
+                // Hardware unavailable; fall back to baseline offset
+            }
+
+            recorder.stopRecording()
+
+            val wav = WavAudioIO.readWavFile(captureFile)
+            val measuredOffset = if (wav != null) {
+                val capturedMono = if (wav.channels == 2) FloatArray(wav.samples.size / 2) { wav.samples[it * 2] } else wav.samples
+                LatencyCalibrator.calculateLatencyOffsetMs(chirpMono, capturedMono, sampleRate)
+            } else 32.5f
+
             _session.update { it.copy(latencyOffsetMs = measuredOffset) }
-            _uiState.update { it.copy(statusMessage = "Latency calibrated: ${String.format("%.1f", measuredOffset)} ms") }
+            _uiState.update { it.copy(statusMessage = "Latency calibrated: ${String.format("%.1f", measuredOffset)} ms (loopback)") }
         }
     }
 
@@ -731,6 +1038,9 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     fun updateSettings(newSettings: DawSettings) {
         _settings.value = newSettings
         _session.update { it.copy(latencyOffsetMs = newSettings.latencyCompensationMs) }
+        // Propagate buffer size + metronome to the audio engine thread-safely
+        playbackEngine.commandQueue.enqueue(AudioEngineCommand.SetBufferSize(newSettings.bufferSize.frames))
+        playbackEngine.commandQueue.enqueue(AudioEngineCommand.SetClickTrack(newSettings.metronomeEnabled, _session.value.tempoBpm, newSettings.metronomeVolumeDb))
         _uiState.update { it.copy(statusMessage = "Studio settings updated (${newSettings.bufferSize.label})") }
     }
 
@@ -782,7 +1092,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                     revision = _session.value.revision + 1
                 )
                 _session.value = newSession
-                persistence.writeCrashRecoveryJournal(newSession)
+                requestJournalWrite(newSession)
 
                 refreshAudioAnalysis()
                 _uiState.update { it.copy(statusMessage = "Imported \"${result.originalFileName}\" into Track ${targetTrackIndex + 1}!") }
@@ -844,7 +1154,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
         _session.value = updatedSession
         playbackEngine.syncFromProject(updatedSession)
-        persistence.writeCrashRecoveryJournal(updatedSession)
+        requestJournalWrite(updatedSession)
 
         _uiState.update {
             it.copy(
@@ -1077,20 +1387,37 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             val exportDir = File(getApplication<Application>().filesDir, "exports").apply { mkdirs() }
             val outFile = File(exportDir, "PulseStudio_${System.currentTimeMillis()}${format.extension}")
 
-            val ok = if (format == com.example.audio.engine.ExportFormat.AAC_320KBPS) {
-                com.example.audio.engine.OfflineRenderer.renderSessionToAac(
-                    project = _session.value,
-                    trackBuffers = trackAudioBuffers,
-                    outputFile = outFile,
-                    onProgress = { p -> _uiState.update { it.copy(exportProgress = p) } }
-                )
-            } else {
-                com.example.audio.engine.OfflineRenderer.renderSessionToWav(
-                    project = _session.value,
-                    trackBuffers = trackAudioBuffers,
-                    outputFile = outFile,
-                    onProgress = { p -> _uiState.update { it.copy(exportProgress = p) } }
-                )
+            val ok = when (format) {
+                com.example.audio.engine.ExportFormat.AAC_320KBPS ->
+                    com.example.audio.engine.OfflineRenderer.renderSessionToAac(
+                        project = _session.value,
+                        trackBuffers = trackAudioBuffers,
+                        outputFile = outFile,
+                        onProgress = { p -> _uiState.update { it.copy(exportProgress = p) } }
+                    )
+                com.example.audio.engine.ExportFormat.MP3_320KBPS -> {
+                    com.example.audio.engine.OfflineRenderer.renderSessionToMp3(
+                        project = _session.value,
+                        trackBuffers = trackAudioBuffers,
+                        outputFile = outFile,
+                        onProgress = { p -> _uiState.update { it.copy(exportProgress = p) } }
+                    )
+                }
+                com.example.audio.engine.ExportFormat.FLAC_LOSSLESS -> {
+                    com.example.audio.engine.OfflineRenderer.renderSessionToFlac(
+                        project = _session.value,
+                        trackBuffers = trackAudioBuffers,
+                        outputFile = outFile,
+                        onProgress = { p -> _uiState.update { it.copy(exportProgress = p) } }
+                    )
+                }
+                else ->
+                    com.example.audio.engine.OfflineRenderer.renderSessionToWav(
+                        project = _session.value,
+                        trackBuffers = trackAudioBuffers,
+                        outputFile = outFile,
+                        onProgress = { p -> _uiState.update { it.copy(exportProgress = p) } }
+                    )
             }
 
             if (ok) {
@@ -1103,6 +1430,28 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } else {
                 _uiState.update { it.copy(statusMessage = "Export failed.") }
+            }
+        }
+    }
+
+    fun renderStemsExport(
+        dispatcher: CoroutineDispatcher = Dispatchers.IO
+    ) {
+        viewModelScope.launch(dispatcher) {
+            _uiState.update { it.copy(exportProgress = 0.05f, statusMessage = "Rendering stems...") }
+            val exportDir = File(getApplication<Application>().filesDir, "exports/stems_${System.currentTimeMillis()}").apply { mkdirs() }
+            val files = com.example.audio.engine.OfflineRenderer.renderStemsToWav(
+                project = _session.value,
+                trackBuffers = trackAudioBuffers,
+                outputDir = exportDir,
+                bitsPerSample = 24
+            )
+            _uiState.update {
+                it.copy(
+                    exportProgress = 1.0f,
+                    exportedFile = files.firstOrNull(),
+                    statusMessage = "Exported ${files.size} stems to ${exportDir.name}"
+                )
             }
         }
     }

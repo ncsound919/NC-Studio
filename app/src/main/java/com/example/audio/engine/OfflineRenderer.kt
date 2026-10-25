@@ -1,6 +1,9 @@
 package com.example.audio.engine
 
+import com.example.audio.dsp.AutoPitchProcessor
+import com.example.audio.dsp.AutomationInterpolator
 import com.example.audio.dsp.FourBandEq
+import com.example.audio.dsp.NoiseReductionProcessor
 import com.example.audio.dsp.PanLaw
 import com.example.audio.dsp.PeakLimiter
 import com.example.audio.dsp.SchroederReverb
@@ -11,9 +14,11 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.pow
 
-enum class ExportFormat(val displayName: String, val extension: String, val description: String) {
-    WAV_24BIT("WAV 24-bit Studio PCM", ".wav", "Uncompressed studio master for Pro Tools / DAW mixing"),
-    AAC_320KBPS("Pro Tools AAC / M4A (320 kbps)", ".m4a", "High-bitrate AAC compressed audio for quick DAW session uploads")
+enum class ExportFormat(val displayName: String, val extension: String, val description: String, val mimeType: String) {
+    WAV_24BIT("WAV 24-bit Studio PCM", ".wav", "Uncompressed studio master for Pro Tools / DAW mixing", "audio/wav"),
+    AAC_320KBPS("Pro Tools AAC / M4A (320 kbps)", ".m4a", "High-bitrate AAC compressed audio for quick DAW session uploads", "audio/mp4"),
+    MP3_320KBPS("MP3 320 kbps", ".mp3", "Universal MP3 for sharing and streaming", "audio/mpeg"),
+    FLAC_LOSSLESS("FLAC Lossless", ".flac", "Lossless compressed master for archival", "audio/flac")
 }
 
 /**
@@ -41,19 +46,34 @@ object OfflineRenderer {
     fun renderSessionToPcmBuffer(
         project: ProjectSession,
         trackBuffers: Array<FloatArray>,
-        onProgress: (Float) -> Unit = {}
+        onProgress: (Float) -> Unit = {},
+        normalize: Boolean = false,
+        targetPeakDb: Float = -1.0f
     ): FloatArray {
         val sampleRate = project.sampleRate
         val totalFrames = project.totalLengthFrames.toInt().coerceAtLeast(sampleRate * 2)
         val interleavedOutput = FloatArray(totalFrames * 2)
 
         val trackCount = project.tracks.size.coerceAtLeast(16)
+
+        // Preprocess track buffers: apply AutoPitch where enabled
+        val renderBuffers = trackBuffers.mapIndexed { idx, buf ->
+            val trk = project.tracks.getOrNull(idx)
+            if (trk != null && trk.autoPitchConfig.enabled) {
+                val ap = AutoPitchProcessor(sampleRate.toFloat())
+                ap.configure(true, trk.autoPitchConfig.correctionStrength)
+                ap.processBuffer(buf)
+            } else buf.copyOf()
+        }.toTypedArray()
+        val paddedBuffers = Array(trackCount) { i -> if (i < renderBuffers.size) renderBuffers[i] else FloatArray(0) }
+
         val trackEqs = Array(trackCount) { FourBandEq(sampleRate.toFloat()) }
         val trackSaturators = Array(trackCount) { com.example.audio.dsp.SaturationProcessor() }
         val trackCompressors = Array(trackCount) { StereoCompressor(sampleRate.toFloat()) }
         val trackChoruses = Array(trackCount) { com.example.audio.dsp.StereoChorusProcessor(sampleRate.toFloat()) }
         val trackDelays = Array(trackCount) { com.example.audio.dsp.DuckingDelayProcessor(sampleRate.toFloat()) }
         val trackLimiters = Array(trackCount) { com.example.audio.dsp.ChannelLimiter(sampleRate.toFloat()) }
+        val trackNoiseReductions = Array(trackCount) { NoiseReductionProcessor(sampleRate.toFloat()) }
         val masterReverb = SchroederReverb(sampleRate.toFloat())
         val masterLimiter = PeakLimiter(sampleRate.toFloat())
 
@@ -69,12 +89,14 @@ object OfflineRenderer {
                 trackChoruses[t].configure(trk.chorusConfig)
                 trackDelays[t].configure(trk.delayConfig)
                 trackLimiters[t].configure(trk.limiterConfig)
+                trackNoiseReductions[t].configure(trk.noiseReductionConfig.enabled, trk.noiseReductionConfig.thresholdDb, trk.noiseReductionConfig.reductionDb)
             }
         }
 
         val masterGainLinear = project.masterGainLinear
         val blockSize = 512
         var frame = 0
+        val stageOut = FloatArray(2) // allocation-free DSP stage scratch
 
         while (frame < totalFrames) {
             val chunk = Math.min(blockSize, totalFrames - frame)
@@ -99,7 +121,7 @@ object OfflineRenderer {
                     val isPlayable = if (anySolo) trk.isSoloed else !trk.isMuted
                     if (!isPlayable) continue
 
-                    val buf = trackBuffers[t]
+                    val buf = paddedBuffers[t]
                     var rawL = 0.0f
                     var rawR = 0.0f
                     val sampleIdx = currentFrame * 2
@@ -108,17 +130,22 @@ object OfflineRenderer {
                         rawR = buf[sampleIdx + 1]
                     }
 
-                    val (eqL, eqR) = trackEqs[t].processSample(rawL, rawR)
-                    val (satL, satR) = trackSaturators[t].processSample(eqL, eqR)
-                    val (compL, compR) = trackCompressors[t].processSample(satL, satR)
-                    val (choL, choR) = trackChoruses[t].processSample(compL, compR)
-                    val (dlyL, dlyR) = trackDelays[t].processSample(choL, choR)
-                    val (limL, limR) = trackLimiters[t].processSample(dlyL, dlyR)
+                    trackEqs[t].processSampleInto(rawL, rawR, stageOut)
+                    trackNoiseReductions[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
+                    trackSaturators[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
+                    trackCompressors[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
+                    trackChoruses[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
+                    trackDelays[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
+                    trackLimiters[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
 
-                    val (panL, panR) = PanLaw.calculateGains(trk.pan)
-                    val gainLinear = trk.gainLinear
-                    val processedL = limL * gainLinear * panL
-                    val processedR = limR * gainLinear * panR
+                    val autoGainDb = trk.automationLanes.firstOrNull { it.enabled && it.parameter == "gainDb" }
+                        ?.let { AutomationInterpolator.valueAt(it.points, currentFrame.toLong(), trk.gainDb) } ?: trk.gainDb
+                    val autoPan = trk.automationLanes.firstOrNull { it.enabled && it.parameter == "pan" }
+                        ?.let { AutomationInterpolator.valueAt(it.points, currentFrame.toLong(), trk.pan) } ?: trk.pan
+                    val (panL, panR) = PanLaw.calculateGains(autoPan)
+                    val gainLinear = if (autoGainDb <= -60f) 0f else Math.pow(10.0, (autoGainDb / 20.0).toDouble()).toFloat()
+                    val processedL = stageOut[0] * gainLinear * panL
+                    val processedR = stageOut[1] * gainLinear * panR
 
                     mixL += processedL
                     mixR += processedR
@@ -127,14 +154,16 @@ object OfflineRenderer {
                 }
 
                 // Master reverb send return
-                val (revL, revR) = masterReverb.processSample(sendL, sendR)
-                mixL += revL
-                mixR += revR
+                masterReverb.processSampleInto(sendL, sendR, stageOut)
+                mixL += stageOut[0]
+                mixR += stageOut[1]
 
                 // Master gain & limiter
                 val preLimitL = mixL * masterGainLinear
                 val preLimitR = mixR * masterGainLinear
-                val (outL, outR) = masterLimiter.processSample(preLimitL, preLimitR)
+                masterLimiter.processSampleInto(preLimitL, preLimitR, stageOut)
+                val outL = stageOut[0]
+                val outR = stageOut[1]
 
                 val outIdx = (frame + i) * 2
                 interleavedOutput[outIdx] = outL
@@ -145,6 +174,16 @@ object OfflineRenderer {
             onProgress(frame.toFloat() / totalFrames)
         }
 
+        // Optional peak normalization to a target dBFS (default -1 dBFS)
+        if (normalize) {
+            var peak = 0.0f
+            for (s in interleavedOutput) { val a = kotlin.math.abs(s); if (a > peak) peak = a }
+            if (peak > 1e-6f) {
+                val targetLinear = 10.0.pow((targetPeakDb / 20.0)).toFloat()
+                val gain = (targetLinear / peak).coerceIn(0.1f, 10.0f)
+                for (i in interleavedOutput.indices) interleavedOutput[i] *= gain
+            }
+        }
         return interleavedOutput
     }
 
@@ -155,10 +194,12 @@ object OfflineRenderer {
         project: ProjectSession,
         trackBuffers: Array<FloatArray>,
         outputFile: File,
-        onProgress: (Float) -> Unit = {}
+        onProgress: (Float) -> Unit = {},
+        bitsPerSample: Int = 24,
+        normalize: Boolean = true
     ): Boolean {
-        val interleavedOutput = renderSessionToPcmBuffer(project, trackBuffers, onProgress)
-        WavAudioIO.writeWavFile(outputFile, interleavedOutput, channels = 2, sampleRate = project.sampleRate, bitsPerSample = 16)
+        val interleavedOutput = renderSessionToPcmBuffer(project, trackBuffers, onProgress, normalize = normalize)
+        WavAudioIO.writeWavFile(outputFile, interleavedOutput, channels = 2, sampleRate = project.sampleRate, bitsPerSample = bitsPerSample)
         return true
     }
 
@@ -169,10 +210,11 @@ object OfflineRenderer {
         project: ProjectSession,
         trackBuffers: Array<FloatArray>,
         outputFile: File,
-        onProgress: (Float) -> Unit = {}
+        onProgress: (Float) -> Unit = {},
+        normalize: Boolean = true
     ): Boolean {
         val sampleRate = project.sampleRate
-        val pcmFloat = renderSessionToPcmBuffer(project, trackBuffers, onProgress)
+        val pcmFloat = renderSessionToPcmBuffer(project, trackBuffers, onProgress, normalize = normalize)
 
         val pcmBytes = ByteArray(pcmFloat.size * 2)
         for (i in pcmFloat.indices) {
@@ -250,8 +292,199 @@ object OfflineRenderer {
             true
         } catch (e: Exception) {
             e.printStackTrace()
-            // Fallback to WAV
-            renderSessionToWav(project, trackBuffers, outputFile, onProgress)
+            // Fallback to WAV (16-bit for maximum compatibility of the fallback path)
+            renderSessionToWav(project, trackBuffers, outputFile, onProgress, bitsPerSample = 16)
+        }
+    }
+
+    /**
+     * Renders each track of a session to its own WAV file (stems export).
+     * Returns the list of written files.
+     */
+    fun renderStemsToWav(
+        project: ProjectSession,
+        trackBuffers: Array<FloatArray>,
+        outputDir: File,
+        bitsPerSample: Int = 24,
+        normalize: Boolean = true
+    ): List<File> {
+        outputDir.mkdirs()
+        val result = mutableListOf<File>()
+        val trackCount = project.tracks.size
+        for (t in 0 until trackCount) {
+            val trk = project.tracks[t]
+            // Mute all tracks except the target one
+            val stemProject = project.copy(tracks = project.tracks.mapIndexed { idx, track ->
+                if (idx == t) track else track.copy(isMuted = true)
+            })
+            // Pad to trackCount so indexing in renderer matches
+            val padded = Array(project.tracks.size) { i -> if (i == t && i < trackBuffers.size) trackBuffers[i] else FloatArray(0) }
+            val pcm = renderSessionToPcmBuffer(stemProject, padded, normalize = normalize)
+            val safeName = trk.name.replace(Regex("[^A-Za-z0-9_-]"), "_")
+            val outFile = File(outputDir, "stem_${t + 1}_${safeName}.wav")
+            WavAudioIO.writeWavFile(outFile, pcm, channels = 2, sampleRate = project.sampleRate, bitsPerSample = bitsPerSample)
+            result.add(outFile)
+        }
+        return result
+    }
+
+    /**
+     * Renders multi-track session to a FLAC file using MediaCodec when available,
+     * falling back to WAV on failure.
+     */
+    fun renderSessionToFlac(
+        project: ProjectSession,
+        trackBuffers: Array<FloatArray>,
+        outputFile: File,
+        onProgress: (Float) -> Unit = {},
+        normalize: Boolean = true
+    ): Boolean {
+        val pcmFloat = renderSessionToPcmBuffer(project, trackBuffers, onProgress, normalize = normalize)
+        val pcmBytes = ByteArray(pcmFloat.size * 2)
+        for (i in pcmFloat.indices) {
+            val sample = (pcmFloat[i].coerceIn(-1.0f, 1.0f) * 32767f).toInt().toShort()
+            pcmBytes[i * 2] = (sample.toInt() and 0xFF).toByte()
+            pcmBytes[i * 2 + 1] = ((sample.toInt() shr 8) and 0xFF).toByte()
+        }
+        return try {
+            val format = android.media.MediaFormat.createAudioFormat(android.media.MediaFormat.MIMETYPE_AUDIO_FLAC, project.sampleRate, 2)
+            format.setInteger(android.media.MediaFormat.KEY_BIT_RATE, 0) // lossless
+            val codec = android.media.MediaCodec.createEncoderByType(android.media.MediaFormat.MIMETYPE_AUDIO_FLAC)
+            codec.configure(format, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE)
+            codec.start()
+            val muxer = android.media.MediaMuxer(outputFile.absolutePath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            var trackIndex = -1
+            var muxerStarted = false
+            val bufferInfo = android.media.MediaCodec.BufferInfo()
+            var bytesRead = 0
+            var isInputEOS = false
+            var isOutputEOS = false
+            while (!isOutputEOS) {
+                if (!isInputEOS) {
+                    val inputBufIdx = codec.dequeueInputBuffer(10000L)
+                    if (inputBufIdx >= 0) {
+                        val inputBuf = codec.getInputBuffer(inputBufIdx)
+                        if (inputBuf != null) {
+                            inputBuf.clear()
+                            val bytesToCopy = kotlin.math.min(inputBuf.remaining(), pcmBytes.size - bytesRead)
+                            if (bytesToCopy > 0) {
+                                inputBuf.put(pcmBytes, bytesRead, bytesToCopy)
+                                val presentationTimeUs = (bytesRead / 4L) * 1000000L / project.sampleRate
+                                bytesRead += bytesToCopy
+                                codec.queueInputBuffer(inputBufIdx, 0, bytesToCopy, presentationTimeUs, 0)
+                            } else {
+                                codec.queueInputBuffer(inputBufIdx, 0, 0, 0L, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                isInputEOS = true
+                            }
+                        }
+                    }
+                }
+                val outputBufIdx = codec.dequeueOutputBuffer(bufferInfo, 10000L)
+                if (outputBufIdx == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val newFormat = codec.outputFormat
+                    trackIndex = muxer.addTrack(newFormat)
+                    muxer.start()
+                    muxerStarted = true
+                } else if (outputBufIdx >= 0) {
+                    val outputBuf = codec.getOutputBuffer(outputBufIdx)
+                    if (outputBuf != null && bufferInfo.size > 0 && muxerStarted) {
+                        outputBuf.position(bufferInfo.offset)
+                        outputBuf.limit(bufferInfo.offset + bufferInfo.size)
+                        muxer.writeSampleData(trackIndex, outputBuf, bufferInfo)
+                    }
+                    codec.releaseOutputBuffer(outputBufIdx, false)
+                    if ((bufferInfo.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        isOutputEOS = true
+                    }
+                }
+            }
+            codec.stop(); codec.release()
+            if (muxerStarted) { muxer.stop(); muxer.release() }
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            renderSessionToWav(project, trackBuffers, outputFile, onProgress, bitsPerSample = 24)
+            true
+        }
+    }
+
+    /**
+     * Renders multi-track session to an MP3 file using MediaCodec when available,
+     * falling back to WAV on failure.
+     */
+    fun renderSessionToMp3(
+        project: ProjectSession,
+        trackBuffers: Array<FloatArray>,
+        outputFile: File,
+        onProgress: (Float) -> Unit = {},
+        normalize: Boolean = true
+    ): Boolean {
+        val pcmFloat = renderSessionToPcmBuffer(project, trackBuffers, onProgress, normalize = normalize)
+        val pcmBytes = ByteArray(pcmFloat.size * 2)
+        for (i in pcmFloat.indices) {
+            val sample = (pcmFloat[i].coerceIn(-1.0f, 1.0f) * 32767f).toInt().toShort()
+            pcmBytes[i * 2] = (sample.toInt() and 0xFF).toByte()
+            pcmBytes[i * 2 + 1] = ((sample.toInt() shr 8) and 0xFF).toByte()
+        }
+        return try {
+            val format = android.media.MediaFormat.createAudioFormat(android.media.MediaFormat.MIMETYPE_AUDIO_MPEG, project.sampleRate, 2)
+            format.setInteger(android.media.MediaFormat.KEY_BIT_RATE, 320000)
+            val codec = android.media.MediaCodec.createEncoderByType(android.media.MediaFormat.MIMETYPE_AUDIO_MPEG)
+            codec.configure(format, null, null, android.media.MediaCodec.CONFIGURE_FLAG_ENCODE)
+            codec.start()
+            val muxer = android.media.MediaMuxer(outputFile.absolutePath, android.media.MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            var trackIndex = -1
+            var muxerStarted = false
+            val bufferInfo = android.media.MediaCodec.BufferInfo()
+            var bytesRead = 0
+            var isInputEOS = false
+            var isOutputEOS = false
+            while (!isOutputEOS) {
+                if (!isInputEOS) {
+                    val inputBufIdx = codec.dequeueInputBuffer(10000L)
+                    if (inputBufIdx >= 0) {
+                        val inputBuf = codec.getInputBuffer(inputBufIdx)
+                        if (inputBuf != null) {
+                            inputBuf.clear()
+                            val bytesToCopy = kotlin.math.min(inputBuf.remaining(), pcmBytes.size - bytesRead)
+                            if (bytesToCopy > 0) {
+                                inputBuf.put(pcmBytes, bytesRead, bytesToCopy)
+                                val presentationTimeUs = (bytesRead / 4L) * 1000000L / project.sampleRate
+                                bytesRead += bytesToCopy
+                                codec.queueInputBuffer(inputBufIdx, 0, bytesToCopy, presentationTimeUs, 0)
+                            } else {
+                                codec.queueInputBuffer(inputBufIdx, 0, 0, 0L, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                isInputEOS = true
+                            }
+                        }
+                    }
+                }
+                val outputBufIdx = codec.dequeueOutputBuffer(bufferInfo, 10000L)
+                if (outputBufIdx == android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val newFormat = codec.outputFormat
+                    trackIndex = muxer.addTrack(newFormat)
+                    muxer.start()
+                    muxerStarted = true
+                } else if (outputBufIdx >= 0) {
+                    val outputBuf = codec.getOutputBuffer(outputBufIdx)
+                    if (outputBuf != null && bufferInfo.size > 0 && muxerStarted) {
+                        outputBuf.position(bufferInfo.offset)
+                        outputBuf.limit(bufferInfo.offset + bufferInfo.size)
+                        muxer.writeSampleData(trackIndex, outputBuf, bufferInfo)
+                    }
+                    codec.releaseOutputBuffer(outputBufIdx, false)
+                    if ((bufferInfo.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        isOutputEOS = true
+                    }
+                }
+            }
+            codec.stop(); codec.release()
+            if (muxerStarted) { muxer.stop(); muxer.release() }
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            renderSessionToWav(project, trackBuffers, outputFile, onProgress, bitsPerSample = 16)
+            true
         }
     }
 

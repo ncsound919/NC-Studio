@@ -545,21 +545,24 @@ fun TrackLane(
                         cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f)
                     )
 
-                    // Draw procedural waveform peaks
-                    val waveSteps = Math.max(10, (clipW / 3f).toInt())
+                    // Draw real waveform peaks derived from audio data
+                    val peaks = com.example.audio.engine.WaveformCache.get(clip.id)
+                    val waveSteps = if (peaks != null) peaks.size else Math.max(10, (clipW / 3f).toInt())
                     val centerY = laneHeight / 2f
-                    for (step in 0 until waveSteps) {
-                        val px = clipX + (step * (clipW / waveSteps))
-                        val freqFactor = (track.index + 1) * 0.4
-                        val heightNorm = (Math.abs(sin(step * freqFactor)) * 0.8f + 0.1f).toFloat() * clip.gainLinear.coerceIn(0.2f, 2.0f)
-                        val h = (laneHeight - 12f) * heightNorm
-
-                        drawLine(
-                            color = Color.White.copy(alpha = 0.85f),
-                            start = Offset(px, centerY - h / 2),
-                            end = Offset(px, centerY + h / 2),
-                            strokeWidth = 1.5f
-                        )
+                    if (peaks != null) {
+                        for (b in peaks.indices) {
+                            val px = clipX + (b.toFloat() / peaks.size) * clipW
+                            val minV = peaks[b][0]
+                            val maxV = peaks[b][1]
+                            val top = centerY - maxV.coerceIn(-1f, 1f) * (laneHeight - 12f) * 0.5f
+                            val bot = centerY - minV.coerceIn(-1f, 1f) * (laneHeight - 12f) * 0.5f
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.85f),
+                                start = Offset(px, top),
+                                end = Offset(px, bot),
+                                strokeWidth = 1.2f
+                            )
+                        }
                     }
 
                     // 1. Visual Fade-In Ramp Overlay

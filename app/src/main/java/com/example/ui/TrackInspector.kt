@@ -92,7 +92,9 @@ enum class StripModule(val title: String, val icon: ImageVector, val color: Colo
     CHORUS("Chorus / Doubler", Icons.Default.Waves, StudioPurple),
     DELAY("Ducking Delay", Icons.Default.HourglassBottom, Color(0xFF00E5FF)),
     LIMITER("Limiter", Icons.Default.Security, ClipRed),
-    REVERB("Reverb Send", Icons.Default.Waves, Color(0xFF00B0FF))
+    REVERB("Reverb Send", Icons.Default.Waves, Color(0xFF00B0FF)),
+    AUTOPITCH("AutoPitch", Icons.Default.AutoAwesome, StudioPurple),
+    NOISERED("Noise Red.", Icons.Default.Security, StudioAmber)
 }
 
 @Composable
@@ -106,6 +108,8 @@ fun TrackInspector(
     onUpdateDelay: (DuckingDelayConfig) -> Unit,
     onUpdateLimiter: (ChannelLimiterConfig) -> Unit,
     onUpdateReverbSend: (Float) -> Unit,
+    onUpdateAutoPitch: (com.example.audio.model.AutoPitchConfig) -> Unit = {},
+    onUpdateNoiseReduction: (com.example.audio.model.NoiseReductionConfig) -> Unit = {},
     masterReverb: ReverbConfig = ReverbConfig(),
     onUpdateMasterReverb: (ReverbConfig) -> Unit = {},
     onApplyPreset: (TrackPreset) -> Unit = {},
@@ -262,6 +266,8 @@ fun TrackInspector(
                     onUpdateSend = onUpdateReverbSend,
                     onUpdateMasterReverb = onUpdateMasterReverb
                 )
+                StripModule.AUTOPITCH -> AutoPitchModuleEditor(track.autoPitchConfig, onUpdateAutoPitch)
+                StripModule.NOISERED -> NoiseReductionModuleEditor(track.noiseReductionConfig, onUpdateNoiseReduction)
             }
         }
     }
@@ -1073,6 +1079,96 @@ fun ReverbSendModuleEditor(
                         valueFormatter = { "%.0f%%".format(it * 100f) }
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun AutoPitchModuleEditor(config: com.example.audio.model.AutoPitchConfig, onUpdate: (com.example.audio.model.AutoPitchConfig) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = StudioSurface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, StudioCardBorder)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("AUTO PITCH CORRECTION", color = StudioPurple, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text("Monophonic pitch correction to nearest semitone", color = TextMuted, fontSize = 9.sp)
+                }
+                AudioSwitchToggle(
+                    checked = config.enabled,
+                    onCheckedChange = { onUpdate(config.copy(enabled = it)) },
+                    label = "Pitch On",
+                    activeColor = StudioPurple
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            AudioRotaryKnob(
+                value = config.correctionStrength,
+                onValueChange = { onUpdate(config.copy(correctionStrength = it)) },
+                range = 0f..1f,
+                label = "Strength",
+                accentColor = StudioPurple,
+                defaultValue = 1.0f,
+                valueFormatter = { "${(it * 100).toInt()}%" }
+            )
+        }
+    }
+}
+
+@Composable
+fun NoiseReductionModuleEditor(config: com.example.audio.model.NoiseReductionConfig, onUpdate: (com.example.audio.model.NoiseReductionConfig) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = StudioSurface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, StudioCardBorder)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("NOISE REDUCTION", color = StudioAmber, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text("Spectral noise gate and reduction", color = TextMuted, fontSize = 9.sp)
+                }
+                AudioSwitchToggle(
+                    checked = config.enabled,
+                    onCheckedChange = { onUpdate(config.copy(enabled = it)) },
+                    label = "NR On",
+                    activeColor = StudioAmber
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                AudioRotaryKnob(
+                    value = config.thresholdDb,
+                    onValueChange = { onUpdate(config.copy(thresholdDb = it)) },
+                    range = -60f..-10f,
+                    label = "Thresh",
+                    accentColor = StudioAmber,
+                    defaultValue = -40f,
+                    valueFormatter = { "%.0fdB".format(it) }
+                )
+                AudioRotaryKnob(
+                    value = config.reductionDb,
+                    onValueChange = { onUpdate(config.copy(reductionDb = it)) },
+                    range = -24f..0f,
+                    label = "Reduction",
+                    accentColor = StudioAmber,
+                    defaultValue = -12f,
+                    valueFormatter = { "%.0fdB".format(it) }
+                )
             }
         }
     }

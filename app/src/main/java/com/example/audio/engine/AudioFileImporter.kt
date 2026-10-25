@@ -37,6 +37,7 @@ object AudioFileImporter {
         val fileName = getFileName(context, uri) ?: "imported_track.wav"
         val importsDir = File(context.filesDir, "imported").apply { mkdirs() }
         val destWav = File(importsDir, "track_${targetTrackIndex}_${UUID.randomUUID().toString().take(8)}.wav")
+        val targetSampleRate = 48000
 
         try {
             // First check if it's already a standard WAV file
@@ -52,19 +53,31 @@ object AudioFileImporter {
                     }
                     val wavInfo = WavAudioIO.readWavFile(destWav)
                     if (wavInfo != null) {
+                        // Normalize to session-rate stereo: prevents 44.1 kHz files from
+                        // playing pitch-shifted, and mono files from collapsing to half-width.
+                        val normalized = AudioResampler.normalizeToSessionStereo(
+                            samples = wavInfo.samples,
+                            srcChannels = wavInfo.channels,
+                            srcRate = wavInfo.sampleRate,
+                            dstRate = targetSampleRate
+                        )
+                        // Re-write the persisted file in canonical session format so
+                        // sessions can be restored without resampling again.
+                        WavAudioIO.writeWavFile(destWav, normalized, channels = 2, sampleRate = targetSampleRate, bitsPerSample = 16)
+                        val frames = (normalized.size / 2).toLong()
                         val clip = AudioClip(
                             id = UUID.randomUUID().toString(),
                             name = fileName.substringBeforeLast("."),
                             sourcePath = destWav.absolutePath,
                             sourceStartFrame = 0L,
-                            lengthFrames = wavInfo.totalFrames,
+                            lengthFrames = frames,
                             timelineStartFrame = targetTimelineStartFrame,
                             trackIndex = targetTrackIndex
                         )
                         return@withContext ImportResult(
                             clip = clip,
-                            samples = wavInfo.samples,
-                            sampleRate = wavInfo.sampleRate,
+                            samples = normalized,
+                            sampleRate = targetSampleRate,
                             originalFileName = fileName
                         )
                     }
@@ -72,11 +85,18 @@ object AudioFileImporter {
             }
 
             // Decode compressed audio (MP3, M4A, FLAC, OGG) using MediaExtractor + MediaCodec
-            val decodedSamples = decodeWithMediaCodec(context, uri) ?: return@withContext null
-            val targetSampleRate = 48000
-            WavAudioIO.writeWavFile(destWav, decodedSamples, channels = 2, sampleRate = targetSampleRate, bitsPerSample = 16)
+            val decoded = decodeWithMediaCodec(context, uri) ?: return@withContext null
+            // Normalize decoded audio (which arrives at its native rate / layout)
+            // to session-standard 48 kHz stereo before persisting.
+            val normalized = AudioResampler.normalizeToSessionStereo(
+                samples = decoded.samples,
+                srcChannels = decoded.channels,
+                srcRate = decoded.sampleRate,
+                dstRate = targetSampleRate
+            )
+            WavAudioIO.writeWavFile(destWav, normalized, channels = 2, sampleRate = targetSampleRate, bitsPerSample = 16)
 
-            val totalFrames = (decodedSamples.size / 2).toLong()
+            val totalFrames = (normalized.size / 2).toLong()
             val clip = AudioClip(
                 id = UUID.randomUUID().toString(),
                 name = fileName.substringBeforeLast("."),
@@ -89,7 +109,7 @@ object AudioFileImporter {
 
             ImportResult(
                 clip = clip,
-                samples = decodedSamples,
+                samples = normalized,
                 sampleRate = targetSampleRate,
                 originalFileName = fileName
             )
@@ -98,7 +118,17 @@ object AudioFileImporter {
         }
     }
 
-    private fun decodeWithMediaCodec(context: Context, uri: Uri): FloatArray? {
+    /**
+     * Raw decode result at the file's native rate/channel layout.
+     * Normalization to session format happens in [importAudioUri].
+     */
+    data class DecodedAudio(
+        val samples: FloatArray,
+        val sampleRate: Int,
+        val channels: Int
+    )
+
+    private fun decodeWithMediaCodec(context: Context, uri: Uri): DecodedAudio? {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(context, uri, null)
@@ -158,11 +188,9 @@ object AudioFileImporter {
                         shortBuf.get(shortArray)
 
                         if (channels == 1) {
-                            // Duplicate to stereo
+                            // Keep native mono layout; normalizeToSessionStereo handles upmix.
                             for (s in shortArray) {
-                                val floatVal = s / 32768.0f
-                                floatList.add(floatVal)
-                                floatList.add(floatVal)
+                                floatList.add(s / 32768.0f)
                             }
                         } else {
                             for (s in shortArray) {
@@ -183,7 +211,7 @@ object AudioFileImporter {
             codec.release()
             extractor.release()
 
-            return floatList.toFloatArray()
+            return DecodedAudio(floatList.toFloatArray(), sampleRate, channels)
         } catch (e: Exception) {
             extractor.release()
             return null

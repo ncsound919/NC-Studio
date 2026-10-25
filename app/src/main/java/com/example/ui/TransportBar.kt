@@ -66,6 +66,12 @@ fun TransportBar(
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     onCalibrateLatency: () -> Unit,
+    onSetPunchIn: () -> Unit = {},
+    onSetPunchOut: () -> Unit = {},
+    onClearPunch: () -> Unit = {},
+    onToggleAb: () -> Unit = {},
+    onLoadReference: () -> Unit = {},
+    onMatchToReference: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -192,6 +198,32 @@ fun TransportBar(
                             contentDescription = "Record",
                             tint = if (uiState.isRecording) Color.White else ClipRed
                         )
+                    }
+                }
+                // Overdubbing punch in/out + A/B reference controls
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    androidx.compose.material3.TextButton(onClick = onSetPunchIn) {
+                        Text("Punch In", color = if (uiState.punchInFrame != null) ElectricLime else TextMuted, fontSize = 11.sp)
+                    }
+                    androidx.compose.material3.TextButton(onClick = onSetPunchOut) {
+                        Text("Punch Out", color = if (uiState.punchOutFrame != null) ElectricLime else TextMuted, fontSize = 11.sp)
+                    }
+                    androidx.compose.material3.TextButton(onClick = onClearPunch) {
+                        Text("Clear Punch", color = TextMuted, fontSize = 11.sp)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    androidx.compose.material3.TextButton(onClick = onToggleAb) {
+                        Text(if (uiState.isAbComparing) "A/B: ON" else "A/B", color = if (uiState.isAbComparing) NeonCyan else TextMuted, fontSize = 11.sp)
+                    }
+                    androidx.compose.material3.TextButton(onClick = onLoadReference) {
+                        Text("Load Ref", color = TextMuted, fontSize = 11.sp)
+                    }
+                    androidx.compose.material3.TextButton(onClick = onMatchToReference) {
+                        Text("Match", color = TextMuted, fontSize = 11.sp)
                     }
                 }
 

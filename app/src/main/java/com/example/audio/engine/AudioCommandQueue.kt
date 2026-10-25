@@ -33,6 +33,15 @@ sealed interface AudioEngineCommand {
     data class SetMasterReverb(val config: ReverbConfig) : AudioEngineCommand
     data class SetLoopRange(val startFrame: Long, val endFrame: Long, val enabled: Boolean) : AudioEngineCommand
     data class SetLatencyOffset(val offsetMs: Float) : AudioEngineCommand
+    data class SetClickTrack(
+        val enabled: Boolean,
+        val bpm: Float,
+        val volumeDb: Float,
+        val beatsPerBar: Int = 4
+    ) : AudioEngineCommand
+
+    data class SetCountIn(val bpm: Float, val volumeDb: Float) : AudioEngineCommand
+    data class SetBufferSize(val frames: Int) : AudioEngineCommand
     data class BatchParameterSnapshot(
         val masterGainDb: Float,
         val tracksGainDb: FloatArray,

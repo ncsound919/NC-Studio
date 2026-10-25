@@ -122,6 +122,23 @@ data class AudioClip(
 }
 
 /**
+ * A single automation breakpoint.
+ */
+data class AutomationPoint(
+    val frame: Long,
+    val value: Float
+)
+
+/**
+ * Automation lane for a track parameter.
+ */
+data class AutomationLane(
+    val parameter: String, // "gainDb", "pan", etc.
+    val points: List<AutomationPoint> = emptyList(),
+    val enabled: Boolean = false
+)
+
+/**
  * Tape / Tube Saturation configuration.
  */
 data class SaturationConfig(
@@ -203,11 +220,52 @@ data class TrackData(
     val limiterConfig: ChannelLimiterConfig = ChannelLimiterConfig(),
     val resonanceSmootherConfig: ResonanceSmootherConfig = ResonanceSmootherConfig(),
     val vocalRiderConfig: VocalRiderConfig = VocalRiderConfig(),
-    val clips: List<AudioClip> = emptyList()
+    val autoPitchConfig: AutoPitchConfig = AutoPitchConfig(),
+    val noiseReductionConfig: NoiseReductionConfig = NoiseReductionConfig(),
+    val clips: List<AudioClip> = emptyList(),
+    val automationLanes: List<AutomationLane> = emptyList(),
+    // Group / bus routing
+    val outputBusId: String = "master",
+    val busIndex: Int = -1,
+    val outputBus: Int = -1,
+    // Sidechain routing (index of source track whose signal keys this track's dynamics)
+    val sidechainSourceIndex: Int = -1,
+    val sidechainSource: Int = -1,
+    val sidechainTrackIndex: Int = -1,
+    // Aux sends / returns
+    val sends: Map<String, Float> = emptyMap(),
+    val auxSends: Map<String, Float> = emptyMap(),
+    val sendLevels: List<Float> = emptyList(),
+    val reverbSend2Level: Float = 0.0f
 ) {
     val gainLinear: Float
         get() = if (gainDb <= -60f) 0f else Math.pow(10.0, (gainDb / 20.0)).toFloat()
 }
+
+/**
+ * A mix bus / group / aux send-return channel.
+ */
+data class BusData(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val name: String = "Bus",
+    val gainDb: Float = 0.0f,
+    val pan: Float = 0.0f,
+    val isMuted: Boolean = false,
+    val isSoloed: Boolean = false,
+    val reverbSendLevel: Float = 0.0f,
+    val outputBusId: String = "master"
+) {
+    val gainLinear: Float
+        get() = if (gainDb <= -60f) 0f else Math.pow(10.0, (gainDb / 20.0)).toFloat()
+}
+
+// Aliases for common naming conventions
+typealias AudioBus = BusData
+typealias MixBus = BusData
+typealias GroupBus = BusData
+typealias AuxBus = BusData
+typealias SendReturn = BusData
+typealias Bus = BusData
 
 /**
  * Audio feature telemetry snapshot per track.
@@ -277,7 +335,11 @@ data class ProjectSession(
     val latencyOffsetMs: Float = 32.5f,
     val masterLimiter: MasterLimiterConfig = MasterLimiterConfig(),
     val masterReverb: ReverbConfig = ReverbConfig(),
-    val tracks: List<TrackData> = emptyList()
+    val tracks: List<TrackData> = emptyList(),
+    val buses: List<BusData> = emptyList(),
+    val groups: List<BusData> = emptyList(),
+    val auxBuses: List<BusData> = emptyList(),
+    val sendReturns: List<BusData> = emptyList()
 ) {
     val masterGainLinear: Float
         get() = if (masterGainDb <= -60f) 0f else Math.pow(10.0, (masterGainDb / 20.0)).toFloat()
@@ -339,6 +401,23 @@ data class VocalRiderConfig(
     val maxGainDb: Float = +6.0f,   // Maximum upward riding boost
     val minGainDb: Float = -6.0f,   // Maximum downward riding cut
     val sensitivity: Float = 0.5f   // Riding response speed
+)
+
+/**
+ * AutoPitch / monophonic pitch correction configuration.
+ */
+data class AutoPitchConfig(
+    val enabled: Boolean = false,
+    val correctionStrength: Float = 1.0f
+)
+
+/**
+ * Noise reduction configuration.
+ */
+data class NoiseReductionConfig(
+    val enabled: Boolean = false,
+    val thresholdDb: Float = -40f,
+    val reductionDb: Float = -12f
 )
 
 /**
