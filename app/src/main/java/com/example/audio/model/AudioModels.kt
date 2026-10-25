@@ -1,0 +1,370 @@
+package com.example.audio.model
+
+import java.util.UUID
+
+/**
+ * Defines stem category classified for a track.
+ */
+enum class StemCategory(val displayName: String) {
+    UNKNOWN("Unassigned"),
+    VOCAL("Vocal"),
+    DRUMS("Drums"),
+    BASS("Bass"),
+    GUITAR("Guitar"),
+    KEYS("Keys / Synth"),
+    OTHER("Effects / Other")
+}
+
+/**
+ * Filter type for 4-band parametric EQ.
+ */
+enum class FilterType {
+    LOW_SHELF,
+    PEAKING,
+    HIGH_SHELF,
+    HIGH_PASS,
+    LOW_PASS
+}
+
+/**
+ * Single parametric EQ band configuration.
+ */
+data class EqBand(
+    val type: FilterType = FilterType.PEAKING,
+    val frequencyHz: Float = 1000f,
+    val gainDb: Float = 0f,
+    val qFactor: Float = 1.0f,
+    val enabled: Boolean = true
+)
+
+/**
+ * 4-Band Parametric EQ settings.
+ */
+data class EqConfig(
+    val enabled: Boolean = true,
+    val band1: EqBand = EqBand(FilterType.HIGH_PASS, 35f, 0f, 0.707f),
+    val band2: EqBand = EqBand(FilterType.PEAKING, 350f, 0f, 1.2f),
+    val band3: EqBand = EqBand(FilterType.PEAKING, 2500f, 0f, 1.2f),
+    val band4: EqBand = EqBand(FilterType.HIGH_SHELF, 8500f, 0f, 0.707f)
+)
+
+/**
+ * Stereo dynamic compressor configuration.
+ */
+data class CompressorConfig(
+    val enabled: Boolean = false,
+    val thresholdDb: Float = -16f,
+    val ratio: Float = 3.5f,
+    val attackMs: Float = 15f,
+    val releaseMs: Float = 120f,
+    val kneeWidthDb: Float = 4f,
+    val makeupGainDb: Float = 2f
+)
+
+/**
+ * Master limiter configuration.
+ */
+data class MasterLimiterConfig(
+    val enabled: Boolean = true,
+    val ceilingDb: Float = -0.3f,
+    val thresholdDb: Float = -1.0f,
+    val releaseMs: Float = 50f
+)
+
+/**
+ * Master algorithmic reverb configuration.
+ */
+data class ReverbConfig(
+    val enabled: Boolean = true,
+    val roomSize: Float = 0.6f,
+    val damping: Float = 0.4f,
+    val stereoWidth: Float = 0.8f,
+    val returnLevel: Float = 0.7f,
+    val preDelayMs: Float = 20.0f,      // 0 to 200 ms pre-delay
+    val decayTimeSec: Float = 2.2f,     // 0.5 to 10.0 s RT60 decay
+    val lowCutHz: Float = 150.0f,       // Abbey Road low-cut filter (20 to 1000 Hz)
+    val highCutHz: Float = 8000.0f      // Damping high-cut filter (1000 to 20000 Hz)
+)
+
+/**
+ * Fade curve mathematics for smooth crossfades and non-destructive fades.
+ */
+enum class FadeCurve(val displayName: String) {
+    EQUAL_POWER("Equal Power (-3dB)"),
+    LINEAR("Linear"),
+    EXPONENTIAL("Exponential"),
+    S_CURVE("S-Curve")
+}
+
+/**
+ * Nondestructive Audio Clip referencing audio by frame offsets.
+ * Source media is never modified.
+ */
+data class AudioClip(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val sourcePath: String,
+    val sourceStartFrame: Long = 0L,
+    val lengthFrames: Long,
+    val timelineStartFrame: Long = 0L,
+    val gainLinear: Float = 1.0f,
+    val fadeInFrames: Long = 0L,
+    val fadeOutFrames: Long = 0L,
+    val fadeInCurve: FadeCurve = FadeCurve.EQUAL_POWER,
+    val fadeOutCurve: FadeCurve = FadeCurve.EQUAL_POWER,
+    val trackIndex: Int
+) {
+    val gainDb: Float
+        get() = if (gainLinear <= 0.0001f) -60f else (20.0 * Math.log10(gainLinear.toDouble())).toFloat()
+
+    fun withGainDb(db: Float): AudioClip =
+        copy(gainLinear = if (db <= -60f) 0f else Math.pow(10.0, db / 20.0).toFloat())
+}
+
+/**
+ * Tape / Tube Saturation configuration.
+ */
+data class SaturationConfig(
+    val enabled: Boolean = false,
+    val driveDb: Float = 0.0f, // 0 to +24 dB
+    val warmth: Float = 0.5f,  // Asymmetry & second harmonic warmth
+    val mix: Float = 1.0f      // Dry/Wet blend
+)
+
+/**
+ * Ping-Pong / Stereo Delay with sidechain ducking.
+ */
+data class DuckingDelayConfig(
+    val enabled: Boolean = false,
+    val timeMs: Float = 350f,             // Delay time in ms (e.g. 50ms - 1000ms)
+    val feedback: Float = 0.35f,          // 0.0 to 0.85
+    val mix: Float = 0.25f,               // Wet level
+    val duckingEnabled: Boolean = true,   // Ducks echoes while dry audio plays
+    val duckingThresholdDb: Float = -24f, // Dry signal threshold to trigger ducking
+    val duckingDepthDb: Float = -12f,     // Attenuation applied to delay tail while speaking
+    val duckingReleaseMs: Float = 180f    // Bloom return time after phrase stops
+)
+
+/**
+ * Per-channel brickwall limiter.
+ */
+data class ChannelLimiterConfig(
+    val enabled: Boolean = false,
+    val ceilingDb: Float = -0.5f,
+    val releaseMs: Float = 30f
+)
+
+/**
+ * Stereo Chorus / Flanger / Vocal Doubler effect.
+ * Creates lush, thick stereo soundscapes and adapts doubled vocal/synth layers.
+ */
+data class ChorusConfig(
+    val enabled: Boolean = false,
+    val rateHz: Float = 1.2f,        // Modulation LFO rate 0.1 to 8.0 Hz
+    val depthMs: Float = 3.5f,       // Delay modulation depth 0.5 to 12.0 ms
+    val feedback: Float = 0.20f,     // Resonance / shimmer feedback 0.0 to 0.7
+    val stereoSpread: Float = 0.85f, // Left/Right LFO phase offset for wide stereo
+    val mix: Float = 0.40f           // Wet/Dry blend
+)
+
+/**
+ * USB Audio Interface / DAC hardware information.
+ */
+data class UsbAudioDeviceInfo(
+    val id: Int,
+    val productName: String,
+    val typeName: String, // "USB Audio Interface", "USB Headset", etc.
+    val isInput: Boolean,
+    val isOutput: Boolean,
+    val sampleRates: List<Int> = listOf(44100, 48000, 96000),
+    val channelCounts: List<Int> = listOf(2),
+    val isSelected: Boolean = false
+)
+
+/**
+ * Audio Track in the 16-track DAW session.
+ */
+data class TrackData(
+    val index: Int,
+    val name: String,
+    val colorHex: Long,
+    val gainDb: Float = 0.0f,
+    val pan: Float = 0.0f, // -1.0 (Left) to +1.0 (Right), 0.0 = Center
+    val isMuted: Boolean = false,
+    val isSoloed: Boolean = false,
+    val isArmedForRecording: Boolean = false,
+    val reverbSendLevel: Float = 0.0f, // 0.0 to 1.0
+    val stemCategory: StemCategory = StemCategory.UNKNOWN,
+    val eqConfig: EqConfig = EqConfig(),
+    val saturationConfig: SaturationConfig = SaturationConfig(),
+    val compressorConfig: CompressorConfig = CompressorConfig(),
+    val chorusConfig: ChorusConfig = ChorusConfig(),
+    val delayConfig: DuckingDelayConfig = DuckingDelayConfig(),
+    val limiterConfig: ChannelLimiterConfig = ChannelLimiterConfig(),
+    val clips: List<AudioClip> = emptyList()
+) {
+    val gainLinear: Float
+        get() = if (gainDb <= -60f) 0f else Math.pow(10.0, (gainDb / 20.0)).toFloat()
+}
+
+/**
+ * Audio feature telemetry snapshot per track.
+ */
+data class TrackFeatures(
+    val trackIndex: Int,
+    val peakDb: Float = -60f,
+    val rmsDb: Float = -60f,
+    val integratedLufs: Float = -60f,
+    val subEnergy: Float = 0f,     // < 60 Hz
+    val lowEnergy: Float = 0f,     // 60 - 250 Hz
+    val midEnergy: Float = 0f,     // 250 - 2000 Hz
+    val highMidEnergy: Float = 0f, // 2000 - 6000 Hz
+    val airEnergy: Float = 0f,     // > 6000 Hz
+    val crestFactorDb: Float = 0f, // Peak - RMS
+    val spectralCentroidHz: Float = 1000f,
+    val classifiedStem: StemCategory = StemCategory.UNKNOWN,
+    val neuralResult: com.example.audio.ai.LocalNeuralInferenceResult? = null
+)
+
+/**
+ * Diagnostic metrics for audio engine health.
+ */
+data class AudioTelemetry(
+    val callbackMeanMs: Float = 0f,
+    val callbackP50Ms: Float = 0f,
+    val callbackP95Ms: Float = 0f,
+    val callbackP99Ms: Float = 0f,
+    val bufferUnderruns: Int = 0,
+    val cpuLoadPercent: Float = 0f,
+    val activeVoices: Int = 0,
+    val sampleRate: Int = 48000,
+    val bufferSizeFrames: Int = 512,
+    val latencyCalibrationMs: Float = 0f
+)
+
+/**
+ * Suggestion produced by AI Assistant.
+ */
+data class MixSuggestion(
+    val id: String = UUID.randomUUID().toString(),
+    val trackIndex: Int,
+    val trackName: String,
+    val category: String, // "Gain Staging", "Masking EQ", "Dynamic Control", "Mastering"
+    val parameter: String,
+    val currentValue: String,
+    val proposedValue: String,
+    val reason: String,
+    val confidence: Float, // 0.0 to 1.0
+    val targetRevision: Long
+)
+
+/**
+ * Complete versioned project session schema.
+ */
+data class ProjectSession(
+    val version: Int = 1,
+    val projectName: String = "Pulse Studio Project",
+    val revision: Long = 1L,
+    val sampleRate: Int = 48000,
+    val tempoBpm: Float = 120f,
+    val totalLengthFrames: Long = 48000L * 16L, // 16 seconds default loop
+    val masterGainDb: Float = 0.0f,
+    val loopEnabled: Boolean = true,
+    val loopStartFrame: Long = 0L,
+    val loopEndFrame: Long = 48000L * 16L,
+    val latencyOffsetMs: Float = 32.5f,
+    val masterLimiter: MasterLimiterConfig = MasterLimiterConfig(),
+    val masterReverb: ReverbConfig = ReverbConfig(),
+    val tracks: List<TrackData> = emptyList()
+) {
+    val masterGainLinear: Float
+        get() = if (masterGainDb <= -60f) 0f else Math.pow(10.0, (masterGainDb / 20.0)).toFloat()
+}
+
+/**
+ * Audio hardware buffer size preset with associated hardware latency.
+ */
+enum class BufferSizePreset(val frames: Int, val label: String, val latencyMs: Float) {
+    ULTRA_LOW(128, "128 frames (2.7 ms)", 2.67f),
+    LOW(256, "256 frames (5.3 ms)", 5.33f),
+    BALANCED(512, "512 frames (10.7 ms)", 10.67f),
+    RELAXED(1024, "1024 frames (21.3 ms)", 21.33f)
+}
+
+/**
+ * Metering ballistics standards.
+ */
+enum class MeterBallistics(val displayName: String, val description: String) {
+    PEAK_HOLD("True Peak", "Instantaneous sample peak with hold indicator"),
+    RMS("RMS Average", "Root Mean Square averaged over 300 ms"),
+    LUFS("EBU R128 / LUFS", "Perceptual loudness matching broadcast standards")
+}
+
+/**
+ * USB Audio Interface Routing Strategy.
+ */
+enum class UsbRoutingMode(val displayName: String, val description: String) {
+    AUTO_DETECT("Auto-Detect & Switch", "Automatically route playback to Type-C DAC when plugged in"),
+    ALWAYS_USB("Prefer USB Interface", "Always target external soundcard when available"),
+    BUILT_IN_ONLY("Force Built-in Audio", "Prevent USB hardware routing and use phone speaker/DAC")
+}
+
+/**
+ * Pro Tools style timeline edit mode.
+ */
+enum class EditMode(val displayName: String, val description: String) {
+    SLIP("Slip Mode", "Clips move and trim freely with sample-level precision"),
+    GRID("Grid Mode", "Clips snap strictly to bar and beat grid intervals")
+}
+
+/**
+ * Magnetic grid snapping resolution.
+ */
+enum class GridResolution(val displayName: String, val frames: Long) {
+    BAR("1 Bar", 19200L),
+    BEAT("1 Beat (1/4)", 4800L),
+    SIXTEENTH("1/16 Note", 1200L),
+    CLIP_BOUNDARIES("Clip Boundaries", 0L)
+}
+
+/**
+ * AI Mixing Studio sonic target profile.
+ */
+enum class AiMixProfile(val displayName: String, val description: String) {
+    BALANCED("Balanced Commercial", "Modern streaming master (-14 LUFS, clean stereo field)"),
+    WARM_VINTAGE("Warm Vintage Analog", "Gentle tube saturation, tape compression & high roll-off"),
+    PUNCHY_MODERN("Punchy Modern Club", "Aggressive transient snap, forward vocals, heavy sub bass"),
+    TRANSPARENT("Transparent Acoustic", "Subtle level balancing with non-destructive corrective EQ")
+}
+
+/**
+ * Global DAW configuration state.
+ */
+data class DawSettings(
+    val bufferSize: BufferSizePreset = BufferSizePreset.BALANCED,
+    val sampleRateHz: Int = 48000,
+    val latencyCompensationMs: Float = 32.5f,
+    val usbRoutingMode: UsbRoutingMode = UsbRoutingMode.AUTO_DETECT,
+    val meterBallistics: MeterBallistics = MeterBallistics.PEAK_HOLD,
+    val peakHoldDecayFast: Boolean = false,
+    val enableInputMonitoring: Boolean = false,
+    val countInBars: Int = 1,
+    val metronomeEnabled: Boolean = false,
+    val metronomeVolumeDb: Float = -6.0f,
+    val autoSaveMinutes: Int = 2,
+    val enableCrashRecovery: Boolean = true,
+    val enableHapticFeedback: Boolean = true,
+    val aiMixProfile: AiMixProfile = AiMixProfile.BALANCED,
+    val aiStemAutoClassification: Boolean = true,
+    val enableLocalNeuralModel: Boolean = true,
+    val localNeuralModelMode: String = "ON_DEVICE_QUANTIZED", // "ON_DEVICE_QUANTIZED", "SPECTRAL_RULES", "HYBRID_ENSEMBLE"
+    val customOllamaUrl: String = "http://10.0.2.2:11434",
+    val autoDetectLocalModelsOnStartup: Boolean = true,
+    val activeLocalModelName: String = "llama3.2:1b",
+    val activeLocalModelProvider: String = "Ollama REST",
+    val aiMaxEqBoostDb: Float = 6.0f,
+    val highResolutionWaveforms: Boolean = true,
+    val editMode: com.example.audio.model.EditMode = com.example.audio.model.EditMode.GRID,
+    val isMagneticSnapEnabled: Boolean = true,
+    val gridResolution: com.example.audio.model.GridResolution = com.example.audio.model.GridResolution.BEAT
+)

@@ -1,0 +1,482 @@
+package com.example.audio.ai
+
+import com.example.audio.model.EqBand
+import com.example.audio.model.FilterType
+import com.example.audio.model.MixSuggestion
+import com.example.audio.model.ProjectSession
+import com.example.audio.model.StemCategory
+import com.example.audio.model.TrackData
+import com.example.audio.model.TrackFeatures
+import kotlin.math.abs
+import kotlin.math.log10
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sqrt
+
+/**
+ * Feature extraction engine analyzing audio samples into spectral bands and dynamics.
+ */
+object AudioFeatureExtractor {
+
+    fun extractFeatures(trackIndex: Int, samples: FloatArray, sampleRate: Int = 48000): TrackFeatures {
+        if (samples.isEmpty()) return TrackFeatures(trackIndex = trackIndex)
+
+        val totalSamples = samples.size
+        var peakVal = 0.0f
+        var sumSquares = 0.0
+        var zeroCrossings = 0
+
+        // Spectral band energy accumulators using simplified multi-rate filtering / FFT bins
+        var subEnergyAcc = 0.0
+        var lowEnergyAcc = 0.0
+        var midEnergyAcc = 0.0
+        var highMidEnergyAcc = 0.0
+        var airEnergyAcc = 0.0
+
+        var prevSample = 0.0f
+        var weightedFreqSum = 0.0
+        var totalMagSum = 0.0
+
+        // Subsample for fast real-time analysis (process up to 48000 samples = 1 sec)
+        val step = max(1, totalSamples / 48000)
+        var count = 0
+
+        var i = 0
+        while (i < totalSamples) {
+            val s = samples[i]
+            val absS = abs(s)
+            if (absS > peakVal) peakVal = absS
+            sumSquares += (s * s)
+
+            if ((prevSample < 0 && s >= 0) || (prevSample >= 0 && s < 0)) {
+                zeroCrossings++
+            }
+
+            // Estimate instantaneous frequency difference (derivative)
+            val diff = abs(s - prevSample)
+            val approxFreq = (diff * sampleRate * 0.5f).coerceIn(20f, 20000f)
+
+            weightedFreqSum += approxFreq * absS
+            totalMagSum += absS
+
+            when {
+                approxFreq < 60f -> subEnergyAcc += (absS * 1.5)
+                approxFreq < 250f -> lowEnergyAcc += absS
+                approxFreq < 2000f -> midEnergyAcc += absS
+                approxFreq < 6000f -> highMidEnergyAcc += absS
+                else -> airEnergyAcc += absS
+            }
+
+            prevSample = s
+            count++
+            i += step
+        }
+
+        val rmsVal = if (count > 0) sqrt(sumSquares / count).toFloat() else 0.0f
+        val peakDb = if (peakVal > 1e-5f) 20f * log10(peakVal) else -80f
+        val rmsDb = if (rmsVal > 1e-5f) 20f * log10(rmsVal) else -80f
+        val crestFactorDb = max(0f, peakDb - rmsDb)
+
+        val totalBand = (subEnergyAcc + lowEnergyAcc + midEnergyAcc + highMidEnergyAcc + airEnergyAcc).coerceAtLeast(1e-5)
+        val subFrac = (subEnergyAcc / totalBand).toFloat()
+        val lowFrac = (lowEnergyAcc / totalBand).toFloat()
+        val midFrac = (midEnergyAcc / totalBand).toFloat()
+        val highMidFrac = (highMidEnergyAcc / totalBand).toFloat()
+        val airFrac = (airEnergyAcc / totalBand).toFloat()
+
+        val centroid = if (totalMagSum > 1e-5) (weightedFreqSum / totalMagSum).toFloat() else 1000f
+
+        val baseFeatures = TrackFeatures(
+            trackIndex = trackIndex,
+            peakDb = peakDb,
+            rmsDb = rmsDb,
+            integratedLufs = rmsDb - 0.7f,
+            subEnergy = subFrac,
+            lowEnergy = lowFrac,
+            midEnergy = midFrac,
+            highMidEnergy = highMidFrac,
+            airEnergy = airFrac,
+            crestFactorDb = crestFactorDb,
+            spectralCentroidHz = centroid
+        )
+
+        // On-Device Local Neural Model Inference
+        val neuralPrediction = LocalNeuralAudioModel.predict(baseFeatures)
+
+        val classified = if (neuralPrediction.confidence >= 0.30f) {
+            neuralPrediction.topPredictedStem
+        } else {
+            classifyStem(
+                subFrac = subFrac,
+                lowFrac = lowFrac,
+                midFrac = midFrac,
+                highMidFrac = highMidFrac,
+                airFrac = airFrac,
+                centroidHz = centroid,
+                crestFactorDb = crestFactorDb,
+                zeroCrossingRate = zeroCrossings.toFloat() / count.coerceAtLeast(1)
+            )
+        }
+
+        return baseFeatures.copy(
+            classifiedStem = classified,
+            neuralResult = neuralPrediction
+        )
+    }
+
+    private fun classifyStem(
+        subFrac: Float,
+        lowFrac: Float,
+        midFrac: Float,
+        highMidFrac: Float,
+        airFrac: Float,
+        centroidHz: Float,
+        crestFactorDb: Float,
+        zeroCrossingRate: Float
+    ): StemCategory {
+        return when {
+            subFrac + lowFrac > 0.55f && centroidHz < 350f -> StemCategory.BASS
+            crestFactorDb > 14f && (subFrac > 0.25f || airFrac > 0.35f) -> StemCategory.DRUMS
+            centroidHz in 700f..3500f && midFrac > 0.35f && crestFactorDb in 6f..14f -> StemCategory.VOCAL
+            midFrac + highMidFrac > 0.5f && centroidHz in 1000f..4500f -> StemCategory.GUITAR
+            airFrac > 0.3f && centroidHz > 4000f -> StemCategory.KEYS
+            else -> StemCategory.OTHER
+        }
+    }
+}
+
+/**
+ * Intelligent mixing rules, masking detector, reference matcher, and suggestion engine.
+ */
+object MixAdvisor {
+
+    data class MaskingClash(
+        val trackAIndex: Int,
+        val trackAName: String,
+        val trackBIndex: Int,
+        val trackBName: String,
+        val conflictFrequencyHz: Float,
+        val severity: Float, // 0.0 to 1.0
+        val suggestedCutDb: Float
+    )
+
+    data class ReferenceTarget(
+        val name: String,
+        val targetLufs: Float,
+        val subRatio: Float,
+        val midRatio: Float,
+        val airRatio: Float,
+        val description: String
+    )
+
+    val STANDARD_REFERENCES = listOf(
+        ReferenceTarget("Modern Pop / Streaming", -14.0f, 0.25f, 0.45f, 0.30f, "Clean balanced streaming master (Spotify / Apple Music)"),
+        ReferenceTarget("Punchy Hip-Hop / Trap", -10.0f, 0.40f, 0.35f, 0.25f, "Heavy low-end impact with crisp high-hat transients"),
+        ReferenceTarget("Warm Rock / Acoustic", -16.0f, 0.20f, 0.55f, 0.25f, "Natural dynamics with organic midrange punch"),
+        ReferenceTarget("EDM Club Banger", -8.5f, 0.38f, 0.32f, 0.30f, "Maximum commercial loudness with sidechain headroom")
+    )
+
+    /**
+     * Detects frequency masking clashes between tracks (e.g. Vocal vs Guitar, Kick vs Bass).
+     */
+    fun detectMaskingClashes(
+        tracks: List<TrackData>,
+        features: List<TrackFeatures>
+    ): List<MaskingClash> {
+        val clashes = mutableListOf<MaskingClash>()
+        for (i in features.indices) {
+            for (j in i + 1 until features.size) {
+                val fA = features[i]
+                val fB = features[j]
+                val trkA = tracks.find { it.index == fA.trackIndex } ?: continue
+                val trkB = tracks.find { it.index == fB.trackIndex } ?: continue
+
+                // Check Low-end collision (< 150 Hz)
+                if (fA.subEnergy > 0.25f && fB.subEnergy > 0.25f) {
+                    val severity = (fA.subEnergy * fB.subEnergy * 3.5f).coerceIn(0.2f, 0.95f)
+                    clashes.add(
+                        MaskingClash(
+                            trackAIndex = trkA.index,
+                            trackAName = trkA.name,
+                            trackBIndex = trkB.index,
+                            trackBName = trkB.name,
+                            conflictFrequencyHz = 80f,
+                            severity = severity,
+                            suggestedCutDb = -3.0f
+                        )
+                    )
+                }
+
+                // Check Mid-range vocal masking (1.5 kHz - 3.5 kHz)
+                val isVocalPair = trkA.stemCategory == StemCategory.VOCAL || trkB.stemCategory == StemCategory.VOCAL
+                if (isVocalPair && fA.midEnergy > 0.3f && fB.midEnergy > 0.3f) {
+                    val severity = (fA.midEnergy * fB.midEnergy * 2.8f).coerceIn(0.2f, 0.95f)
+                    clashes.add(
+                        MaskingClash(
+                            trackAIndex = trkA.index,
+                            trackAName = trkA.name,
+                            trackBIndex = trkB.index,
+                            trackBName = trkB.name,
+                            conflictFrequencyHz = 2400f,
+                            severity = severity,
+                            suggestedCutDb = -2.5f
+                        )
+                    )
+                }
+            }
+        }
+        return clashes
+    }
+
+    /**
+     * Generates a comprehensive set of verified, bounded mix suggestions.
+     */
+    fun generateSuggestions(
+        session: ProjectSession,
+        trackFeatures: List<TrackFeatures>
+    ): List<MixSuggestion> {
+        val suggestions = mutableListOf<MixSuggestion>()
+        val rev = session.revision
+
+        for (feat in trackFeatures) {
+            val track = session.tracks.find { it.index == feat.trackIndex } ?: continue
+
+            // 1. Gain Staging Rule: Target nominal -18 dBFS RMS / -6 dBFS Peak per track
+            if (feat.peakDb > -2.0f) {
+                val proposedGain = (track.gainDb - (feat.peakDb - (-6.0f))).coerceIn(-24.0f, 6.0f)
+                suggestions.add(
+                    MixSuggestion(
+                        trackIndex = track.index,
+                        trackName = track.name,
+                        category = "Gain Staging",
+                        parameter = "Fader Gain",
+                        currentValue = "${String.format("%.1f", track.gainDb)} dB",
+                        proposedValue = "${String.format("%.1f", proposedGain)} dB",
+                        reason = "Channel peak is ${String.format("%.1f", feat.peakDb)} dBFS. Lowering fader to preserve -6 dB headroom avoids mix bus saturation.",
+                        confidence = 0.92f,
+                        targetRevision = rev
+                    )
+                )
+            } else if (feat.rmsDb < -35.0f && feat.peakDb < -20.0f) {
+                val proposedGain = (track.gainDb + 6.0f).coerceIn(-24.0f, 6.0f)
+                suggestions.add(
+                    MixSuggestion(
+                        trackIndex = track.index,
+                        trackName = track.name,
+                        category = "Gain Staging",
+                        parameter = "Fader Gain",
+                        currentValue = "${String.format("%.1f", track.gainDb)} dB",
+                        proposedValue = "${String.format("%.1f", proposedGain)} dB",
+                        reason = "Channel is unusually quiet (${String.format("%.1f", feat.rmsDb)} dBFS RMS). Boost fader to sit in the mix pocket.",
+                        confidence = 0.85f,
+                        targetRevision = rev
+                    )
+                )
+            }
+
+            // 2. High-Pass Mud Rule: Non-bass tracks should high-pass sub-80Hz
+            if (feat.classifiedStem != StemCategory.BASS && feat.classifiedStem != StemCategory.DRUMS) {
+                if (feat.subEnergy > 0.08f && !track.eqConfig.band1.enabled) {
+                    suggestions.add(
+                        MixSuggestion(
+                            trackIndex = track.index,
+                            trackName = track.name,
+                            category = "Clean Mud",
+                            parameter = "High-Pass Filter 90 Hz",
+                            currentValue = "Off",
+                            proposedValue = "HPF @ 90Hz Enabled",
+                            reason = "Detected low-frequency rumble (${String.format("%.1f", feat.subEnergy * 100)}% sub energy) on ${feat.classifiedStem.displayName}. HPF tightens the bass pocket.",
+                            confidence = 0.94f,
+                            targetRevision = rev
+                        )
+                    )
+                }
+            }
+
+            // 3. Dynamic Control: Heavy crest factor on drums or vocals
+            if (feat.crestFactorDb > 16.0f && !track.compressorConfig.enabled) {
+                suggestions.add(
+                    MixSuggestion(
+                        trackIndex = track.index,
+                        trackName = track.name,
+                        category = "Dynamics Control",
+                        parameter = "Compressor 4:1",
+                        currentValue = "Bypassed",
+                        proposedValue = "Enabled (Thresh -18dB, 4:1, 15ms)",
+                        reason = "High dynamic spikes (${String.format("%.1f", feat.crestFactorDb)} dB crest factor). Gentle compression glues transients.",
+                        confidence = 0.88f,
+                        targetRevision = rev
+                    )
+                )
+            }
+        }
+
+        // 4. Masking Clashes suggestions
+        val clashes = detectMaskingClashes(session.tracks, trackFeatures)
+        for (clash in clashes) {
+            suggestions.add(
+                MixSuggestion(
+                    trackIndex = clash.trackBIndex,
+                    trackName = clash.trackBName,
+                    category = "Spectral Masking",
+                    parameter = "EQ Dip @ ${clash.conflictFrequencyHz.toInt()} Hz",
+                    currentValue = "0.0 dB",
+                    proposedValue = "${clash.suggestedCutDb} dB",
+                    reason = "Frequency clash with ${clash.trackAName} at ${clash.conflictFrequencyHz.toInt()} Hz. Dipping ${clash.suggestedCutDb} dB carves clarity.",
+                    confidence = 0.89f,
+                    targetRevision = rev
+                )
+            )
+        }
+
+        return suggestions
+    }
+
+    /**
+     * Applies a list of suggestions as one single atomic, undoable transaction.
+     */
+    fun applySuggestionsToSession(
+        session: ProjectSession,
+        suggestions: List<MixSuggestion>
+    ): ProjectSession {
+        var updatedTracks = session.tracks.toMutableList()
+
+        for (sug in suggestions) {
+            val idx = updatedTracks.indexOfFirst { it.index == sug.trackIndex }
+            if (idx == -1) continue
+            val trk = updatedTracks[idx]
+
+            when {
+                sug.parameter.contains("Fader Gain") -> {
+                    val gainVal = sug.proposedValue.replace("dB", "").trim().toFloatOrNull()
+                    if (gainVal != null) {
+                        updatedTracks[idx] = trk.copy(gainDb = gainVal.coerceIn(-60f, 6f))
+                    }
+                }
+                sug.parameter.contains("High-Pass") -> {
+                    val updatedEq = trk.eqConfig.copy(
+                        band1 = EqBand(FilterType.HIGH_PASS, 90f, 0f, 0.707f, enabled = true)
+                    )
+                    updatedTracks[idx] = trk.copy(eqConfig = updatedEq)
+                }
+                sug.parameter.contains("Compressor") -> {
+                    val updatedComp = trk.compressorConfig.copy(
+                        enabled = true,
+                        thresholdDb = -18f,
+                        ratio = 3.5f,
+                        attackMs = 15f,
+                        releaseMs = 120f,
+                        makeupGainDb = 2.0f
+                    )
+                    updatedTracks[idx] = trk.copy(compressorConfig = updatedComp)
+                }
+                sug.parameter.contains("EQ Dip") -> {
+                    val updatedEq = trk.eqConfig.copy(
+                        band2 = EqBand(FilterType.PEAKING, 2400f, -2.5f, 2.0f, enabled = true)
+                    )
+                    updatedTracks[idx] = trk.copy(eqConfig = updatedEq)
+                }
+            }
+        }
+
+        return session.copy(tracks = updatedTracks, revision = session.revision + 1)
+    }
+
+    /**
+     * Evaluates natural language mix requests into safe, bounded suggestions.
+     */
+    fun parseNaturalLanguageCommand(
+        prompt: String,
+        session: ProjectSession
+    ): List<MixSuggestion> {
+        val p = prompt.lowercase()
+        val suggestions = mutableListOf<MixSuggestion>()
+        val rev = session.revision
+
+        when {
+            p.contains("bright") || p.contains("air") || p.contains("sparkle") -> {
+                for (trk in session.tracks) {
+                    if (trk.stemCategory == StemCategory.VOCAL || trk.stemCategory == StemCategory.KEYS) {
+                        suggestions.add(
+                            MixSuggestion(
+                                trackIndex = trk.index,
+                                trackName = trk.name,
+                                category = "Tone Shaping",
+                                parameter = "High Shelf +2.5 dB @ 10 kHz",
+                                currentValue = "${trk.eqConfig.band4.gainDb} dB",
+                                proposedValue = "+2.5 dB",
+                                reason = "User requested brighter tone. Gentle high-shelf lift adds vocal presence and sheen.",
+                                confidence = 0.95f,
+                                targetRevision = rev
+                            )
+                        )
+                    }
+                }
+            }
+            p.contains("glue") || p.contains("punch") || p.contains("drum") -> {
+                for (trk in session.tracks) {
+                    if (trk.stemCategory == StemCategory.DRUMS) {
+                        suggestions.add(
+                            MixSuggestion(
+                                trackIndex = trk.index,
+                                trackName = trk.name,
+                                category = "Dynamic Glue",
+                                parameter = "Compressor 4:1",
+                                currentValue = if (trk.compressorConfig.enabled) "Active" else "Bypassed",
+                                proposedValue = "Enabled (Thresh -16dB, 4:1)",
+                                reason = "User requested drum glue. Snappy attack with medium release bonds kicks and snare.",
+                                confidence = 0.94f,
+                                targetRevision = rev
+                            )
+                        )
+                    }
+                }
+            }
+            p.contains("warm") || p.contains("analog") || p.contains("bass") -> {
+                for (trk in session.tracks) {
+                    if (trk.stemCategory == StemCategory.BASS) {
+                        suggestions.add(
+                            MixSuggestion(
+                                trackIndex = trk.index,
+                                trackName = trk.name,
+                                category = "Warmth",
+                                parameter = "Low Shelf +2.0 dB @ 100 Hz",
+                                currentValue = "${trk.eqConfig.band1.gainDb} dB",
+                                proposedValue = "+2.0 dB",
+                                reason = "User requested warmth. Boosting 100 Hz adds full-bodied harmonic weight to the bass.",
+                                confidence = 0.92f,
+                                targetRevision = rev
+                            )
+                        )
+                    }
+                }
+            }
+            p.contains("clean") || p.contains("mud") || p.contains("rumble") -> {
+                for (trk in session.tracks) {
+                    if (trk.stemCategory != StemCategory.BASS && trk.stemCategory != StemCategory.DRUMS) {
+                        suggestions.add(
+                            MixSuggestion(
+                                trackIndex = trk.index,
+                                trackName = trk.name,
+                                category = "Clean Mud",
+                                parameter = "High-Pass Filter 90 Hz",
+                                currentValue = "Bypassed",
+                                proposedValue = "Enabled @ 90 Hz",
+                                reason = "User requested mud cleanup. Cutting sub frequencies leaves clean room for 808s and kick.",
+                                confidence = 0.95f,
+                                targetRevision = rev
+                            )
+                        )
+                    }
+                }
+            }
+            else -> {
+                // Default intelligent mix balance
+                return generateSuggestions(session, session.tracks.map { trk ->
+                    TrackFeatures(trk.index, classifiedStem = trk.stemCategory, peakDb = -3.5f, rmsDb = -18.0f)
+                })
+            }
+        }
+        return suggestions
+    }
+}
