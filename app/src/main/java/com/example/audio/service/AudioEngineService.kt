@@ -58,7 +58,7 @@ class AudioEngineService : Service(), AudioManager.OnAudioFocusChangeListener {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val projectName = intent?.getStringExtra("PROJECT_NAME") ?: "Pulse DAW"
+        val projectName = intent?.getStringExtra("PROJECT_NAME") ?: "NC Studio"
         val isPlaying = intent?.getBooleanExtra("IS_PLAYING", false) ?: false
 
         try {
@@ -161,7 +161,7 @@ class AudioEngineService : Service(), AudioManager.OnAudioFocusChangeListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Pulse DAW Audio Engine",
+                "NC Studio Audio Engine",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Keeps audio playback alive in the background"

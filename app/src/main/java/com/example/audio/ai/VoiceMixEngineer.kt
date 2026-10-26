@@ -852,7 +852,7 @@ object MixEngineerBrain {
             "${track.index}. ${track.name} [${track.stemCategory.displayName}] gain=${track.gainDb}dB pan=${track.pan}"
         }
         return """
-            You are Pulse DAW's recording and mixing engineer. Convert the user's spoken request into JSON tool calls only. No prose, no markdown.
+            You are NC Studio's recording and mixing engineer. Convert the user's spoken request into JSON tool calls only. No prose, no markdown.
             Emit one flat JSON object per line, for example:
             {"tool":"setCompressor","trackIndex":"13","enabled":"true","type":"LA_2A","thresholdDb":"-20","ratio":"3"}
             Available tools:

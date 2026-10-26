@@ -186,7 +186,7 @@ fun StudioWhatsNewDialog(onDismiss: () -> Unit) {
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(stringResource(R.string.ui_what_s_new), color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
-                    Text("Pulse DAW $STUDIO_VERSION", color = TextMuted, fontSize = 11.sp)
+                    Text("NC Studio $STUDIO_VERSION", color = TextMuted, fontSize = 11.sp)
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))

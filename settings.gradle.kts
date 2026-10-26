@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Pulse DAW"
+rootProject.name = "NC Studio"
 
 include(":app")

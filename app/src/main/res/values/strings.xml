@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Pulse DAW</string>
+    <string name="app_name">NC Studio</string>
 
     <string name="tab_mixer">Mixer</string>
     <string name="tab_timeline">Timeline</string>
@@ -7,7 +7,7 @@
     <string name="tab_ai_studio">AI Studio</string>
     <string name="tab_settings">Settings</string>
 
-    <string name="pulse_daw">PULSE DAW</string>
+    <string name="pulse_daw">NC STUDIO</string>
     <string name="top_bar_meta">%1$d tracks • %2$d kHz</string>
     <string name="usb_audio_interface">USB audio interface</string>
     <string name="import_audio">Import audio</string>
@@ -159,7 +159,7 @@
     <string name="ui_probe">Probe</string>
     <string name="ui_probes_10_0_2_2_11434_and_local_rest_endpoints_f">Probes 10.0.2.2:11434 and local REST endpoints for small language models.</string>
     <string name="ui_professional_mix_presets">PROFESSIONAL MIX PRESETS</string>
-    <string name="ui_pulse_daw">Pulse DAW</string>
+    <string name="ui_pulse_daw">NC Studio</string>
     <string name="ui_pulseneural_v1_16x32x7">PulseNeural-v1 (16x32x7)</string>
     <string name="ui_quantization">Quantization</string>
     <string name="ui_record_a_take_with_the_red_button_or_import_a_st">Record a take with the red button, or import a stem from the top bar.</string>
@@ -176,7 +176,7 @@
     <string name="ui_runs_16x32x7_quantized_mlp_directly_on_device_cp">Runs 16x32x7 Quantized MLP directly on device CPU (~0.38ms). Zero internet needed.</string>
     <string name="ui_search_clips_or_tracks">Search clips or tracks</string>
     <string name="ui_select_destination_track_to_import_your_wav_mp3_">Select destination track to import your WAV, MP3, FLAC, or M4A audio stem:</string>
-    <string name="ui_select_how_pulse_daw_handles_external_usb_class_">Select how Pulse DAW handles external USB Class-Compliant audio interfaces and DACs.</string>
+    <string name="ui_select_how_pulse_daw_handles_external_usb_class_">Select how NC Studio handles external USB Class-Compliant audio interfaces and DACs.</string>
     <string name="ui_session_is_well_balanced_no_clipping_or_masking_">Session is well-balanced! No clipping or masking detected.</string>
     <string name="ui_setting">Setting</string>
     <string name="ui_share">Share</string>

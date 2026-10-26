@@ -24,7 +24,7 @@ class MainActivity : ComponentActivity() {
 
         // Start Foreground Service to maintain audio playback & handle audio focus
         val serviceIntent = Intent(this, AudioEngineService::class.java).apply {
-            putExtra("PROJECT_NAME", "Pulse DAW")
+            putExtra("PROJECT_NAME", "NC Studio")
         }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
