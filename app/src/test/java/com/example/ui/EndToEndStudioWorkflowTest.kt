@@ -38,6 +38,9 @@ class EndToEndStudioWorkflowTest {
 
     @Test
     fun testCompleteEndToEndProductionWorkflow() {
+        // The app ships with an empty session; install a take for timeline edits.
+        viewModel.installTestClip(0)
+
         // Step 1: Verify project session initialization (16 multi-tracks)
         val session = viewModel.session.value
         assertEquals("Session should have 16 tracks", 16, session.tracks.size)

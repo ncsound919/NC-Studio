@@ -48,6 +48,11 @@ class BiquadFilter(
                 b0 = ((1f + cosW0) / 2f) / a0; b1 = (-(1f + cosW0)) / a0; b2 = ((1f + cosW0) / 2f) / a0
                 a1 = (-2f * cosW0) / a0; a2 = (1f - alpha) / a0
             }
+            FilterType.LOW_PASS -> {
+                val a0 = 1f + alpha
+                b0 = ((1f - cosW0) / 2f) / a0; b1 = (1f - cosW0) / a0; b2 = ((1f - cosW0) / 2f) / a0
+                a1 = (-2f * cosW0) / a0; a2 = (1f - alpha) / a0
+            }
             FilterType.LOW_SHELF -> {
                 val a0 = (A + 1f) + (A - 1f) * cosW0 + 2f * sqrt(A) * alpha
                 b0 = A * ((A + 1f) - (A - 1f) * cosW0 + 2f * sqrt(A) * alpha) / a0
@@ -69,7 +74,6 @@ class BiquadFilter(
                 a1 = 2f * ((A - 1f) - (A + 1f) * cosW0) / a0
                 a2 = ((A + 1f) - (A - 1f) * cosW0 - 2f * sqrt(A) * alpha) / a0
             }
-            else -> { b0 = 1f; b1 = 0f; b2 = 0f; a1 = 0f; a2 = 0f }
         }
         if (!band.enabled) { b0 = 1f; b1 = 0f; b2 = 0f; a1 = 0f; a2 = 0f }
     }
@@ -93,6 +97,8 @@ class BiquadFilter(
 // FourBandEq
 // ============================================================
 class FourBandEq(sampleRate: Float = 48000f) {
+    private val highPassFilter = BiquadFilter(sampleRate)
+    private val lowPassFilter = BiquadFilter(sampleRate)
     private val filter1 = BiquadFilter(sampleRate)
     private val filter2 = BiquadFilter(sampleRate)
     private val filter3 = BiquadFilter(sampleRate)
@@ -102,7 +108,9 @@ class FourBandEq(sampleRate: Float = 48000f) {
         val out = FloatArray(2); processSampleInto(inL, inR, out); return Pair(out[0], out[1])
     }
     fun processSampleInto(inL: Float, inR: Float, out: FloatArray) {
-        filter1.processSampleInto(inL, inR, out)
+        highPassFilter.processSampleInto(inL, inR, out)
+        lowPassFilter.processSampleInto(out[0], out[1], out)
+        filter1.processSampleInto(out[0], out[1], out)
         filter2.processSampleInto(out[0], out[1], out)
         filter3.processSampleInto(out[0], out[1], out)
         filter4.processSampleInto(out[0], out[1], out)
@@ -110,11 +118,15 @@ class FourBandEq(sampleRate: Float = 48000f) {
     fun updateConfig(config: EqConfig) {
         eqConfig = config
         if (!config.enabled) {
+            highPassFilter.configure(EqBand(enabled = false))
+            lowPassFilter.configure(EqBand(enabled = false))
             filter1.configure(EqBand(enabled = false))
             filter2.configure(EqBand(enabled = false))
             filter3.configure(EqBand(enabled = false))
             filter4.configure(EqBand(enabled = false))
         } else {
+            highPassFilter.configure(config.highPass)
+            lowPassFilter.configure(config.lowPass)
             filter1.configure(config.band1)
             filter2.configure(config.band2)
             filter3.configure(config.band3)
@@ -122,10 +134,14 @@ class FourBandEq(sampleRate: Float = 48000f) {
         }
     }
     fun calculateTotalResponseDb(freq: Float): Float {
-        return filter1.responseAtFrequency(freq) + filter2.responseAtFrequency(freq) +
+        return highPassFilter.responseAtFrequency(freq) + lowPassFilter.responseAtFrequency(freq) +
+               filter1.responseAtFrequency(freq) + filter2.responseAtFrequency(freq) +
                filter3.responseAtFrequency(freq) + filter4.responseAtFrequency(freq)
     }
-    fun reset() { filter1.reset(); filter2.reset(); filter3.reset(); filter4.reset() }
+    fun reset() {
+        highPassFilter.reset(); lowPassFilter.reset()
+        filter1.reset(); filter2.reset(); filter3.reset(); filter4.reset()
+    }
 }
 
 // ============================================================
@@ -139,6 +155,7 @@ class StereoCompressor(private val sampleRate: Float) {
     var releaseMs = 100f
     var makeupGainDb = 0f
     var kneeWidthDb = 3f
+    var type = com.example.audio.model.CompressorType.VCA
     private var detectorState = 0f
     private var attackCoeff = exp(-1.0 / (10.0 * sampleRate / 1000.0)).toFloat()
     private var releaseCoeff = exp(-1.0 / (100.0 * sampleRate / 1000.0)).toFloat()
@@ -167,14 +184,22 @@ class StereoCompressor(private val sampleRate: Float) {
     }
     fun configure(config: CompressorConfig) {
         enabled = config.enabled
+        type = config.type
         thresholdDb = config.thresholdDb
         ratio = config.ratio
         attackMs = config.attackMs
         releaseMs = config.releaseMs
-        kneeWidthDb = config.kneeWidthDb
+        // The circuit model owns the knee shape. This keeps old sessions that
+        // only stored a knee value consistent with their selected compressor.
+        kneeWidthDb = when (type) {
+            com.example.audio.model.CompressorType.VCA -> config.kneeWidthDb
+            com.example.audio.model.CompressorType.LA_2A -> config.kneeWidthDb.coerceAtLeast(6f)
+            com.example.audio.model.CompressorType.FET_1176 -> 0f
+            com.example.audio.model.CompressorType.TUBE_TECH -> config.kneeWidthDb.coerceAtLeast(6f)
+        }
         makeupGainDb = config.makeupGainDb
-        attackCoeff = kotlin.math.exp(-1.0 / (attackMs * sampleRate / 1000.0)).toFloat()
-        releaseCoeff = kotlin.math.exp(-1.0 / (releaseMs * sampleRate / 1000.0)).toFloat()
+        attackCoeff = kotlin.math.exp(-1.0 / (attackMs.coerceAtLeast(0.05f) * sampleRate / 1000.0)).toFloat()
+        releaseCoeff = kotlin.math.exp(-1.0 / (releaseMs.coerceAtLeast(1f) * sampleRate / 1000.0)).toFloat()
     }
     fun reset() { detectorState = 0f; currentGainReductionDb = 0f }
 }
@@ -289,27 +314,71 @@ class SaturationProcessor {
     var driveLinear = 1f
     var warmth = 0f
     var mix = 0.5f
+    var type = com.example.audio.model.SaturationType.TAPE
+    private var tapeLpL = 0f
+    private var tapeLpR = 0f
+    private var ironLpL = 0f
+    private var ironLpR = 0f
+    private val tapeAlpha = 0.35f
+    private val ironAlpha = 0.06f
+
     fun processSample(inL: Float, inR: Float): Pair<Float, Float> {
         val out = FloatArray(2); processSampleInto(inL, inR, out); return Pair(out[0], out[1])
     }
     fun processSampleInto(inL: Float, inR: Float, out: FloatArray) {
         if (!enabled || (driveLinear <= 1.001f && warmth <= 0.01f)) { out[0] = inL; out[1] = inR; return }
-        val satL = saturate(inL * driveLinear, warmth)
-        val satR = saturate(inR * driveLinear, warmth)
-        out[0] = (inL * (1f - mix) + satL * mix).coerceIn(-1f, 1f)
-        out[1] = (inR * (1f - mix) + satR * mix).coerceIn(-1f, 1f)
+        val satL = saturate(inL * driveLinear, 0)
+        val satR = saturate(inR * driveLinear, 1)
+        val trim = 1f / (1f + (driveLinear - 1f) * 0.18f)
+        out[0] = (inL * (1f - mix) + satL * trim * mix).coerceIn(-1f, 1f)
+        out[1] = (inR * (1f - mix) + satR * trim * mix).coerceIn(-1f, 1f)
     }
-    private fun saturate(x: Float, warmth: Float): Float {
-        val k = warmth * 5f
-        return if (k < 0.01f) x.coerceIn(-1f, 1f) else kotlin.math.tanh(x.toDouble()).toFloat() * (1f + warmth * 0.5f)
+
+    private fun saturate(x: Float, channel: Int): Float = when (type) {
+        com.example.audio.model.SaturationType.TAPE -> {
+            // Gentle symmetric tape compression with a little high-frequency loss.
+            val driven = kotlin.math.tanh(x.toDouble()).toFloat()
+            val lp = if (channel == 0) {
+                tapeLpL += tapeAlpha * (driven - tapeLpL); tapeLpL
+            } else {
+                tapeLpR += tapeAlpha * (driven - tapeLpR); tapeLpR
+            }
+            val softened = driven * (1f - warmth * 0.18f) + lp * (warmth * 0.18f)
+            softened + warmth * 0.035f * (driven * driven - 0.33f)
+        }
+        com.example.audio.model.SaturationType.TUBE -> {
+            // Asymmetric transfer curve generates even-order harmonics.
+            val bias = 1f + warmth * 0.55f
+            val driven = x * (1f + warmth * 0.25f)
+            val shaped = if (driven >= 0f) kotlin.math.tanh(driven.toDouble() * bias).toFloat()
+                else kotlin.math.tanh(driven.toDouble() / bias).toFloat()
+            shaped - warmth * 0.02f
+        }
+        com.example.audio.model.SaturationType.TRANSFORMER -> {
+            // Iron core: soft cubic clip with low-mid weight.
+            val driven = x / (1f + kotlin.math.abs(x) * (0.8f - warmth * 0.4f))
+            val weight = if (channel == 0) {
+                ironLpL += ironAlpha * (driven - ironLpL); ironLpL
+            } else {
+                ironLpR += ironAlpha * (driven - ironLpR); ironLpR
+            }
+            driven + weight * warmth * 0.55f
+        }
+        com.example.audio.model.SaturationType.CONSOLE -> {
+            // Tight op-amp clip: harder knee, minimal low-end smear.
+            val driven = kotlin.math.tanh(x.toDouble() * 1.35).toFloat()
+            driven * (1f - warmth * 0.10f) + driven * driven * driven * warmth * 0.10f
+        }
     }
+
     fun configure(config: SaturationConfig) {
         enabled = config.enabled
         driveLinear = 10.0.pow(config.driveDb / 20.0).toFloat()
-        warmth = config.warmth
-        mix = config.mix
+        warmth = config.warmth.coerceIn(0f, 1f)
+        mix = config.mix.coerceIn(0f, 1f)
+        type = config.type
     }
-    fun reset() {}
+    fun reset() { tapeLpL = 0f; tapeLpR = 0f; ironLpL = 0f; ironLpR = 0f }
 }
 
 // ============================================================
@@ -343,17 +412,87 @@ class LufsMeter(private val sampleRate: Float) {
 // ============================================================
 class ResonanceSmootherProcessor(private val sampleRate: Float = 48000f) {
     var enabled = true
-    fun configure(config: com.example.audio.model.ResonanceSmootherConfig) {}
+    var frequencyHz = 3200f
+    var thresholdDb = -18f
+    var depthDb = -6f
+    var qFactor = 4f
+    var currentReductionDb = 0f
+
+    // Stereo band-pass detector. Only the offending resonance band is
+    // subtracted, so the rest of the vocal keeps its body and air.
+    private var b0 = 0f; private var b1 = 0f; private var b2 = 0f
+    private var a1 = 0f; private var a2 = 0f
+    private var x1L = 0f; private var x2L = 0f; private var y1L = 0f; private var y2L = 0f
+    private var x1R = 0f; private var x2R = 0f; private var y1R = 0f; private var y2R = 0f
+    private var amount = 0f
+    private var targetAmount = 0f
+    private var controlCounter = 0
+    private var attackCoeff = 0.99f
+    private var releaseCoeff = 0.999f
+
+    init { recalculate() }
+
+    private fun recalculate() {
+        val f = frequencyHz.coerceIn(200f, sampleRate * 0.45f)
+        val q = qFactor.coerceIn(0.5f, 20f)
+        val w0 = 2.0 * Math.PI * f / sampleRate
+        val cosW0 = cos(w0).toFloat()
+        val sinW0 = sin(w0).toFloat()
+        val alpha = sinW0 / (2f * q)
+        val a0 = 1f + alpha
+        b0 = alpha / a0
+        b1 = 0f
+        b2 = -alpha / a0
+        a1 = (-2f * cosW0) / a0
+        a2 = (1f - alpha) / a0
+        attackCoeff = exp(-1.0 / (0.002 * sampleRate)).toFloat()
+        releaseCoeff = exp(-1.0 / (0.080 * sampleRate)).toFloat()
+    }
+
+    fun configure(config: com.example.audio.model.ResonanceSmootherConfig) {
+        enabled = config.enabled
+        frequencyHz = config.frequencyHz
+        thresholdDb = config.thresholdDb
+        depthDb = config.depthDb.coerceIn(-18f, 0f)
+        qFactor = config.qFactor
+        recalculate()
+    }
     fun processSample(inL: Float, inR: Float): Pair<Float, Float> { val out = FloatArray(2); processSampleInto(inL, inR, out); return Pair(out[0], out[1]) }
     fun processSampleInto(inL: Float, inR: Float, out: FloatArray) {
-        if (!enabled) { out[0] = inL; out[1] = inR; return }
-        val level = (abs(inL) + abs(inR)) * 0.5f
-        val levelDb = if (level > 1e-5f) 20f * log10(level) else -100f
-        val reduction = if (levelDb > -12f) (levelDb + 12f) * 0.5f else 0f
-        val gain = 10.0.pow(-reduction / 20.0).toFloat()
-        out[0] = inL * gain; out[1] = inR * gain
+        if (!enabled) {
+            currentReductionDb = 0f
+            out[0] = inL; out[1] = inR; return
+        }
+        val bandL = b0 * inL + b1 * x1L + b2 * x2L - a1 * y1L - a2 * y2L
+        x2L = x1L; x1L = inL; y2L = y1L; y1L = bandL
+        val bandR = b0 * inR + b1 * x1R + b2 * x2R - a1 * y1R - a2 * y2R
+        x2R = x1R; x1R = inR; y2R = y1R; y1R = bandR
+
+        // The detector only needs to update its target every 32 samples; the
+        // per-sample path stays cheap for 16 simultaneous channels.
+        controlCounter++
+        val controlTick = controlCounter >= 32
+        if (controlTick) {
+            controlCounter = 0
+            val bandPeak = max(abs(bandL), abs(bandR))
+            val bandDb = if (bandPeak > 1e-6f) 20f * log10(bandPeak) else -100f
+            val overDb = bandDb - thresholdDb
+            val maxNotch = (1f - 10.0.pow(depthDb / 20.0)).toFloat().coerceIn(0f, 0.95f)
+            targetAmount = if (overDb > 0f) ((overDb / 12f).coerceIn(0f, 1f) * maxNotch) else 0f
+        }
+        amount = if (targetAmount > amount) targetAmount + attackCoeff * (amount - targetAmount)
+            else targetAmount + releaseCoeff * (amount - targetAmount)
+        if (controlTick) {
+            currentReductionDb = if (amount > 0.0001f) 20f * log10((1f - amount).coerceAtLeast(1e-4f)) else 0f
+        }
+        out[0] = inL - bandL * amount
+        out[1] = inR - bandR * amount
     }
-    fun reset() {}
+    fun reset() {
+        amount = 0f; targetAmount = 0f; controlCounter = 0; currentReductionDb = 0f
+        x1L = 0f; x2L = 0f; y1L = 0f; y2L = 0f
+        x1R = 0f; x2R = 0f; y1R = 0f; y2R = 0f
+    }
 }
 
 // ============================================================
@@ -361,18 +500,64 @@ class ResonanceSmootherProcessor(private val sampleRate: Float = 48000f) {
 // ============================================================
 class VocalRiderProcessor(private val sampleRate: Float = 48000f) {
     var enabled = true
-    fun configure(config: com.example.audio.model.VocalRiderConfig) {}
+    var targetDb = -18f
+    var maxGainDb = 6f
+    var minGainDb = -6f
+    var sensitivity = 0.5f
+    var currentGainDb = 0f
+    private var detector = 0f
+    private var gainDb = 0f
+    private var gainLinear = 1f
+    private var targetGainLinear = 1f
+    private var controlCounter = 0
+    private var detectorAttack = 0.99f
+    private var detectorRelease = 0.999f
+    private var gainCoeff = 0.0005f
+    private val noiseFloorDb = -55f
+
+    fun configure(config: com.example.audio.model.VocalRiderConfig) {
+        enabled = config.enabled
+        targetDb = config.targetLufs
+        maxGainDb = config.maxGainDb.coerceAtLeast(0f)
+        minGainDb = config.minGainDb.coerceAtMost(0f)
+        sensitivity = config.sensitivity.coerceIn(0f, 1f)
+        val attackMs = 30f - 20f * sensitivity
+        val releaseMs = 500f - 400f * sensitivity
+        detectorAttack = exp(-1.0 / (attackMs * sampleRate / 1000.0)).toFloat()
+        detectorRelease = exp(-1.0 / (releaseMs * sampleRate / 1000.0)).toFloat()
+        gainCoeff = (1.0 - exp(-1.0 / (0.035 * sampleRate))).toFloat()
+    }
     fun processSample(inL: Float, inR: Float): Pair<Float, Float> { val out = FloatArray(2); processSampleInto(inL, inR, out); return Pair(out[0], out[1]) }
     fun processSampleInto(inL: Float, inR: Float, out: FloatArray) {
-        if (!enabled) { out[0] = inL; out[1] = inR; return }
-        val level = (abs(inL) + abs(inR)) * 0.5f
-        val levelDb = if (level > 1e-5f) 20f * log10(level) else -100f
-        val targetDb = -18f
-        val gainDb = (targetDb - levelDb).coerceIn(-6f, 6f) * 0.5f
-        val gain = 10.0.pow(gainDb / 20.0).toFloat()
-        out[0] = inL * gain; out[1] = inR * gain
+        if (!enabled) {
+            currentGainDb = 0f; gainDb = 0f; gainLinear = 1f; targetGainLinear = 1f
+            out[0] = inL; out[1] = inR; return
+        }
+        val mono = (inL + inR) * 0.5f
+        val power = mono * mono
+        val coeff = if (power > detector) detectorAttack else detectorRelease
+        detector = power + coeff * (detector - power)
+
+        controlCounter++
+        val controlTick = controlCounter >= 32
+        if (controlTick) {
+            controlCounter = 0
+            val levelDb = if (detector > 1e-8f) 10f * log10(detector) else -100f
+            val desiredGain = if (levelDb < noiseFloorDb) 0f else (targetDb - levelDb).coerceIn(minGainDb, maxGainDb)
+            targetGainLinear = 10.0.pow(desiredGain / 20.0).toFloat()
+            gainDb = desiredGain
+        }
+        gainLinear += (targetGainLinear - gainLinear) * gainCoeff
+        if (controlTick) {
+            currentGainDb = if (gainLinear > 1e-6f) 20f * log10(gainLinear) else -100f
+        }
+        out[0] = inL * gainLinear
+        out[1] = inR * gainLinear
     }
-    fun reset() {}
+    fun reset() {
+        detector = 0f; gainDb = 0f; gainLinear = 1f; targetGainLinear = 1f
+        controlCounter = 0; currentGainDb = 0f
+    }
 }
 
 // ============================================================

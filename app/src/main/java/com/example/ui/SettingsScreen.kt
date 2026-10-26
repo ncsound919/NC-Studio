@@ -39,12 +39,13 @@ import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Vibration
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,7 +59,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -68,15 +71,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
 import com.example.audio.model.AiMixProfile
 import com.example.audio.model.BufferSizePreset
 import com.example.audio.model.DawSettings
 import com.example.audio.model.MeterBallistics
 import com.example.audio.model.UsbRoutingMode
+import com.example.ui.theme.Radius
 import com.example.ui.theme.ClipRed
 import com.example.ui.theme.ElectricLime
 import com.example.ui.theme.NeonCyan
@@ -90,7 +96,68 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import java.io.File
+import java.util.Locale
 import kotlin.math.roundToInt
+
+@Composable
+private fun SettingsCurrentDefaultsCard(settings: DawSettings) {
+    val defaults = DawSettings()
+    val rows = listOf(
+        Triple("Buffer", "${settings.bufferSize.frames} frames", "${defaults.bufferSize.frames} frames"),
+        Triple("Sample rate", "${settings.sampleRateHz / 1000} kHz", "${defaults.sampleRateHz / 1000} kHz"),
+        Triple("Latency offset", "${String.format(Locale.US, "%.1f", settings.latencyCompensationMs)} ms", "${String.format(Locale.US, "%.1f", defaults.latencyCompensationMs)} ms"),
+        Triple("USB routing", settings.usbRoutingMode.displayName, defaults.usbRoutingMode.displayName),
+        Triple("Metering", settings.meterBallistics.displayName, defaults.meterBallistics.displayName),
+        Triple("Count-in", "${settings.countInBars} bars", "${defaults.countInBars} bars"),
+        Triple("Metronome", if (settings.metronomeEnabled) "On" else "Off", if (defaults.metronomeEnabled) "On" else "Off"),
+        Triple("Auto-save", "${settings.autoSaveMinutes} min", "${defaults.autoSaveMinutes} min"),
+        Triple("AI profile", settings.aiMixProfile.displayName, defaults.aiMixProfile.displayName),
+        Triple("Waveforms", if (settings.highResolutionWaveforms) "High-res" else "Standard", if (defaults.highResolutionWaveforms) "High-res" else "Standard"),
+        Triple("Snap", if (settings.isMagneticSnapEnabled) "On" else "Off", if (defaults.isMagneticSnapEnabled) "On" else "Off"),
+        Triple("Grid", settings.gridResolution.displayName, defaults.gridResolution.displayName)
+    )
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("settings_current_defaults"),
+        colors = CardDefaults.cardColors(containerColor = StudioSurface),
+        shape = RoundedCornerShape(Radius.lg),
+        border = BorderStroke(1.dp, StudioCardBorder)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(text = stringResource(R.string.ui_current_vs_default),
+                color = NeonCyan,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.ui_setting), color = TextMuted, fontSize = 10.sp, modifier = Modifier.weight(1.2f))
+                Text(stringResource(R.string.ui_current), color = TextMuted, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                Text(stringResource(R.string.ui_default), color = TextMuted, fontSize = 10.sp, modifier = Modifier.weight(1f))
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            rows.forEach { (label, current, default) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(label, color = TextSecondary, fontSize = 11.sp, modifier = Modifier.weight(1.2f))
+                    Text(current, color = TextPrimary, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                    Text(default, color = TextMuted, fontSize = 11.sp, modifier = Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+internal fun formatCacheSize(bytes: Long): String = when {
+    bytes <= 0L -> "0 KB"
+    bytes < 1024L * 1024L -> "${(bytes / 1024L).coerceAtLeast(1L)} KB"
+    else -> String.format(Locale.US, "%.1f MB", bytes / (1024f * 1024f))
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -111,6 +178,20 @@ fun SettingsScreen(
     }
 
     var showResetDialog by remember { mutableStateOf(false) }
+    var showClearCacheDialog by remember { mutableStateOf(false) }
+    var showLatencyDialog by remember { mutableStateOf(false) }
+    var latencyStep by remember { mutableIntStateOf(0) }
+    var latencyStartStatus by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(showLatencyDialog, latencyStep, uiState.statusMessage) {
+        if (!showLatencyDialog || latencyStep != 1) return@LaunchedEffect
+        val message = uiState.statusMessage ?: return@LaunchedEffect
+        if (message == latencyStartStatus) return@LaunchedEffect
+        when {
+            message.contains("Latency calibrated", ignoreCase = true) -> latencyStep = 2
+            message.contains("Calibration failed", ignoreCase = true) -> latencyStep = 3
+        }
+    }
 
     Column(
         modifier = modifier
@@ -136,9 +217,9 @@ fun SettingsScreen(
                     Box(
                         modifier = Modifier
                             .size(32.dp)
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(Radius.md))
                             .background(StudioAmber.copy(alpha = 0.2f))
-                            .border(1.dp, StudioAmber.copy(alpha = 0.4f), RoundedCornerShape(8.dp)),
+                            .border(1.dp, StudioAmber.copy(alpha = 0.4f), RoundedCornerShape(Radius.md)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -150,15 +231,13 @@ fun SettingsScreen(
                     }
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
-                        Text(
-                            text = "STUDIO PREFERENCES",
+                        Text(text = stringResource(R.string.ui_studio_preferences),
                             color = TextPrimary,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.ExtraBold,
                             fontFamily = FontFamily.Monospace
                         )
-                        Text(
-                            text = "Engine Buffer • Hardware I/O • Metering • AI Mixing",
+                        Text(text = stringResource(R.string.ui_engine_buffer_hardware_i_o_metering_ai_mixing),
                             color = TextMuted,
                             fontSize = 10.sp
                         )
@@ -179,7 +258,7 @@ fun SettingsScreen(
                             tint = TextSecondary
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Reset", fontSize = 11.sp)
+                        Text(stringResource(R.string.ui_reset), fontSize = 11.sp)
                     }
                 }
             }
@@ -194,20 +273,20 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
 
+            SettingsCurrentDefaultsCard(settings)
+
             // SECTION 1: Audio Engine & Hardware Buffer
             SettingsSectionCard(
                 icon = Icons.Default.Speed,
                 iconColor = NeonCyan,
                 title = "Audio Engine & Buffer Size"
             ) {
-                Text(
-                    text = "Hardware Buffer Size (Latency vs Glitch Resistance)",
+                Text(text = stringResource(R.string.ui_hardware_buffer_size_latency_vs_glitch_resistanc),
                     color = TextPrimary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = "Lower buffer size gives faster response for live recording; larger buffer prevents underruns with heavy DSP.",
+                Text(text = stringResource(R.string.ui_lower_buffer_size_gives_faster_response_for_live),
                     color = TextMuted,
                     fontSize = 11.sp,
                     lineHeight = 15.sp
@@ -224,12 +303,12 @@ fun SettingsScreen(
                         val isSelected = settings.bufferSize == preset
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.md))
                                 .background(if (isSelected) NeonCyan.copy(alpha = 0.2f) else StudioBackground)
                                 .border(
                                     1.dp,
                                     if (isSelected) NeonCyan else StudioCardBorder,
-                                    RoundedCornerShape(8.dp)
+                                    RoundedCornerShape(Radius.md)
                                 )
                                 .clickable {
                                     onUpdateSettings(settings.copy(bufferSize = preset))
@@ -257,12 +336,11 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(14.dp))
 
                 // Sample Rate Selector
-                Text(
-                    text = "Studio Sample Rate",
+                Text(text = stringResource(R.string.ui_studio_sample_rate),
                     color = TextPrimary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
@@ -276,12 +354,12 @@ fun SettingsScreen(
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.md))
                                 .background(if (isSelected) StudioAmber.copy(alpha = 0.2f) else StudioBackground)
                                 .border(
                                     1.dp,
                                     if (isSelected) StudioAmber else StudioCardBorder,
-                                    RoundedCornerShape(8.dp)
+                                    RoundedCornerShape(Radius.md)
                                 )
                                 .clickable {
                                     onUpdateSettings(settings.copy(sampleRateHz = rate))
@@ -300,7 +378,7 @@ fun SettingsScreen(
                                 Text(
                                     text = if (rate == 48000) "Pro Studio" else if (rate == 44100) "CD Audio" else "Hi-Res",
                                     color = if (isSelected) StudioAmber else TextMuted,
-                                    fontSize = 9.sp
+                                    fontSize = 10.sp
                                 )
                             }
                         }
@@ -308,7 +386,7 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(14.dp))
 
                 // Latency Compensation Offset & Calibration
@@ -318,20 +396,21 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Input Latency Offset Calibration",
+                        Text(text = stringResource(R.string.ui_input_latency_offset_calibration),
                             color = TextPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text(
-                            text = "Compensates for Android audio driver recording delay when overdubbing stems.",
+                        Text(text = stringResource(R.string.ui_compensates_for_android_audio_driver_recording_d),
                             color = TextMuted,
                             fontSize = 11.sp
                         )
                     }
                     OutlinedButton(
-                        onClick = onCalibrateLatency,
+                        onClick = {
+                            latencyStep = 0
+                            showLatencyDialog = true
+                        },
                         modifier = Modifier.testTag("calibrate_latency_button"),
                         border = BorderStroke(1.dp, NeonCyan.copy(alpha = 0.6f)),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = NeonCyan)
@@ -342,7 +421,7 @@ fun SettingsScreen(
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Auto-Calibrate", fontSize = 11.sp)
+                        Text(stringResource(R.string.ui_auto_calibrate), fontSize = 11.sp)
                     }
                 }
 
@@ -365,7 +444,7 @@ fun SettingsScreen(
                     )
                     Spacer(modifier = Modifier.width(12.dp))
                     Text(
-                        text = "${String.format("%.1f", settings.latencyCompensationMs)} ms",
+                        text = "${String.format(Locale.US, "%.1f", settings.latencyCompensationMs)} ms",
                         color = NeonCyan,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
@@ -373,6 +452,12 @@ fun SettingsScreen(
                         modifier = Modifier.width(60.dp)
                     )
                 }
+                Text(
+                    text = "Default ${String.format(Locale.US, "%.1f", DawSettings().latencyCompensationMs)} ms",
+                    color = TextMuted,
+                    fontSize = 10.sp,
+                    modifier = Modifier.testTag("latency_default_hint")
+                )
             }
 
             // SECTION 2: USB Type-C Audio Interface Routing
@@ -381,14 +466,12 @@ fun SettingsScreen(
                 iconColor = ElectricLime,
                 title = "USB-C Audio Interface Routing"
             ) {
-                Text(
-                    text = "Hardware Device Policy",
+                Text(text = stringResource(R.string.ui_hardware_device_policy),
                     color = TextPrimary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = "Select how Pulse DAW handles external USB Class-Compliant audio interfaces and DACs.",
+                Text(text = stringResource(R.string.ui_select_how_pulse_daw_handles_external_usb_class_),
                     color = TextMuted,
                     fontSize = 11.sp
                 )
@@ -399,12 +482,12 @@ fun SettingsScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(Radius.md))
                             .background(if (isSelected) ElectricLime.copy(alpha = 0.15f) else StudioBackground)
                             .border(
                                 1.dp,
                                 if (isSelected) ElectricLime else StudioCardBorder,
-                                RoundedCornerShape(8.dp)
+                                RoundedCornerShape(Radius.md)
                             )
                             .clickable {
                                 onUpdateSettings(settings.copy(usbRoutingMode = mode))
@@ -469,7 +552,7 @@ fun SettingsScreen(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Manage Connected USB DACs & Interfaces", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.ui_manage_connected_usb_devices), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
 
@@ -480,14 +563,12 @@ fun SettingsScreen(
                 title = "Recording & Monitoring"
             ) {
                 // Count-In Pre-Roll
-                Text(
-                    text = "Recording Count-In Pre-Roll",
+                Text(text = stringResource(R.string.ui_recording_count_in_pre_roll),
                     color = TextPrimary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = "Plays metronome clicks before recording starts so you are locked into the groove.",
+                Text(text = stringResource(R.string.ui_plays_metronome_clicks_before_recording_starts_s),
                     color = TextMuted,
                     fontSize = 11.sp
                 )
@@ -506,12 +587,12 @@ fun SettingsScreen(
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.md))
                                 .background(if (isSelected) ClipRed.copy(alpha = 0.2f) else StudioBackground)
                                 .border(
                                     1.dp,
                                     if (isSelected) ClipRed else StudioCardBorder,
-                                    RoundedCornerShape(8.dp)
+                                    RoundedCornerShape(Radius.md)
                                 )
                                 .clickable {
                                     onUpdateSettings(settings.copy(countInBars = bars))
@@ -531,7 +612,7 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(14.dp))
 
                 // Metronome Click Toggle & Volume
@@ -541,14 +622,12 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Metronome Click Audio",
+                        Text(text = stringResource(R.string.ui_metronome_click_audio),
                             color = TextPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text(
-                            text = "Audio click synced to project tempo during playback.",
+                        Text(text = stringResource(R.string.ui_audio_click_synced_to_project_tempo_during_playb),
                             color = TextMuted,
                             fontSize = 11.sp
                         )
@@ -571,7 +650,7 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Volume", color = TextSecondary, fontSize = 11.sp, modifier = Modifier.width(60.dp))
+                        Text(stringResource(R.string.ui_volume), color = TextSecondary, fontSize = 11.sp, modifier = Modifier.width(60.dp))
                         Slider(
                             value = settings.metronomeVolumeDb,
                             onValueChange = { onUpdateSettings(settings.copy(metronomeVolumeDb = it)) },
@@ -593,10 +672,16 @@ fun SettingsScreen(
                             modifier = Modifier.width(55.dp)
                         )
                     }
+                    Text(
+                        text = "Default ${DawSettings().metronomeVolumeDb.roundToInt()} dB",
+                        color = TextMuted,
+                        fontSize = 10.sp,
+                        modifier = Modifier.testTag("metronome_default_hint")
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(14.dp))
 
                 // Direct Input Monitoring
@@ -606,14 +691,12 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Software Input Monitoring",
+                        Text(text = stringResource(R.string.ui_software_input_monitoring),
                             color = TextPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text(
-                            text = "Feed live microphone signal back to headphones with track channel strip DSP.",
+                        Text(text = stringResource(R.string.ui_feed_live_microphone_signal_back_to_headphones_w),
                             color = TextMuted,
                             fontSize = 11.sp
                         )
@@ -637,14 +720,12 @@ fun SettingsScreen(
                 iconColor = StudioPurple,
                 title = "Metering & Visuals"
             ) {
-                Text(
-                    text = "Master Metering Ballistics Standard",
+                Text(text = stringResource(R.string.ui_master_metering_ballistics_standard),
                     color = TextPrimary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = "Controls peak calculation and loudness display mode on faders.",
+                Text(text = stringResource(R.string.ui_controls_peak_calculation_and_loudness_display_m),
                     color = TextMuted,
                     fontSize = 11.sp
                 )
@@ -655,12 +736,12 @@ fun SettingsScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(Radius.md))
                             .background(if (isSelected) StudioPurple.copy(alpha = 0.15f) else StudioBackground)
                             .border(
                                 1.dp,
                                 if (isSelected) StudioPurple else StudioCardBorder,
-                                RoundedCornerShape(8.dp)
+                                RoundedCornerShape(Radius.md)
                             )
                             .clickable {
                                 onUpdateSettings(settings.copy(meterBallistics = ballistics))
@@ -704,7 +785,7 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // Peak Hold Decay Speed
@@ -714,14 +795,12 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Fast Peak Hold Decay (300 ms)",
+                        Text(text = stringResource(R.string.ui_fast_peak_hold_decay_300_ms),
                             color = TextPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text(
-                            text = "Release peak hold line quickly instead of 1.2s studio hold.",
+                        Text(text = stringResource(R.string.ui_release_peak_hold_line_quickly_instead_of_1_2s_s),
                             color = TextMuted,
                             fontSize = 11.sp
                         )
@@ -738,7 +817,7 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // Haptic feedback
@@ -748,14 +827,12 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Haptic Tactile Feedback",
+                        Text(text = stringResource(R.string.ui_haptic_tactile_feedback),
                             color = TextPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text(
-                            text = "Gentle vibration click on fader unity detents, mute/solo switches.",
+                        Text(text = stringResource(R.string.ui_gentle_vibration_click_on_fader_unity_detents_mu),
                             color = TextMuted,
                             fontSize = 11.sp
                         )
@@ -778,14 +855,12 @@ fun SettingsScreen(
                 iconColor = StudioAmber,
                 title = "AI Mixing Studio Assistant"
             ) {
-                Text(
-                    text = "Sonic Target Profile",
+                Text(text = stringResource(R.string.ui_sonic_target_profile),
                     color = TextPrimary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = "Defines the tonal curve and compression goals used by the AI Mix Advisor.",
+                Text(text = stringResource(R.string.ui_defines_the_tonal_curve_and_compression_goals_us),
                     color = TextMuted,
                     fontSize = 11.sp
                 )
@@ -796,12 +871,12 @@ fun SettingsScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(RoundedCornerShape(Radius.md))
                             .background(if (isSelected) StudioAmber.copy(alpha = 0.15f) else StudioBackground)
                             .border(
                                 1.dp,
                                 if (isSelected) StudioAmber else StudioCardBorder,
-                                RoundedCornerShape(8.dp)
+                                RoundedCornerShape(Radius.md)
                             )
                             .clickable {
                                 onUpdateSettings(settings.copy(aiMixProfile = profile))
@@ -845,7 +920,7 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // Auto stem classification
@@ -855,14 +930,12 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Auto-Classify Stems on Import",
+                        Text(text = stringResource(R.string.ui_auto_classify_stems_on_import),
                             color = TextPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text(
-                            text = "Identifies Vocal, Drums, Bass, Keys using spectral centroid & crest factor.",
+                        Text(text = stringResource(R.string.ui_identifies_vocal_drums_bass_keys_using_spectral_),
                             color = TextMuted,
                             fontSize = 11.sp
                         )
@@ -879,7 +952,7 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // On-Device Local Neural Model Toggle
@@ -890,8 +963,7 @@ fun SettingsScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "On-Device Local Neural Model",
+                            Text(text = stringResource(R.string.ui_on_device_local_neural_model),
                                 color = TextPrimary,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -899,16 +971,15 @@ fun SettingsScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
+                                    .clip(RoundedCornerShape(Radius.sm))
                                     .background(ElectricLime.copy(alpha = 0.2f))
-                                    .border(1.dp, ElectricLime, RoundedCornerShape(4.dp))
+                                    .border(1.dp, ElectricLime, RoundedCornerShape(Radius.sm))
                                     .padding(horizontal = 4.dp, vertical = 2.dp)
                             ) {
-                                Text(text = "0ms Cloud", color = ElectricLime, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                Text(text = stringResource(R.string.ui_0ms_cloud), color = ElectricLime, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                             }
                         }
-                        Text(
-                            text = "Runs 16x32x7 Quantized MLP directly on device CPU (~0.38ms). Zero internet needed.",
+                        Text(text = stringResource(R.string.ui_runs_16x32x7_quantized_mlp_directly_on_device_cp),
                             color = TextMuted,
                             fontSize = 11.sp
                         )
@@ -926,7 +997,7 @@ fun SettingsScreen(
 
                 if (settings.enableLocalNeuralModel) {
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(text = "Local Neural Engine Mode", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Text(text = stringResource(R.string.ui_local_neural_engine_mode), color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -941,9 +1012,9 @@ fun SettingsScreen(
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(6.dp))
+                                    .clip(RoundedCornerShape(Radius.md))
                                     .background(if (isSel) ElectricLime.copy(alpha = 0.2f) else StudioBackground)
-                                    .border(1.dp, if (isSel) ElectricLime else StudioCardBorder, RoundedCornerShape(6.dp))
+                                    .border(1.dp, if (isSel) ElectricLime else StudioCardBorder, RoundedCornerShape(Radius.md))
                                     .clickable { onUpdateSettings(settings.copy(localNeuralModelMode = modeKey)) }
                                     .padding(vertical = 6.dp),
                                 contentAlignment = Alignment.Center
@@ -955,7 +1026,7 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // Small Model Auto-Detection (Ollama & Llama.cpp)
@@ -966,8 +1037,7 @@ fun SettingsScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "Auto-Detect Local Models (Ollama & Llama)",
+                            Text(text = stringResource(R.string.ui_auto_detect_local_models_ollama_llama),
                                 color = TextPrimary,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -975,16 +1045,15 @@ fun SettingsScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
+                                    .clip(RoundedCornerShape(Radius.sm))
                                     .background(NeonCyan.copy(alpha = 0.2f))
-                                    .border(1.dp, NeonCyan, RoundedCornerShape(4.dp))
+                                    .border(1.dp, NeonCyan, RoundedCornerShape(Radius.sm))
                                     .padding(horizontal = 4.dp, vertical = 2.dp)
                             ) {
-                                Text(text = "Ollama / Llama", color = NeonCyan, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                Text(text = stringResource(R.string.ui_ollama_llama), color = NeonCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                             }
                         }
-                        Text(
-                            text = "Probes 10.0.2.2:11434 and local REST endpoints for small language models.",
+                        Text(text = stringResource(R.string.ui_probes_10_0_2_2_11434_and_local_rest_endpoints_f),
                             color = TextMuted,
                             fontSize = 11.sp
                         )
@@ -1002,14 +1071,14 @@ fun SettingsScreen(
 
                 if (settings.autoDetectLocalModelsOnStartup) {
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(text = "Active Local Model", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Text(text = stringResource(R.string.ui_active_local_model), color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(RoundedCornerShape(Radius.md))
                             .background(StudioBackground)
-                            .border(1.dp, StudioCardBorder, RoundedCornerShape(6.dp))
+                            .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.md))
                             .padding(8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
@@ -1030,7 +1099,7 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // Magnetic Grid Snapping System
@@ -1041,8 +1110,7 @@ fun SettingsScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "Magnetic Grid Snapping",
+                            Text(text = stringResource(R.string.ui_magnetic_grid_snapping),
                                 color = TextPrimary,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -1050,16 +1118,15 @@ fun SettingsScreen(
                             Spacer(modifier = Modifier.width(6.dp))
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
+                                    .clip(RoundedCornerShape(Radius.sm))
                                     .background(ElectricLime.copy(alpha = 0.2f))
-                                    .border(1.dp, ElectricLime, RoundedCornerShape(4.dp))
+                                    .border(1.dp, ElectricLime, RoundedCornerShape(Radius.sm))
                                     .padding(horizontal = 4.dp, vertical = 2.dp)
                             ) {
-                                Text(text = "Precision", color = ElectricLime, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                Text(text = stringResource(R.string.ui_precision), color = ElectricLime, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                             }
                         }
-                        Text(
-                            text = "Snaps moving & trimming clips to beat, bar, or clip boundaries.",
+                        Text(text = stringResource(R.string.ui_snaps_moving_trimming_clips_to_beat_bar_or_clip_),
                             color = TextMuted,
                             fontSize = 11.sp
                         )
@@ -1077,7 +1144,7 @@ fun SettingsScreen(
 
                 if (settings.isMagneticSnapEnabled) {
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(text = "Grid Snap Resolution", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Text(text = stringResource(R.string.ui_grid_snap_resolution), color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1088,9 +1155,9 @@ fun SettingsScreen(
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(6.dp))
+                                    .clip(RoundedCornerShape(Radius.md))
                                     .background(if (isSel) ElectricLime.copy(alpha = 0.2f) else StudioBackground)
-                                    .border(1.dp, if (isSel) ElectricLime else StudioCardBorder, RoundedCornerShape(6.dp))
+                                    .border(1.dp, if (isSel) ElectricLime else StudioCardBorder, RoundedCornerShape(Radius.md))
                                     .clickable { onUpdateSettings(settings.copy(gridResolution = res)) }
                                     .padding(vertical = 6.dp),
                                 contentAlignment = Alignment.Center
@@ -1098,7 +1165,7 @@ fun SettingsScreen(
                                 Text(
                                     text = res.displayName,
                                     color = if (isSel) ElectricLime else TextMuted,
-                                    fontSize = 9.sp,
+                                    fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -1107,7 +1174,7 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(10.dp))
 
                 // Max EQ adjustment guard
@@ -1117,8 +1184,7 @@ fun SettingsScreen(
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = "Limits AI proposals to prevent unnatural frequency spikes or distortion.",
+                Text(text = stringResource(R.string.ui_limits_ai_proposals_to_prevent_unnatural_frequen),
                     color = TextMuted,
                     fontSize = 11.sp
                 )
@@ -1131,12 +1197,12 @@ fun SettingsScreen(
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.md))
                                 .background(if (isSelected) StudioAmber.copy(alpha = 0.2f) else StudioBackground)
                                 .border(
                                     1.dp,
                                     if (isSelected) StudioAmber else StudioCardBorder,
-                                    RoundedCornerShape(8.dp)
+                                    RoundedCornerShape(Radius.md)
                                 )
                                 .clickable {
                                     onUpdateSettings(settings.copy(aiMaxEqBoostDb = boost))
@@ -1167,14 +1233,12 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Auto-Save Interval",
+                        Text(text = stringResource(R.string.ui_auto_save_interval),
                             color = TextPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text(
-                            text = "Automatically commits project changes to disk in background.",
+                        Text(text = stringResource(R.string.ui_automatically_commits_project_changes_to_disk_in),
                             color = TextMuted,
                             fontSize = 11.sp
                         )
@@ -1191,12 +1255,12 @@ fun SettingsScreen(
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.md))
                                 .background(if (isSelected) ElectricLime.copy(alpha = 0.2f) else StudioBackground)
                                 .border(
                                     1.dp,
                                     if (isSelected) ElectricLime else StudioCardBorder,
-                                    RoundedCornerShape(8.dp)
+                                    RoundedCornerShape(Radius.md)
                                 )
                                 .clickable {
                                     onUpdateSettings(settings.copy(autoSaveMinutes = min))
@@ -1216,14 +1280,14 @@ fun SettingsScreen(
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
-                Divider(color = StudioCardBorder, thickness = 1.dp)
+                HorizontalDivider(color = StudioCardBorder, thickness = 1.dp)
                 Spacer(modifier = Modifier.height(12.dp))
 
                 // Crash Recovery Status Badge
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(Radius.md))
                         .background(StudioBackground)
                         .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1238,17 +1302,17 @@ fun SettingsScreen(
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
-                            Text("Crash Recovery Journal", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            Text("Zero-data-loss atomic state protection", color = TextMuted, fontSize = 10.sp)
+                            Text(stringResource(R.string.ui_crash_recovery_journal), color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(stringResource(R.string.ui_zero_data_loss_atomic_state_protection), color = TextMuted, fontSize = 10.sp)
                         }
                     }
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
+                            .clip(RoundedCornerShape(Radius.sm))
                             .background(ElectricLime.copy(alpha = 0.2f))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
-                        Text("ACTIVE", color = ElectricLime, fontSize = 9.sp, fontWeight = FontWeight.ExtraBold)
+                        Text(stringResource(R.string.ui_active), color = ElectricLime, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
                     }
                 }
 
@@ -1261,20 +1325,25 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Temporary Waveform Cache",
+                        Text(text = stringResource(R.string.ui_temporary_waveform_cache),
                             color = TextPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text(
-                            text = "Cached audio decoded scratch files for waveform rendering.",
+                        Text(text = stringResource(R.string.ui_cached_audio_decoded_scratch_files_for_waveform_),
                             color = TextMuted,
                             fontSize = 11.sp
                         )
+                        Text(
+                            text = "Currently ${formatCacheSize(uiState.cacheSizeBytes)}",
+                            color = NeonCyan,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.testTag("cache_size_label")
+                        )
                     }
                     OutlinedButton(
-                        onClick = onClearCache,
+                        onClick = { showClearCacheDialog = true },
                         border = BorderStroke(1.dp, StudioCardBorder),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
                         modifier = Modifier.testTag("clear_cache_button")
@@ -1285,21 +1354,26 @@ fun SettingsScreen(
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Clear Cache", fontSize = 11.sp)
+                        Text(stringResource(R.string.ui_clear_cache), fontSize = 11.sp)
                     }
                 }
             }
 
             // SECTION 7: Real-time Audio Diagnostics & Test Suite
+            if (!uiState.presentationMode) {
             SettingsSectionCard(
                 icon = Icons.Default.Science,
                 iconColor = StudioAmber,
-                title = "DSP Diagnostics & Health"
+                title = "DSP diagnostics & health"
             ) {
+                SessionHealthCard(uiState = uiState, settings = settings)
+
+                Spacer(modifier = Modifier.height(10.dp))
+
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(Radius.md))
                         .background(StudioBackground)
                         .padding(12.dp)
                 ) {
@@ -1307,7 +1381,7 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Mean Callback Duration:", color = TextSecondary, fontSize = 11.sp)
+                        Text(stringResource(R.string.ui_mean_callback_duration), color = TextSecondary, fontSize = 11.sp)
                         Text(
                             "${String.format("%.2f", uiState.telemetry.callbackMeanMs)} ms",
                             color = NeonCyan,
@@ -1321,7 +1395,7 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("95th Percentile Callback (P95):", color = TextSecondary, fontSize = 11.sp)
+                        Text(stringResource(R.string.ui_95th_percentile_callback_p95), color = TextSecondary, fontSize = 11.sp)
                         Text(
                             "${String.format("%.2f", uiState.telemetry.callbackP95Ms)} ms",
                             color = NeonCyan,
@@ -1335,7 +1409,7 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Buffer Underruns (X-Runs):", color = TextSecondary, fontSize = 11.sp)
+                        Text(stringResource(R.string.ui_buffer_underruns_x_runs), color = TextSecondary, fontSize = 11.sp)
                         Text(
                             "${uiState.telemetry.bufferUnderruns}",
                             color = if (uiState.telemetry.bufferUnderruns == 0) ElectricLime else ClipRed,
@@ -1349,10 +1423,33 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Audio Thread CPU Load:", color = TextSecondary, fontSize = 11.sp)
+                        Text(stringResource(R.string.ui_audio_thread_cpu_load), color = TextSecondary, fontSize = 11.sp)
                         Text(
                             "${String.format("%.1f", uiState.telemetry.cpuLoadPercent)}%",
                             color = if (uiState.telemetry.cpuLoadPercent < 40f) ElectricLime else StudioAmber,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(stringResource(R.string.ui_ui_frame_mean_p95), color = TextSecondary, fontSize = 11.sp)
+                        Text(
+                            if (uiState.uiFrameP95Ms > 0f) {
+                                "${String.format("%.1f", uiState.uiFrameMeanMs)} / ${String.format("%.1f", uiState.uiFrameP95Ms)} ms"
+                            } else {
+                                "measuring…"
+                            },
+                            color = when {
+                                uiState.uiFrameP95Ms >= 34f -> ClipRed
+                                uiState.uiFrameP95Ms >= 20f -> StudioAmber
+                                uiState.uiFrameP95Ms > 0f -> ElectricLime
+                                else -> TextMuted
+                            },
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
@@ -1379,35 +1476,33 @@ fun SettingsScreen(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Execute Full DSP Core Regression Test Suite", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.ui_run_dsp_regression_suite), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
+            }
             }
 
             // About & Version Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = StudioSurface),
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(Radius.lg),
                 border = BorderStroke(1.dp, StudioCardBorder)
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(
-                        text = "Pulse DAW",
+                    Text(text = stringResource(R.string.ui_pulse_daw),
                         color = TextPrimary,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(
-                        text = "Version 1.2.0 • Pro 8-Track Oboe Audio Engine",
+                    Text(text = stringResource(R.string.ui_version_1_2_0_pro_8_track_oboe_audio_engine),
                         color = TextMuted,
                         fontSize = 10.sp
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Zero-allocation DSP Pipeline • 32-bit Float Internal Processing",
+                    Text(text = stringResource(R.string.ui_zero_allocation_dsp_pipeline_32_bit_float_intern),
                         color = TextSecondary,
                         fontSize = 10.sp
                     )
@@ -1416,6 +1511,159 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(32.dp))
         }
+    }
+
+    if (showLatencyDialog) {
+        AlertDialog(
+            onDismissRequest = { if (latencyStep != 1) showLatencyDialog = false },
+            containerColor = StudioSurface,
+            modifier = Modifier.testTag("latency_calibration_dialog"),
+            title = {
+                Text(text = stringResource(R.string.ui_input_latency_calibration),
+                    color = TextPrimary,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    when (latencyStep) {
+                        0 -> {
+                            Text(text = stringResource(R.string.ui_1_connect_headphones_or_point_the_speaker_away_f),
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = "Current offset: ${String.format(Locale.US, "%.1f", settings.latencyCompensationMs)} ms",
+                                color = NeonCyan,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                        1 -> {
+                            Text(text = stringResource(R.string.ui_measuring_the_loopback_keep_the_room_quiet),
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = NeonCyan,
+                                trackColor = StudioCard
+                            )
+                        }
+                        2 -> {
+                            Text(text = stringResource(R.string.ui_measured_offset),
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                            Text(
+                                text = "${String.format(Locale.US, "%.1f", settings.latencyCompensationMs)} ms",
+                                color = ElectricLime,
+                                fontSize = 24.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(text = stringResource(R.string.ui_applied_to_recording_alignment_you_can_fine_tune),
+                                color = TextMuted,
+                                fontSize = 11.sp
+                            )
+                        }
+                        else -> {
+                            Text(text = stringResource(R.string.ui_calibration_could_not_complete_check_microphone_),
+                                color = ClipRed,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                when (latencyStep) {
+                    0 -> Button(
+                        onClick = {
+                            latencyStartStatus = uiState.statusMessage
+                            latencyStep = 1
+                            onCalibrateLatency()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = Color.Black)
+                    ) { Text(stringResource(R.string.ui_start_measurement), fontWeight = FontWeight.Bold) }
+                    2 -> Button(
+                        onClick = { showLatencyDialog = false },
+                        colors = ButtonDefaults.buttonColors(containerColor = ElectricLime, contentColor = Color.Black)
+                    ) { Text(stringResource(R.string.ui_done), fontWeight = FontWeight.Bold) }
+                    3 -> Button(
+                        onClick = {
+                            latencyStartStatus = uiState.statusMessage
+                            latencyStep = 1
+                            onCalibrateLatency()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = StudioAmber, contentColor = Color.Black)
+                    ) { Text(stringResource(R.string.ui_try_again), fontWeight = FontWeight.Bold) }
+                    else -> Button(onClick = {}, enabled = false) { Text(stringResource(R.string.ui_measuring)) }
+                }
+            },
+            dismissButton = {
+                if (latencyStep != 1) {
+                    OutlinedButton(onClick = { showLatencyDialog = false }) {
+                        Text(stringResource(R.string.ui_close), color = TextSecondary)
+                    }
+                }
+            }
+        )
+    }
+
+    if (showClearCacheDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearCacheDialog = false },
+            containerColor = StudioSurface,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Storage,
+                        contentDescription = null,
+                        tint = NeonCyan,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = stringResource(R.string.ui_clear_waveform_cache),
+                        color = TextPrimary,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            text = {
+                Text(
+                    text = "This removes ${formatCacheSize(uiState.cacheSizeBytes)} of decoded waveform scratch files. Your project audio and recordings are not affected.",
+                    color = TextSecondary,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onClearCache()
+                        showClearCacheDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = NeonCyan, contentColor = Color.Black),
+                    modifier = Modifier.testTag("confirm_clear_cache_button")
+                ) {
+                    Text(stringResource(R.string.ui_clear_cache), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = { showClearCacheDialog = false },
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
+                    border = BorderStroke(1.dp, StudioCardBorder)
+                ) {
+                    Text(stringResource(R.string.ui_cancel))
+                }
+            }
+        )
     }
 
     // Confirmation Dialog for Factory Reset
@@ -1432,8 +1680,7 @@ fun SettingsScreen(
                         modifier = Modifier.size(22.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Reset Studio Settings?",
+                    Text(text = stringResource(R.string.ui_reset_studio_settings),
                         color = TextPrimary,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold
@@ -1441,8 +1688,7 @@ fun SettingsScreen(
                 }
             },
             text = {
-                Text(
-                    text = "This will restore audio buffer size, sample rate, latency offset, and AI preferences to default calibration.",
+                Text(text = stringResource(R.string.ui_this_will_restore_audio_buffer_size_sample_rate_),
                     color = TextSecondary,
                     fontSize = 13.sp
                 )
@@ -1456,7 +1702,7 @@ fun SettingsScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = StudioAmber, contentColor = Color.Black),
                     modifier = Modifier.testTag("confirm_reset_button")
                 ) {
-                    Text("Reset All", fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_reset_all), fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -1465,7 +1711,7 @@ fun SettingsScreen(
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary),
                     border = BorderStroke(1.dp, StudioCardBorder)
                 ) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.ui_cancel))
                 }
             }
         )
@@ -1482,7 +1728,7 @@ private fun SettingsSectionCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = StudioSurface),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(Radius.lg),
         border = BorderStroke(1.dp, StudioCardBorder)
     ) {
         Column(
@@ -1495,7 +1741,7 @@ private fun SettingsSectionCard(
                 Box(
                     modifier = Modifier
                         .size(28.dp)
-                        .clip(RoundedCornerShape(6.dp))
+                        .clip(RoundedCornerShape(Radius.md))
                         .background(iconColor.copy(alpha = 0.2f)),
                     contentAlignment = Alignment.Center
                 ) {
@@ -1516,6 +1762,56 @@ private fun SettingsSectionCard(
             }
 
             content()
+        }
+    }
+}
+
+@Composable
+private fun SessionHealthCard(uiState: EngineUiState, settings: DawSettings) {
+    val health = buildSessionHealth(
+        telemetry = uiState.telemetry,
+        uiFrameMeanMs = uiState.uiFrameMeanMs,
+        uiFrameP95Ms = uiState.uiFrameP95Ms,
+        settings = settings
+    )
+    val accent = when (health.level) {
+        HealthLevel.HEALTHY -> ElectricLime
+        HealthLevel.FAIR -> StudioAmber
+        HealthLevel.AT_RISK -> ClipRed
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(Radius.md))
+            .background(accent.copy(alpha = 0.08f))
+            .border(1.dp, accent.copy(alpha = 0.4f), RoundedCornerShape(Radius.md))
+            .padding(12.dp)
+            .testTag("session_health_card")
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = if (health.level == HealthLevel.HEALTHY) Icons.Default.CheckCircle else Icons.Default.Warning,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = health.level.label,
+                color = accent,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.ExtraBold,
+                modifier = Modifier.testTag("session_health_level")
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text(stringResource(R.string.ui_live), color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(modifier = Modifier.height(3.dp))
+        Text(health.headline, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(6.dp))
+        health.details.forEach { detail ->
+            Text("• $detail", color = TextSecondary, fontSize = 11.sp)
         }
     }
 }

@@ -5,8 +5,11 @@ import com.example.audio.model.CompressorConfig
 import com.example.audio.model.DuckingDelayConfig
 import com.example.audio.model.EqConfig
 import com.example.audio.model.MasterLimiterConfig
+import com.example.audio.model.NoiseReductionConfig
+import com.example.audio.model.ResonanceSmootherConfig
 import com.example.audio.model.ReverbConfig
 import com.example.audio.model.SaturationConfig
+import com.example.audio.model.VocalRiderConfig
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
@@ -27,6 +30,9 @@ sealed interface AudioEngineCommand {
     data class SetChorus(val trackIndex: Int, val config: com.example.audio.model.ChorusConfig) : AudioEngineCommand
     data class SetDuckingDelay(val trackIndex: Int, val config: DuckingDelayConfig) : AudioEngineCommand
     data class SetChannelLimiter(val trackIndex: Int, val config: ChannelLimiterConfig) : AudioEngineCommand
+    data class SetNoiseReduction(val trackIndex: Int, val config: NoiseReductionConfig) : AudioEngineCommand
+    data class SetResonanceSmoother(val trackIndex: Int, val config: ResonanceSmootherConfig) : AudioEngineCommand
+    data class SetVocalRider(val trackIndex: Int, val config: VocalRiderConfig) : AudioEngineCommand
     data class SetReverbSend(val trackIndex: Int, val sendLevel: Float) : AudioEngineCommand
     data class SetMasterGain(val gainDb: Float) : AudioEngineCommand
     data class SetMasterLimiter(val config: MasterLimiterConfig) : AudioEngineCommand

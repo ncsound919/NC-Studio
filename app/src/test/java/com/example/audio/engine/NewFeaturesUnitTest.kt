@@ -37,6 +37,29 @@ class NewFeaturesUnitTest {
     }
 
     @Test
+    fun autoPitchEnabledActuallyChangesOffPitchSignal() {
+        val sampleRate = 48000.0
+        val detuned = 450.0 // closest semitone is A4 = 440 Hz
+        val frames = sampleRate.toInt() / 2
+        val input = FloatArray(frames * 2)
+        for (i in 0 until frames) {
+            val s = (kotlin.math.sin(2.0 * Math.PI * detuned * i / sampleRate) * 0.4).toFloat()
+            input[i * 2] = s
+            input[i * 2 + 1] = s
+        }
+
+        val processor = AutoPitchProcessor(sampleRate.toFloat())
+        processor.configure(enabled = true, correctionStrength = 1.0f)
+        val output = processor.processBuffer(input)
+
+        var differingSamples = 0
+        for (i in input.indices) {
+            if (kotlin.math.abs(input[i] - output[i]) > 1e-4f) differingSamples++
+        }
+        assertTrue("AutoPitch must alter an off-pitch signal, differing=$differingSamples", differingSamples > input.size / 4)
+    }
+
+    @Test
     fun autoPitchSilenceStaysSilence() {
         val p = AutoPitchProcessor(48000f)
         p.configure(enabled = true)

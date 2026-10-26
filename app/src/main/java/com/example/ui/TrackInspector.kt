@@ -13,13 +13,17 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GraphicEq
@@ -36,11 +40,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,29 +56,42 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.example.R
 import com.example.audio.dsp.FourBandEq
 import com.example.audio.model.ChannelLimiterConfig
 import com.example.audio.model.ChorusConfig
 import com.example.audio.model.CompressorConfig
+import com.example.audio.model.CompressorType
 import com.example.audio.model.DuckingDelayConfig
 import com.example.audio.model.EqBand
 import com.example.audio.model.EqConfig
 import com.example.audio.model.PresetLibrary
+import com.example.audio.model.ResonanceSmootherConfig
 import com.example.audio.model.ReverbConfig
 import com.example.audio.model.SaturationConfig
+import com.example.audio.model.SaturationType
 import com.example.audio.model.TrackData
 import com.example.audio.model.TrackPreset
+import com.example.audio.model.VocalRiderConfig
 import com.example.ui.components.AudioFaderSlider
 import com.example.ui.components.AudioRotaryKnob
 import com.example.ui.components.AudioSwitchToggle
+import com.example.ui.theme.Radius
 import com.example.ui.theme.ClipRed
+import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.ElectricLime
 import com.example.ui.theme.NeonCyan
+import com.example.ui.theme.PanelDeep
+import com.example.ui.theme.SurfaceSunken
 import com.example.ui.theme.StudioAmber
 import com.example.ui.theme.StudioBackground
 import com.example.ui.theme.StudioCard
@@ -90,9 +109,11 @@ enum class StripModule(val title: String, val icon: ImageVector, val color: Colo
     SATURATION("Saturation", Icons.Default.Whatshot, StudioAmber),
     COMPRESSOR("Compressor", Icons.Default.Tune, ElectricLime),
     CHORUS("Chorus / Doubler", Icons.Default.Waves, StudioPurple),
-    DELAY("Ducking Delay", Icons.Default.HourglassBottom, Color(0xFF00E5FF)),
+    DELAY("Ducking Delay", Icons.Default.HourglassBottom, NeonCyan),
     LIMITER("Limiter", Icons.Default.Security, ClipRed),
-    REVERB("Reverb Send", Icons.Default.Waves, Color(0xFF00B0FF)),
+    REVERB("Reverb Send", Icons.Default.Waves, ElectricBlue),
+    VOCAL_RIDER("Vocal Rider", Icons.Default.GraphicEq, ElectricLime),
+    RESONANCE("Resonance", Icons.Default.Tune, StudioAmber),
     AUTOPITCH("AutoPitch", Icons.Default.AutoAwesome, StudioPurple),
     NOISERED("Noise Red.", Icons.Default.Security, StudioAmber)
 }
@@ -110,12 +131,14 @@ fun TrackInspector(
     onUpdateReverbSend: (Float) -> Unit,
     onUpdateAutoPitch: (com.example.audio.model.AutoPitchConfig) -> Unit = {},
     onUpdateNoiseReduction: (com.example.audio.model.NoiseReductionConfig) -> Unit = {},
+    onUpdateVocalRider: (VocalRiderConfig) -> Unit = {},
+    onUpdateResonanceSmoother: (ResonanceSmootherConfig) -> Unit = {},
     masterReverb: ReverbConfig = ReverbConfig(),
     onUpdateMasterReverb: (ReverbConfig) -> Unit = {},
     onApplyPreset: (TrackPreset) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var activeModule by remember { mutableIntStateOf(0) }
+    var activeModule by rememberSaveable(track.index) { mutableIntStateOf(0) }
     var showPresetDialog by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
 
@@ -130,8 +153,8 @@ fun TrackInspector(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .border(1.dp, StudioCardBorder, RoundedCornerShape(8.dp)),
+                .clip(RoundedCornerShape(Radius.md))
+                .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.md)),
             color = StudioSurface
         ) {
             Row(
@@ -141,7 +164,7 @@ fun TrackInspector(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f, fill = false)) {
                     Box(
                         modifier = Modifier
                             .size(12.dp)
@@ -149,18 +172,22 @@ fun TrackInspector(
                             .background(Color(track.colorHex))
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Column {
+                    Column(modifier = Modifier.weight(1f, fill = false)) {
                         Text(
                             text = "CH ${track.index + 1} • ${track.name.uppercase()}",
                             color = TextPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp,
-                            fontFamily = FontFamily.Monospace
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = "Category: ${track.stemCategory.displayName}",
                             color = TextMuted,
-                            fontSize = 10.sp
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -169,78 +196,97 @@ fun TrackInspector(
                     // Pro Presets Quick Button
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
+                            .clip(RoundedCornerShape(Radius.sm))
                             .background(StudioPurple.copy(alpha = 0.25f))
-                            .border(1.dp, StudioPurple, RoundedCornerShape(4.dp))
+                            .border(1.dp, StudioPurple, RoundedCornerShape(Radius.sm))
                             .clickable { showPresetDialog = true }
                             .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .semantics {
+                                contentDescription = "Pro presets, opens preset dialog for ${track.name}"
+                            }
                             .testTag("open_presets_button"),
                         contentAlignment = Alignment.Center
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = StudioPurple, modifier = Modifier.size(12.dp))
-                            Text("PRO PRESETS", color = StudioPurple, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text(stringResource(R.string.ui_pro_presets), color = StudioPurple, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, maxLines = 1, softWrap = false)
                         }
                     }
 
-                    // Mini Active DSP Badges
-                    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                        MiniDspBadge("EQ", track.eqConfig.enabled, NeonCyan)
-                        MiniDspBadge("SAT", track.saturationConfig.enabled, StudioAmber)
-                        MiniDspBadge("COMP", track.compressorConfig.enabled, ElectricLime)
-                        MiniDspBadge("CHO", track.chorusConfig.enabled, StudioPurple)
-                        MiniDspBadge("DLY", track.delayConfig.enabled, Color(0xFF00E5FF))
-                        MiniDspBadge("LIM", track.limiterConfig.enabled, ClipRed)
-                    }
+                    
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Module Selection Navigation Bar
+        // Scrollable Module Selection - show one at a time
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(6.dp))
+                .clip(RoundedCornerShape(Radius.md))
                 .background(StudioSurface)
-                .border(1.dp, StudioCardBorder, RoundedCornerShape(6.dp))
+                .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.md))
                 .padding(4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            StripModule.values().forEachIndexed { index, module ->
-                val isSelected = activeModule == index
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(if (isSelected) module.color.copy(alpha = 0.2f) else Color.Transparent)
-                        .border(
-                            1.dp,
-                            if (isSelected) module.color else Color.Transparent,
-                            RoundedCornerShape(4.dp)
-                        )
-                        .clickable { activeModule = index }
-                        .padding(vertical = 6.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = module.icon,
-                            contentDescription = module.title,
-                            tint = if (isSelected) module.color else TextMuted,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = module.title.substringBefore(" "),
-                            color = if (isSelected) module.color else TextMuted,
-                            fontSize = 8.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
+            // Left scroll arrow
+            IconButton(
+                onClick = { activeModule = if (activeModule > 0) activeModule - 1 else StripModule.values().size - 1 },
+                modifier = Modifier
+                    .size(48.dp)
+                    .semantics { contentDescription = "Previous effect module" }
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                    contentDescription = "Previous module",
+                    tint = NeonCyan
+                )
+            }
+
+            // Current module - full width
+            val currentModule = StripModule.values()[activeModule]
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(Radius.sm))
+                    .background(currentModule.color.copy(alpha = 0.2f))
+                    .border(1.dp, currentModule.color, RoundedCornerShape(Radius.sm))
+                    .clickable { /* Current module shown */ }
+                    .padding(vertical = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = currentModule.icon,
+                        contentDescription = currentModule.title,
+                        tint = currentModule.color,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = currentModule.title.substringBefore(" "),
+                        color = currentModule.color,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
                 }
+            }
+
+            // Right scroll arrow
+            IconButton(
+                onClick = { activeModule = (activeModule + 1) % StripModule.values().size },
+                modifier = Modifier
+                    .size(48.dp)
+                    .semantics { contentDescription = "Next effect module" }
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = "Next module",
+                    tint = NeonCyan
+                )
             }
         }
 
@@ -266,6 +312,8 @@ fun TrackInspector(
                     onUpdateSend = onUpdateReverbSend,
                     onUpdateMasterReverb = onUpdateMasterReverb
                 )
+                StripModule.VOCAL_RIDER -> VocalRiderModuleEditor(track.vocalRiderConfig, onUpdateVocalRider)
+                StripModule.RESONANCE -> ResonanceSmootherModuleEditor(track.resonanceSmootherConfig, onUpdateResonanceSmoother)
                 StripModule.AUTOPITCH -> AutoPitchModuleEditor(track.autoPitchConfig, onUpdateAutoPitch)
                 StripModule.NOISERED -> NoiseReductionModuleEditor(track.noiseReductionConfig, onUpdateNoiseReduction)
             }
@@ -308,11 +356,11 @@ fun TrackPresetDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("PROFESSIONAL MIX PRESETS", color = StudioPurple, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        Text(stringResource(R.string.ui_professional_mix_presets), color = StudioPurple, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         Text("Technique-based channel strip chains for $trackName", color = TextMuted, fontSize = 10.sp)
                     }
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Close", tint = TextMuted)
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close mix presets", tint = TextSecondary)
                     }
                 }
 
@@ -326,9 +374,9 @@ fun TrackPresetDialog(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(6.dp))
+                                .clip(RoundedCornerShape(Radius.md))
                                 .background(StudioCard)
-                                .border(1.dp, StudioCardBorder, RoundedCornerShape(6.dp))
+                                .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.md))
                                 .clickable { onSelectPreset(preset) }
                                 .padding(10.dp)
                         ) {
@@ -353,7 +401,7 @@ fun TrackPresetDialog(
                                         Text(
                                             text = preset.category.uppercase(),
                                             color = StudioPurple,
-                                            fontSize = 8.sp,
+                                            fontSize = 10.sp,
                                             fontWeight = FontWeight.Bold,
                                             fontFamily = FontFamily.Monospace
                                         )
@@ -388,8 +436,8 @@ fun EqModuleEditor(config: EqConfig, onUpdate: (EqConfig) -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("4-BAND PARAMETRIC EQUALIZER", color = NeonCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Text("Robert Bristow-Johnson Biquads with Live Visual Curve", color = TextMuted, fontSize = 9.sp)
+                    Text(stringResource(R.string.ui_4_band_parametric_equalizer), color = NeonCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_robert_bristow_johnson_biquads_with_live_visual_), color = TextMuted, fontSize = 10.sp)
                 }
                 AudioSwitchToggle(
                     checked = config.enabled,
@@ -406,9 +454,9 @@ fun EqModuleEditor(config: EqConfig, onUpdate: (EqConfig) -> Unit) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(110.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xFF080B10))
-                    .border(1.dp, StudioCardBorder, RoundedCornerShape(6.dp))
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(SurfaceSunken)
+                    .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.md))
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val w = size.width
@@ -419,11 +467,11 @@ fun EqModuleEditor(config: EqConfig, onUpdate: (EqConfig) -> Unit) {
 
                     for (gf in doubleArrayOf(100.0, 1000.0, 10000.0)) {
                         val x = ((log10(gf / minF) / logRange) * w).toFloat()
-                        drawLine(Color(0xFF1E283A), Offset(x, 0f), Offset(x, h), 1f)
+                        drawLine(StudioCardBorder, Offset(x, 0f), Offset(x, h), 1f)
                     }
 
                     val yZero = h / 2f
-                    drawLine(Color(0xFF334155), Offset(0f, yZero), Offset(w, yZero), 1f)
+                    drawLine(StudioCardBorder, Offset(0f, yZero), Offset(w, yZero), 1f)
 
                     val curvePath = Path()
                     var first = true
@@ -451,6 +499,31 @@ fun EqModuleEditor(config: EqConfig, onUpdate: (EqConfig) -> Unit) {
                 }
             }
 
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Dedicated high-pass and low-pass filters run before the musical bands.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(StudioCard)
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                EqFilterCluster(
+                    title = "High-Pass",
+                    band = config.highPass,
+                    freqRange = 20f..800f,
+                    accentColor = NeonCyan
+                ) { onUpdate(config.copy(highPass = it)) }
+                EqFilterCluster(
+                    title = "Low-Pass",
+                    band = config.lowPass,
+                    freqRange = 2000f..20000f,
+                    accentColor = StudioPurple
+                ) { onUpdate(config.copy(lowPass = it)) }
+            }
+
             Spacer(modifier = Modifier.height(12.dp))
 
             // 4 Band Knobs Row
@@ -458,7 +531,7 @@ fun EqModuleEditor(config: EqConfig, onUpdate: (EqConfig) -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                EqBandRotaryCluster("BAND 1 HPF", config.band1, 20f..500f, NeonCyan) {
+                EqBandRotaryCluster("BAND 1", config.band1, 20f..500f, NeonCyan) {
                     onUpdate(config.copy(band1 = it))
                 }
                 EqBandRotaryCluster("BAND 2 MID", config.band2, 100f..3000f, ElectricLime) {
@@ -476,6 +549,39 @@ fun EqModuleEditor(config: EqConfig, onUpdate: (EqConfig) -> Unit) {
 }
 
 @Composable
+fun EqFilterCluster(
+    title: String,
+    band: EqBand,
+    freqRange: ClosedFloatingPointRange<Float>,
+    accentColor: Color,
+    onUpdate: (EqBand) -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .clip(RoundedCornerShape(Radius.md))
+            .padding(4.dp)
+    ) {
+        AudioSwitchToggle(
+            checked = band.enabled,
+            onCheckedChange = { onUpdate(band.copy(enabled = it)) },
+            label = title,
+            activeColor = accentColor
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        AudioRotaryKnob(
+            value = band.frequencyHz,
+            onValueChange = { onUpdate(band.copy(frequencyHz = it)) },
+            range = freqRange,
+            label = "Freq",
+            accentColor = accentColor,
+            knobSize = 52.dp,
+            valueFormatter = { if (it >= 1000f) "%.1fkHz".format(it / 1000f) else "${it.toInt()}Hz" }
+        )
+    }
+}
+
+@Composable
 fun EqBandRotaryCluster(
     title: String,
     band: EqBand,
@@ -486,12 +592,12 @@ fun EqBandRotaryCluster(
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
+            .clip(RoundedCornerShape(Radius.md))
             .background(StudioCard)
-            .border(0.5.dp, StudioCardBorder, RoundedCornerShape(6.dp))
+            .border(0.5.dp, StudioCardBorder, RoundedCornerShape(Radius.md))
             .padding(6.dp)
     ) {
-        Text(title, color = accentColor, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+        Text(title, color = accentColor, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
         Spacer(modifier = Modifier.height(4.dp))
         AudioRotaryKnob(
             value = band.frequencyHz,
@@ -530,8 +636,8 @@ fun SaturationModuleEditor(config: SaturationConfig, onUpdate: (SaturationConfig
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("TAPE / TUBE SATURATION", color = StudioAmber, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Text("Harmonic warmth & soft-clip tape compression", color = TextMuted, fontSize = 9.sp)
+                    Text(stringResource(R.string.ui_tape_tube_saturation), color = StudioAmber, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_harmonic_warmth_soft_clip_tape_compression), color = TextMuted, fontSize = 10.sp)
                 }
                 AudioSwitchToggle(
                     checked = config.enabled,
@@ -541,7 +647,11 @@ fun SaturationModuleEditor(config: SaturationConfig, onUpdate: (SaturationConfig
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
+
+            SaturationTypeSelector(config) { onUpdate(it) }
+
+            Spacer(modifier = Modifier.height(10.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -580,11 +690,98 @@ fun SaturationModuleEditor(config: SaturationConfig, onUpdate: (SaturationConfig
 }
 
 @Composable
+fun SaturationTypeSelector(config: SaturationConfig, onUpdate: (SaturationConfig) -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "SATURATION MODEL",
+            color = StudioAmber,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            SaturationType.values().forEach { type ->
+                val selected = config.type == type
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(Radius.sm))
+                        .background(if (selected) StudioAmber.copy(alpha = 0.22f) else StudioCard)
+                        .border(1.dp, if (selected) StudioAmber else StudioCardBorder, RoundedCornerShape(Radius.sm))
+                        .clickable { onUpdate(config.withType(type)) }
+                        .padding(horizontal = 8.dp, vertical = 5.dp)
+                        .testTag("saturation_type_${type.name.lowercase()}")
+                ) {
+                    Text(
+                        text = type.displayName.uppercase(),
+                        color = if (selected) StudioAmber else TextMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(text = config.type.character, color = TextMuted, fontSize = 10.sp)
+    }
+}
+
+@Composable
+fun CompressorTypeSelector(config: CompressorConfig, onUpdate: (CompressorConfig) -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "COMPRESSOR MODEL",
+            color = ElectricLime,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            CompressorType.values().forEach { type ->
+                val selected = config.type == type
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(Radius.sm))
+                        .background(if (selected) ElectricLime.copy(alpha = 0.20f) else StudioCard)
+                        .border(1.dp, if (selected) ElectricLime else StudioCardBorder, RoundedCornerShape(Radius.sm))
+                        .clickable { onUpdate(config.withType(type)) }
+                        .padding(horizontal = 8.dp, vertical = 5.dp)
+                        .testTag("compressor_type_${type.name.lowercase()}")
+                ) {
+                    Text(
+                        text = type.displayName.uppercase(),
+                        color = if (selected) ElectricLime else TextMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(text = config.type.character, color = TextMuted, fontSize = 10.sp)
+    }
+}
+
+@Composable
 fun CompressorModuleEditor(
     config: CompressorConfig,
     gainReductionDb: Float,
     onUpdate: (CompressorConfig) -> Unit
 ) {
+    var showAdvanced by rememberSaveable { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = StudioSurface),
@@ -597,8 +794,8 @@ fun CompressorModuleEditor(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("DYNAMIC COMPRESSOR", color = ElectricLime, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Text("Feedforward soft-knee dynamics with live GR meter", color = TextMuted, fontSize = 9.sp)
+                    Text(stringResource(R.string.ui_dynamic_compressor), color = ElectricLime, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_feedforward_soft_knee_dynamics_with_live_gr_mete), color = TextMuted, fontSize = 10.sp)
                 }
                 AudioSwitchToggle(
                     checked = config.enabled,
@@ -610,37 +807,42 @@ fun CompressorModuleEditor(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            CompressorTypeSelector(config) { onUpdate(it) }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             // Real-time Gain Reduction Meter
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xFF090D14))
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(SurfaceSunken)
                     .padding(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("GAIN REDUCTION", color = StudioAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Text(stringResource(R.string.ui_gain_reduction), color = StudioAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 Spacer(modifier = Modifier.width(8.dp))
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .height(10.dp)
                         .clip(RoundedCornerShape(3.dp))
-                        .background(Color(0xFF1E2638))
+                        .background(StudioCard)
                 ) {
                     val grFrac = (gainReductionDb / 18f).coerceIn(0f, 1f)
                     Box(modifier = Modifier.fillMaxHeight().fillMaxWidth(grFrac).background(StudioAmber))
                 }
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("-%.1fdB".format(gainReductionDb), color = StudioAmber, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                Text(stringResource(R.string.ui_1fdb).format(gainReductionDb), color = StudioAmber, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // 5 Rotary Knobs Grid
+            // Primary controls stay visible; time constants and makeup gain
+            // are disclosure-only so the module reads at a glance.
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 AudioRotaryKnob(
                     value = config.thresholdDb,
@@ -660,33 +862,55 @@ fun CompressorModuleEditor(
                     defaultValue = 3.5f,
                     valueFormatter = { "%.1f:1".format(it) }
                 )
-                AudioRotaryKnob(
-                    value = config.attackMs,
-                    onValueChange = { onUpdate(config.copy(attackMs = it)) },
-                    range = 1f..100f,
-                    label = "Attack",
-                    accentColor = ElectricLime,
-                    defaultValue = 15f,
-                    valueFormatter = { "%.0fms".format(it) }
+            }
+
+            TextButton(
+                onClick = { showAdvanced = !showAdvanced },
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("compressor_advanced_toggle")
+            ) {
+                Text(
+                    text = if (showAdvanced) "Hide advanced" else "Advanced: attack, release, makeup",
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
                 )
-                AudioRotaryKnob(
-                    value = config.releaseMs,
-                    onValueChange = { onUpdate(config.copy(releaseMs = it)) },
-                    range = 20f..600f,
-                    label = "Release",
-                    accentColor = ElectricLime,
-                    defaultValue = 120f,
-                    valueFormatter = { "%.0fms".format(it) }
-                )
-                AudioRotaryKnob(
-                    value = config.makeupGainDb,
-                    onValueChange = { onUpdate(config.copy(makeupGainDb = it)) },
-                    range = 0f..18f,
-                    label = "Makeup",
-                    accentColor = ElectricLime,
-                    defaultValue = 2f,
-                    valueFormatter = { "+%.1fdB".format(it) }
-                )
+            }
+
+            if (showAdvanced) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    AudioRotaryKnob(
+                        value = config.attackMs,
+                        onValueChange = { onUpdate(config.copy(attackMs = it)) },
+                        range = 0.1f..100f,
+                        label = "Attack",
+                        accentColor = ElectricLime,
+                        defaultValue = 15f,
+                        valueFormatter = { if (it < 1f) "%.2fms".format(it) else "%.0fms".format(it) }
+                    )
+                    AudioRotaryKnob(
+                        value = config.releaseMs,
+                        onValueChange = { onUpdate(config.copy(releaseMs = it)) },
+                        range = 20f..600f,
+                        label = "Release",
+                        accentColor = ElectricLime,
+                        defaultValue = 120f,
+                        valueFormatter = { "%.0fms".format(it) }
+                    )
+                    AudioRotaryKnob(
+                        value = config.makeupGainDb,
+                        onValueChange = { onUpdate(config.copy(makeupGainDb = it)) },
+                        range = 0f..18f,
+                        label = "Makeup",
+                        accentColor = ElectricLime,
+                        defaultValue = 2f,
+                        valueFormatter = { "+%.1fdB".format(it) }
+                    )
+                }
             }
         }
     }
@@ -706,8 +930,8 @@ fun ChorusModuleEditor(config: ChorusConfig, onUpdate: (ChorusConfig) -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("STEREO CHORUS / DOUBLER", color = StudioPurple, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Text("LFO delay modulation for vocal & synth doubling", color = TextMuted, fontSize = 9.sp)
+                    Text(stringResource(R.string.ui_stereo_chorus_doubler), color = StudioPurple, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_lfo_delay_modulation_for_vocal_synth_doubling), color = TextMuted, fontSize = 10.sp)
                 }
                 AudioSwitchToggle(
                     checked = config.enabled,
@@ -787,14 +1011,14 @@ fun DuckingDelayModuleEditor(config: DuckingDelayConfig, onUpdate: (DuckingDelay
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("STEREO DELAY WITH DUCKING", color = Color(0xFF00E5FF), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Text("Sidechain ducks repetitions during phrase vocals/leads", color = TextMuted, fontSize = 9.sp)
+                    Text(stringResource(R.string.ui_stereo_delay_with_ducking), color = NeonCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_sidechain_ducks_repetitions_during_phrase_vocals), color = TextMuted, fontSize = 10.sp)
                 }
                 AudioSwitchToggle(
                     checked = config.enabled,
                     onCheckedChange = { onUpdate(config.copy(enabled = it)) },
                     label = "Delay On",
-                    activeColor = Color(0xFF00E5FF)
+                    activeColor = NeonCyan
                 )
             }
 
@@ -809,7 +1033,7 @@ fun DuckingDelayModuleEditor(config: DuckingDelayConfig, onUpdate: (DuckingDelay
                     onValueChange = { onUpdate(config.copy(timeMs = it)) },
                     range = 50f..1000f,
                     label = "Time",
-                    accentColor = Color(0xFF00E5FF),
+                    accentColor = NeonCyan,
                     defaultValue = 350f,
                     valueFormatter = { "%.0fms".format(it) }
                 )
@@ -818,7 +1042,7 @@ fun DuckingDelayModuleEditor(config: DuckingDelayConfig, onUpdate: (DuckingDelay
                     onValueChange = { onUpdate(config.copy(feedback = it)) },
                     range = 0f..0.85f,
                     label = "Feedback",
-                    accentColor = Color(0xFF00E5FF),
+                    accentColor = NeonCyan,
                     defaultValue = 0.35f,
                     valueFormatter = { "${(it * 100).toInt()}%" }
                 )
@@ -827,7 +1051,7 @@ fun DuckingDelayModuleEditor(config: DuckingDelayConfig, onUpdate: (DuckingDelay
                     onValueChange = { onUpdate(config.copy(mix = it)) },
                     range = 0f..0.8f,
                     label = "Mix",
-                    accentColor = Color(0xFF00E5FF),
+                    accentColor = NeonCyan,
                     defaultValue = 0.25f,
                     valueFormatter = { "${(it * 100).toInt()}%" }
                 )
@@ -839,8 +1063,8 @@ fun DuckingDelayModuleEditor(config: DuckingDelayConfig, onUpdate: (DuckingDelay
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xFF0F1420))
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(PanelDeep)
                     .padding(10.dp)
             ) {
                 Column {
@@ -849,7 +1073,7 @@ fun DuckingDelayModuleEditor(config: DuckingDelayConfig, onUpdate: (DuckingDelay
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("SIDECHAIN DUCKING", color = NeonCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        Text(stringResource(R.string.ui_sidechain_ducking), color = NeonCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         AudioSwitchToggle(
                             checked = config.duckingEnabled,
                             onCheckedChange = { onUpdate(config.copy(duckingEnabled = it)) },
@@ -904,8 +1128,8 @@ fun ChannelLimiterModuleEditor(config: ChannelLimiterConfig, onUpdate: (ChannelL
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("CHANNEL BRICKWALL LIMITER", color = ClipRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Text("Zero-overs peak protection per channel", color = TextMuted, fontSize = 9.sp)
+                    Text(stringResource(R.string.ui_channel_brickwall_limiter), color = ClipRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_zero_overs_peak_protection_per_channel), color = TextMuted, fontSize = 10.sp)
                 }
                 AudioSwitchToggle(
                     checked = config.enabled,
@@ -959,8 +1183,8 @@ fun ReverbSendModuleEditor(
             border = androidx.compose.foundation.BorderStroke(1.dp, StudioCardBorder)
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
-                Text("CHANNEL REVERB SEND LEVEL (WET / DRY)", color = Color(0xFF00B0FF), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                Text("Controls the dry/wet send proportion feeding the Schroeder Reverb bus", color = TextMuted, fontSize = 9.sp)
+                Text(stringResource(R.string.ui_channel_reverb_send_level_wet_dry), color = ElectricBlue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.ui_controls_the_dry_wet_send_proportion_feeding_the), color = TextMuted, fontSize = 10.sp)
 
                 Spacer(modifier = Modifier.height(12.dp))
 
@@ -969,7 +1193,7 @@ fun ReverbSendModuleEditor(
                     onValueChange = { onUpdateSend((it / 100f).coerceIn(0f, 1f)) },
                     range = 0f..100f,
                     label = "Channel Send %",
-                    accentColor = Color(0xFF00B0FF),
+                    accentColor = ElectricBlue,
                     defaultValue = 0f
                 )
             }
@@ -988,14 +1212,14 @@ fun ReverbSendModuleEditor(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("CORE SCHROEDER REVERB DSP ENGINE", color = Color(0xFF00B0FF), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        Text("Decay Time (RT60), Pre-Delay, Room Size & Abbey Road Filters", color = TextMuted, fontSize = 9.sp)
+                        Text(stringResource(R.string.ui_core_schroeder_reverb_dsp_engine), color = ElectricBlue, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.ui_decay_time_rt60_pre_delay_room_size_abbey_road_f), color = TextMuted, fontSize = 10.sp)
                     }
                     AudioSwitchToggle(
                         checked = masterReverb.enabled,
                         onCheckedChange = { onUpdateMasterReverb(masterReverb.copy(enabled = it)) },
                         label = "Reverb Bus On",
-                        activeColor = Color(0xFF00B0FF)
+                        activeColor = ElectricBlue
                     )
                 }
 
@@ -1011,7 +1235,7 @@ fun ReverbSendModuleEditor(
                         onValueChange = { onUpdateMasterReverb(masterReverb.copy(decayTimeSec = it)) },
                         range = 0.5f..10.0f,
                         label = "Decay Time",
-                        accentColor = Color(0xFF00B0FF),
+                        accentColor = ElectricBlue,
                         defaultValue = 2.0f,
                         valueFormatter = { "%.1fs".format(it) }
                     )
@@ -1020,7 +1244,7 @@ fun ReverbSendModuleEditor(
                         onValueChange = { onUpdateMasterReverb(masterReverb.copy(preDelayMs = it)) },
                         range = 0f..100f,
                         label = "Pre-Delay",
-                        accentColor = Color(0xFF00B0FF),
+                        accentColor = ElectricBlue,
                         defaultValue = 25f,
                         valueFormatter = { "%.0fms".format(it) }
                     )
@@ -1029,7 +1253,7 @@ fun ReverbSendModuleEditor(
                         onValueChange = { onUpdateMasterReverb(masterReverb.copy(roomSize = it)) },
                         range = 0.10f..0.98f,
                         label = "Room Size",
-                        accentColor = Color(0xFF00B0FF),
+                        accentColor = ElectricBlue,
                         defaultValue = 0.60f,
                         valueFormatter = { "%.2f".format(it) }
                     )
@@ -1038,7 +1262,7 @@ fun ReverbSendModuleEditor(
                         onValueChange = { onUpdateMasterReverb(masterReverb.copy(returnLevel = it / 100f)) },
                         range = 0f..150f,
                         label = "Return Level",
-                        accentColor = Color(0xFF00B0FF),
+                        accentColor = ElectricBlue,
                         defaultValue = 70f,
                         valueFormatter = { "%.0f%%".format(it) }
                     )
@@ -1098,8 +1322,8 @@ fun AutoPitchModuleEditor(config: com.example.audio.model.AutoPitchConfig, onUpd
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("AUTO PITCH CORRECTION", color = StudioPurple, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Text("Monophonic pitch correction to nearest semitone", color = TextMuted, fontSize = 9.sp)
+                    Text(stringResource(R.string.ui_auto_pitch_correction), color = StudioPurple, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_monophonic_pitch_correction_to_nearest_semitone), color = TextMuted, fontSize = 10.sp)
                 }
                 AudioSwitchToggle(
                     checked = config.enabled,
@@ -1136,8 +1360,8 @@ fun NoiseReductionModuleEditor(config: com.example.audio.model.NoiseReductionCon
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("NOISE REDUCTION", color = StudioAmber, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Text("Spectral noise gate and reduction", color = TextMuted, fontSize = 9.sp)
+                    Text(stringResource(R.string.ui_noise_reduction), color = StudioAmber, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_spectral_noise_gate_and_reduction), color = TextMuted, fontSize = 10.sp)
                 }
                 AudioSwitchToggle(
                     checked = config.enabled,
@@ -1175,14 +1399,162 @@ fun NoiseReductionModuleEditor(config: com.example.audio.model.NoiseReductionCon
 }
 
 @Composable
+fun VocalRiderModuleEditor(config: VocalRiderConfig, onUpdate: (VocalRiderConfig) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = StudioSurface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, StudioCardBorder)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Vocal Rider", color = ElectricLime, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_vocal_rider_description), color = TextMuted, fontSize = 10.sp)
+                }
+                AudioSwitchToggle(
+                    checked = config.enabled,
+                    onCheckedChange = { onUpdate(config.copy(enabled = it)) },
+                    label = "Ride On",
+                    activeColor = ElectricLime
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                AudioRotaryKnob(
+                    value = config.targetLufs,
+                    onValueChange = { onUpdate(config.copy(targetLufs = it)) },
+                    range = -30f..-10f,
+                    label = "Target",
+                    accentColor = ElectricLime,
+                    defaultValue = -18f,
+                    knobSize = 58.dp,
+                    valueFormatter = { "%.0f LUFS".format(it) }
+                )
+                AudioRotaryKnob(
+                    value = config.maxGainDb,
+                    onValueChange = { onUpdate(config.copy(maxGainDb = it)) },
+                    range = 0f..12f,
+                    label = "Max Up",
+                    accentColor = ElectricLime,
+                    defaultValue = 6f,
+                    knobSize = 58.dp,
+                    valueFormatter = { "+%.1fdB".format(it) }
+                )
+                AudioRotaryKnob(
+                    value = config.minGainDb,
+                    onValueChange = { onUpdate(config.copy(minGainDb = it)) },
+                    range = -18f..0f,
+                    label = "Max Down",
+                    accentColor = ElectricLime,
+                    defaultValue = -6f,
+                    knobSize = 58.dp,
+                    valueFormatter = { "%.1fdB".format(it) }
+                )
+                AudioRotaryKnob(
+                    value = config.sensitivity,
+                    onValueChange = { onUpdate(config.copy(sensitivity = it)) },
+                    range = 0f..1f,
+                    label = "Speed",
+                    accentColor = ElectricLime,
+                    defaultValue = 0.5f,
+                    knobSize = 58.dp,
+                    valueFormatter = { "${(it * 100).toInt()}%" }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ResonanceSmootherModuleEditor(config: ResonanceSmootherConfig, onUpdate: (ResonanceSmootherConfig) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = StudioSurface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, StudioCardBorder)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Resonance Suppression", color = StudioAmber, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_resonance_suppression_description), color = TextMuted, fontSize = 10.sp)
+                }
+                AudioSwitchToggle(
+                    checked = config.enabled,
+                    onCheckedChange = { onUpdate(config.copy(enabled = it)) },
+                    label = "Dyn Notch",
+                    activeColor = StudioAmber
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                AudioRotaryKnob(
+                    value = config.frequencyHz,
+                    onValueChange = { onUpdate(config.copy(frequencyHz = it)) },
+                    range = 1000f..10000f,
+                    label = "Frequency",
+                    accentColor = StudioAmber,
+                    defaultValue = 3200f,
+                    knobSize = 58.dp,
+                    valueFormatter = { "%.1fkHz".format(it / 1000f) }
+                )
+                AudioRotaryKnob(
+                    value = config.thresholdDb,
+                    onValueChange = { onUpdate(config.copy(thresholdDb = it)) },
+                    range = -40f..-6f,
+                    label = "Threshold",
+                    accentColor = StudioAmber,
+                    defaultValue = -18f,
+                    knobSize = 58.dp,
+                    valueFormatter = { "%.0fdB".format(it) }
+                )
+                AudioRotaryKnob(
+                    value = config.depthDb,
+                    onValueChange = { onUpdate(config.copy(depthDb = it)) },
+                    range = -18f..0f,
+                    label = "Depth",
+                    accentColor = StudioAmber,
+                    defaultValue = -6f,
+                    knobSize = 58.dp,
+                    valueFormatter = { "%.1fdB".format(it) }
+                )
+                AudioRotaryKnob(
+                    value = config.qFactor,
+                    onValueChange = { onUpdate(config.copy(qFactor = it)) },
+                    range = 1f..12f,
+                    label = "Q",
+                    accentColor = StudioAmber,
+                    defaultValue = 4f,
+                    knobSize = 58.dp,
+                    valueFormatter = { "%.1f".format(it) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
 fun MiniDspBadge(text: String, active: Boolean, activeColor: Color) {
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(3.dp))
-            .background(if (active) activeColor.copy(alpha = 0.2f) else Color(0xFF0F1420))
+            .background(if (active) activeColor.copy(alpha = 0.2f) else PanelDeep)
             .border(1.dp, if (active) activeColor else StudioCardBorder, RoundedCornerShape(3.dp))
             .padding(horizontal = 4.dp, vertical = 2.dp)
     ) {
-        Text(text, color = if (active) activeColor else TextMuted, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+        Text(text, color = if (active) activeColor else TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
     }
 }

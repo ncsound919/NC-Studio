@@ -18,10 +18,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -40,9 +43,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -65,6 +69,14 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import kotlin.math.log10
 
+/**
+ * Snaps a pan value to center (0) when within a small threshold.
+ * Used for pan center detent behavior.
+ */
+fun snapPanToCenter(pan: Float, threshold: Float = 0.05f): Float {
+    return if (kotlin.math.abs(pan) < threshold) 0f else pan
+}
+
 @Composable
 fun MixerView(
     session: ProjectSession,
@@ -78,57 +90,109 @@ fun MixerView(
     onSetReverbSend: (Int, Float) -> Unit,
     onSetMasterGain: (Float) -> Unit,
     onApplyMasterPreset: (MasterPreset) -> Unit = {},
+    hapticsEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
-    Row(
+    Column(
         modifier = modifier
             .fillMaxSize()
             .background(StudioBackground)
             .padding(8.dp)
-            .testTag("mixer_view")
     ) {
-        // Scrollable 16 Track Channel Strips
-        LazyRow(
+        Row(
             modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                .fillMaxWidth()
+                .weight(1f),
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            itemsIndexed(session.tracks) { index, track ->
-                val peak = uiState.trackPeaks.getOrElse(index) { 0f }
-                val gr = uiState.trackGainReductions.getOrElse(index) { 0f }
-                val isSelected = uiState.selectedTrackIndex == index
-
+            // Show only the selected track (single channel strip)
+            val selectedTrack = session.tracks.getOrNull(uiState.selectedTrackIndex)
+            if (selectedTrack != null) {
                 ChannelStrip(
-                    track = track,
-                    peakLevel = peak,
-                    gainReductionDb = gr,
-                    isSelected = isSelected,
-                    onSelect = { onSelectTrack(index) },
-                    onGainChange = { gain -> onSetTrackGain(index, gain) },
-                    onPanChange = { pan -> onSetTrackPan(index, pan) },
-                    onToggleMute = { onToggleMute(index) },
-                    onToggleSolo = { onToggleSolo(index) },
-                    onToggleArm = { onToggleArm(index) },
-                    onReverbSendChange = { send -> onSetReverbSend(index, send) },
-                    modifier = Modifier.width(108.dp)
+                    track = selectedTrack,
+                    peakLevel = uiState.trackPeaks.getOrElse(uiState.selectedTrackIndex) { 0f },
+                    gainReductionDb = uiState.trackGainReductions.getOrElse(uiState.selectedTrackIndex) { 0f },
+                    isSelected = true,
+                    onSelect = { onSelectTrack(uiState.selectedTrackIndex) },
+                    onGainChange = { onSetTrackGain(uiState.selectedTrackIndex, it) },
+                    onPanChange = { onSetTrackPan(uiState.selectedTrackIndex, it) },
+                    onToggleMute = { onToggleMute(uiState.selectedTrackIndex) },
+                    onToggleSolo = { onToggleSolo(uiState.selectedTrackIndex) },
+                    onToggleArm = { onToggleArm(uiState.selectedTrackIndex) },
+                    onReverbSendChange = { onSetReverbSend(uiState.selectedTrackIndex, it) },
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .weight(1f)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // Master Bus Channel Strip
+            MasterChannelStrip(
+                session = session,
+                masterPeakL = uiState.masterPeakL,
+                masterPeakR = uiState.masterPeakR,
+                momentaryLufs = uiState.momentaryLufs,
+                integratedLufs = uiState.integratedLufs,
+                onMasterGainChange = onSetMasterGain,
+                onApplyMasterPreset = onApplyMasterPreset,
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(118.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Track selector at bottom for better visibility
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = { if (uiState.selectedTrackIndex > 0) onSelectTrack(uiState.selectedTrackIndex - 1) },
+                enabled = uiState.selectedTrackIndex > 0,
+                modifier = Modifier
+                    .size(48.dp)
+                    .semantics { contentDescription = "Previous track" }
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                    contentDescription = null,
+                    tint = if (uiState.selectedTrackIndex > 0) NeonCyan else TextMuted
+                )
+            }
+
+            Spacer(modifier = Modifier.width(16.dp))
+
+            Text(
+                text = "Trk ${uiState.selectedTrackIndex + 1} / ${session.tracks.size}",
+                color = TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+
+            Spacer(modifier = Modifier.width(16.dp))
+
+            IconButton(
+                onClick = { if (uiState.selectedTrackIndex < session.tracks.size - 1) onSelectTrack(uiState.selectedTrackIndex + 1) },
+                enabled = uiState.selectedTrackIndex < session.tracks.size - 1,
+                modifier = Modifier
+                    .size(48.dp)
+                    .semantics { contentDescription = "Next track" }
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = if (uiState.selectedTrackIndex < session.tracks.size - 1) NeonCyan else TextMuted
                 )
             }
         }
-
-        Spacer(modifier = Modifier.width(8.dp))
-
-        // Master Bus Channel Strip
-        MasterChannelStrip(
-            session = session,
-            masterPeakL = uiState.masterPeakL,
-            masterPeakR = uiState.masterPeakR,
-            momentaryLufs = uiState.momentaryLufs,
-            integratedLufs = uiState.integratedLufs,
-            onMasterGainChange = onSetMasterGain,
-            onApplyMasterPreset = onApplyMasterPreset,
-            modifier = Modifier.width(118.dp)
-        )
     }
 }
 
@@ -154,7 +218,6 @@ fun ChannelStrip(
 
     Surface(
         modifier = modifier
-            .fillMaxHeight()
             .clip(RoundedCornerShape(8.dp))
             .border(1.5.dp, borderColor, RoundedCornerShape(8.dp))
             .clickable { onSelect() }
@@ -206,7 +269,7 @@ fun ChannelStrip(
                 Spacer(modifier = Modifier.width(2.dp))
                 MiniBadge(text = "SAT", active = track.saturationConfig.enabled, activeColor = StudioAmber)
                 Spacer(modifier = Modifier.width(2.dp))
-                MiniBadge(text = if (gainReductionDb > 0.5f) "-${gainReductionDb.toInt()}" else "CP", active = track.compressorConfig.enabled, activeColor = if (gainReductionDb > 0.5f) StudioAmber else ElectricLime)
+                MiniBadge(text = if (gainReductionDb > 0.5f) "-" + gainReductionDb.toInt() else "CP", active = track.compressorConfig.enabled, activeColor = if (gainReductionDb > 0.5f) StudioAmber else ElectricLime)
                 Spacer(modifier = Modifier.width(2.dp))
                 MiniBadge(text = "DL", active = track.delayConfig.enabled, activeColor = Color(0xFFD05CE3))
             }
@@ -231,14 +294,17 @@ fun ChannelStrip(
                     modifier = Modifier
                         .height(20.dp)
                         .fillMaxWidth(0.9f)
+                        .semantics {
+                            contentDescription = "Reverb send, ${(track.reverbSendLevel * 100).toInt()} percent"
+                        }
                 )
             }
 
             // Pan Slider
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 val panText = when {
-                    track.pan < -0.05f -> "L${(-track.pan * 100).toInt()}"
-                    track.pan > 0.05f -> "R${(track.pan * 100).toInt()}"
+                    track.pan < -0.05f -> "L" + (-track.pan * 100).toInt()
+                    track.pan > 0.05f -> "R" + (track.pan * 100).toInt()
                     else -> "C"
                 }
                 Text(
@@ -258,6 +324,9 @@ fun ChannelStrip(
                     modifier = Modifier
                         .height(20.dp)
                         .fillMaxWidth(0.9f)
+                        .semantics {
+                            contentDescription = "Pan, $panText"
+                        }
                 )
             }
 
@@ -273,21 +342,24 @@ fun ChannelStrip(
                     isActive = track.isMuted,
                     activeColor = ClipRed,
                     onClick = onToggleMute,
-                    testTag = "mute_track_${track.index}"
+                    testTag = "mute_track_${track.index}",
+                    contentDescription = "Mute track ${track.index + 1}"
                 )
                 MixerToggleBtn(
                     label = "S",
                     isActive = track.isSoloed,
                     activeColor = StudioAmber,
                     onClick = onToggleSolo,
-                    testTag = "solo_track_${track.index}"
+                    testTag = "solo_track_${track.index}",
+                    contentDescription = "Solo track ${track.index + 1}"
                 )
                 MixerToggleBtn(
-                    label = "●",
+                    label = "\u25cf",
                     isActive = track.isArmedForRecording,
                     activeColor = ClipRed,
                     onClick = onToggleArm,
-                    testTag = "arm_track_${track.index}"
+                    testTag = "arm_track_${track.index}",
+                    contentDescription = "Arm track ${track.index + 1} for recording"
                 )
             }
 
@@ -351,7 +423,6 @@ fun MasterChannelStrip(
 
     Surface(
         modifier = modifier
-            .fillMaxHeight()
             .clip(RoundedCornerShape(8.dp))
             .border(1.5.dp, StudioAmber, RoundedCornerShape(8.dp))
             .testTag("master_channel_strip"),
@@ -396,6 +467,9 @@ fun MasterChannelStrip(
                     .border(1.dp, StudioAmber, RoundedCornerShape(4.dp))
                     .clickable { showMasterPresetDialog = true }
                     .padding(horizontal = 6.dp, vertical = 3.dp)
+                    .semantics {
+                        contentDescription = "Master presets, opens preset dialog"
+                    }
                     .testTag("open_master_presets_button"),
                 contentAlignment = Alignment.Center
             ) {
@@ -508,6 +582,8 @@ fun VerticalFader(
         else ((gainDb + 60f) / 66f).coerceIn(0f, 1f)
     }
 
+    val gainText = if (gainDb <= -59.5f) "minus infinity" else "${String.format("%.1f", gainDb)} decibels"
+
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
@@ -523,6 +599,9 @@ fun VerticalFader(
                     val newDb = (newFraction * 66f - 60f)
                     onGainChange(newDb)
                 }
+            }
+            .semantics {
+                contentDescription = "Volume fader, $gainText. Drag up to increase, drag down to decrease."
             },
         contentAlignment = Alignment.BottomCenter
     ) {
@@ -645,11 +724,12 @@ fun MixerToggleBtn(
     activeColor: Color,
     onClick: () -> Unit,
     testTag: String,
+    contentDescription: String = "",
     modifier: Modifier = Modifier
 ) {
     Box(
         modifier = modifier
-            .size(24.dp)
+            .size(48.dp)
             .clip(RoundedCornerShape(4.dp))
             .background(if (isActive) activeColor else StudioCard)
             .border(
@@ -658,6 +738,9 @@ fun MixerToggleBtn(
                 RoundedCornerShape(4.dp)
             )
             .clickable { onClick() }
+            .semantics {
+                this.contentDescription = if (isActive) "$contentDescription, enabled" else "$contentDescription, disabled"
+            }
             .testTag(testTag),
         contentAlignment = Alignment.Center
     ) {

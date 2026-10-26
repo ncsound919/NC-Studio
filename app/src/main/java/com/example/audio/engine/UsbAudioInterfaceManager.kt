@@ -42,7 +42,9 @@ class UsbAudioInterfaceManager(private val context: Context) {
     }
 
     fun refreshDevices() {
-        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_ALL)
+        val devices = audioManager.getDevices(
+            AudioManager.GET_DEVICES_INPUTS or AudioManager.GET_DEVICES_OUTPUTS
+        )
         val usbList = mutableListOf<UsbAudioDeviceInfo>()
 
         for (dev in devices) {

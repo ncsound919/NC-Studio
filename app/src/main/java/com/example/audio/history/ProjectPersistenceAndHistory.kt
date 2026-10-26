@@ -35,6 +35,13 @@ sealed interface SessionCommand {
         val beforeMasterGainDb: Float,
         val afterMasterGainDb: Float
     ) : SessionCommand
+
+    /** A small, fully reversible session-level edit such as a master preset. */
+    data class ReplaceSession(
+        override val description: String,
+        val beforeSession: ProjectSession,
+        val afterSession: ProjectSession
+    ) : SessionCommand
 }
 
 /**
@@ -82,6 +89,9 @@ class UndoManager(private val maxHistory: Int = 50) {
                     revision = currentSession.revision + 1
                 )
             }
+            is SessionCommand.ReplaceSession -> command.beforeSession.copy(
+                revision = currentSession.revision + 1
+            )
         }
         return Pair(updatedSession, command)
     }
@@ -110,6 +120,9 @@ class UndoManager(private val maxHistory: Int = 50) {
                     revision = currentSession.revision + 1
                 )
             }
+            is SessionCommand.ReplaceSession -> command.afterSession.copy(
+                revision = currentSession.revision + 1
+            )
         }
         return Pair(updatedSession, command)
     }

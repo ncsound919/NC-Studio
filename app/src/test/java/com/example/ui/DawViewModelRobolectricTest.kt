@@ -5,13 +5,17 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.audio.model.BufferSizePreset
 import com.example.audio.model.ChannelLimiterConfig
 import com.example.audio.model.CompressorConfig
+import com.example.audio.model.CompressorType
 import com.example.audio.model.DawSettings
 import com.example.audio.model.DuckingDelayConfig
 import com.example.audio.model.EqBand
 import com.example.audio.model.EqConfig
 import com.example.audio.model.FilterType
 import com.example.audio.model.MeterBallistics
+import com.example.audio.model.ResonanceSmootherConfig
 import com.example.audio.model.SaturationConfig
+import com.example.audio.model.SaturationType
+import com.example.audio.model.VocalRiderConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -32,7 +36,12 @@ class DawViewModelRobolectricTest {
     @Before
     fun setUp() {
         application = ApplicationProvider.getApplicationContext()
+        application.getSharedPreferences("pulse_ui_prefs", 0).edit().clear().commit()
+        // A previous test's debounced journal must not leak into this session.
+        application.deleteFile("recovery_journal.json")
         viewModel = DawViewModel(application)
+        // The app ships an empty session; clip-editing tests install their own take.
+        viewModel.installTestClip(0)
     }
 
     @Test
@@ -53,6 +62,20 @@ class DawViewModelRobolectricTest {
         assertFalse(uiState.isRecording)
         assertFalse(viewModel.canUndo())
         assertFalse(viewModel.canRedo())
+    }
+
+    @Test
+    fun newSession_startsWithNoStockMusicOrDemoClips() {
+        application.deleteFile("recovery_journal.json")
+        val fresh = DawViewModel(application)
+        try {
+            assertTrue(
+                "A new session must not contain stock demo clips",
+                fresh.session.value.tracks.all { it.clips.isEmpty() }
+            )
+        } finally {
+            fresh.onCleared()
+        }
     }
 
     @Test
@@ -123,10 +146,28 @@ class DawViewModelRobolectricTest {
         viewModel.updateTrackSaturation(targetTrack, newSat)
         assertEquals(9.0f, viewModel.session.value.tracks[targetTrack].saturationConfig.driveDb, 0.001f)
 
-        // Compressor
+        // Compressor + circuit model
         val newComp = CompressorConfig(enabled = true, thresholdDb = -18f, ratio = 4f, attackMs = 12f)
+            .withType(CompressorType.FET_1176)
         viewModel.updateTrackCompressor(targetTrack, newComp)
         assertEquals(-18f, viewModel.session.value.tracks[targetTrack].compressorConfig.thresholdDb, 0.001f)
+        assertEquals(CompressorType.FET_1176, viewModel.session.value.tracks[targetTrack].compressorConfig.type)
+
+        // Saturation model
+        val newSatType = newSat.withType(SaturationType.TUBE)
+        viewModel.updateTrackSaturation(targetTrack, newSatType)
+        assertEquals(SaturationType.TUBE, viewModel.session.value.tracks[targetTrack].saturationConfig.type)
+
+        // Vocal rider + resonance suppression
+        viewModel.updateTrackVocalRider(targetTrack, VocalRiderConfig(enabled = true, targetLufs = -17f))
+        assertTrue(viewModel.session.value.tracks[targetTrack].vocalRiderConfig.enabled)
+        assertEquals(-17f, viewModel.session.value.tracks[targetTrack].vocalRiderConfig.targetLufs, 0.001f)
+        viewModel.updateTrackResonanceSmoother(
+            targetTrack,
+            ResonanceSmootherConfig(enabled = true, frequencyHz = 3400f)
+        )
+        assertTrue(viewModel.session.value.tracks[targetTrack].resonanceSmootherConfig.enabled)
+        assertEquals(3400f, viewModel.session.value.tracks[targetTrack].resonanceSmootherConfig.frequencyHz, 0.001f)
 
         // Ducking Delay
         val newDelay = DuckingDelayConfig(enabled = true, timeMs = 250f, feedback = 0.4f, duckingEnabled = true)
@@ -190,11 +231,6 @@ class DawViewModelRobolectricTest {
 
     @Test
     fun uiDialogToggles() {
-        viewModel.showSettingsDialog(true)
-        assertTrue(viewModel.uiState.value.showSettingsDialog)
-        viewModel.showSettingsDialog(false)
-        assertFalse(viewModel.uiState.value.showSettingsDialog)
-
         viewModel.showUsbDialog(true)
         assertTrue(viewModel.uiState.value.showUsbDialog)
         viewModel.showUsbDialog(false)
@@ -395,6 +431,32 @@ class DawViewModelRobolectricTest {
 
         viewModel.runLatencyCalibration()
         assertNotNull(viewModel.uiState.value.statusMessage)
+    }
+
+    @Test
+    fun onboardingThenReleaseNotesShowOnce() {
+        assertTrue(viewModel.uiState.value.showOnboarding)
+        assertFalse("Release notes wait until the tour is complete", viewModel.uiState.value.showWhatsNew)
+
+        viewModel.dismissOnboarding()
+        val afterTour = DawViewModel(application)
+        assertFalse(afterTour.uiState.value.showOnboarding)
+        assertTrue(afterTour.uiState.value.showWhatsNew)
+
+        afterTour.dismissWhatsNew()
+        val nextLaunch = DawViewModel(application)
+        assertFalse(nextLaunch.uiState.value.showOnboarding)
+        assertFalse(nextLaunch.uiState.value.showWhatsNew)
+    }
+
+    @Test
+    fun presentationModePersistsAcrossRelaunch() {
+        assertFalse(viewModel.uiState.value.presentationMode)
+        viewModel.togglePresentationMode()
+        assertTrue(viewModel.uiState.value.presentationMode)
+
+        val nextLaunch = DawViewModel(application)
+        assertTrue(nextLaunch.uiState.value.presentationMode)
     }
 
     @Test

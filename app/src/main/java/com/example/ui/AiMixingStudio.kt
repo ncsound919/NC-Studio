@@ -1,5 +1,9 @@
 package com.example.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -14,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,6 +29,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CompareArrows
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Warning
@@ -47,18 +55,30 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.example.R
 import com.example.audio.ai.MixAdvisor
 import com.example.audio.model.MixSuggestion
 import com.example.audio.model.ProjectSession
 import com.example.audio.model.TrackFeatures
+import com.example.ui.theme.Radius
 import com.example.ui.theme.ClipRed
+import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.ElectricLime
+import com.example.ui.theme.MeterRed
+import com.example.ui.theme.MeterYellow
 import com.example.ui.theme.NeonCyan
+import com.example.ui.theme.PanelDeep
+import com.example.ui.theme.SurfaceSunken
 import com.example.ui.theme.StudioAmber
 import com.example.ui.theme.StudioBackground
 import com.example.ui.theme.StudioCard
@@ -82,23 +102,240 @@ fun AiMixingStudio(
     onScanLocalModels: ((String?) -> Unit)? = null,
     onSelectLocalModel: ((com.example.audio.ai.DiscoveredModelInfo) -> Unit)? = null,
     onSendQueryToLocalModel: ((String) -> Unit)? = null,
+    onStartVoiceCommand: () -> Unit = {},
+    onStopVoiceCommand: () -> Unit = {},
+    onEngineerTextCommand: (String) -> Unit = onNaturalLanguagePrompt,
     modifier: Modifier = Modifier
 ) {
     var promptText by remember { mutableStateOf("") }
     var localModelPromptText by remember { mutableStateOf("") }
+    var engineerText by remember { mutableStateOf("") }
+    var microphoneDenied by remember { mutableStateOf(false) }
     var customEndpointUrlText by remember { mutableStateOf(uiState.localModelDetectorState.customEndpointUrl) }
     var selectedReferenceIndex by remember { mutableStateOf(0) }
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     val references = MixAdvisor.STANDARD_REFERENCES
     val detectorState = uiState.localModelDetectorState
+    val voice = uiState.voiceEngineer
+    val microphonePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        microphoneDenied = !granted
+        if (granted) onStartVoiceCommand()
+    }
+    fun beginVoiceRequest() {
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            microphoneDenied = false
+            onStartVoiceCommand()
+        } else {
+            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
 
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
             .background(StudioBackground)
+            .imePadding()
             .padding(12.dp)
             .testTag("ai_mixing_studio"),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // VOICE ENGINEER: request a mix or a take and let the local model act.
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth().testTag("voice_engineer_card"),
+                colors = CardDefaults.cardColors(containerColor = StudioSurface),
+                border = androidx.compose.foundation.BorderStroke(1.5.dp, ElectricLime.copy(alpha = 0.7f))
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Mic,
+                                contentDescription = null,
+                                tint = ElectricLime,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = "TALK TO YOUR ENGINEER",
+                                    color = ElectricLime,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
+                                Text(
+                                    text = "On-device speech → local model → applied, undoable mix",
+                                    color = TextMuted,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+                        if (voice.source.isNotBlank()) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(Radius.sm))
+                                    .background(PanelDeep)
+                                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = voice.source.uppercase(),
+                                    color = NeonCyan,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(62.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(if (voice.isListening) ClipRed else ElectricLime)
+                                .clickable {
+                                    if (voice.isListening) onStopVoiceCommand() else beginVoiceRequest()
+                                }
+                                .testTag("voice_engineer_mic_button"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (voice.isProcessing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(26.dp),
+                                    color = Color.Black,
+                                    strokeWidth = 2.5.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = if (voice.isListening) Icons.Default.Stop else Icons.Default.Mic,
+                                    contentDescription = if (voice.isListening) "Stop listening" else "Start voice command",
+                                    tint = Color.Black,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = when {
+                                    voice.isListening -> "Listening… tap the button to stop."
+                                    voice.isProcessing -> "Turning that into a mix move…"
+                                    voice.error != null -> voice.error
+                                    voice.partialTranscript.isNotBlank() -> "\"${voice.partialTranscript}\""
+                                    microphoneDenied -> "Microphone permission is required. Tap to grant it."
+                                    else -> "Speak a mix or record request. The engineer applies it and confirms out loud."
+                                },
+                                color = if (voice.error != null) ClipRed else TextPrimary,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp
+                            )
+                            if (voice.transcript.isNotBlank() && !voice.isListening) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = "Heard: \"${voice.transcript}\"",
+                                    color = NeonCyan,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                            if (voice.lastAction.isNotBlank()) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = voice.lastAction,
+                                    color = ElectricLime,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = engineerText,
+                            onValueChange = { engineerText = it },
+                            placeholder = {
+                                Text(
+                                    text = "Or type: set up the lead vocal and start recording",
+                                    fontSize = 10.sp,
+                                    color = TextMuted
+                                )
+                            },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = ElectricLime,
+                                unfocusedBorderColor = StudioCardBorder,
+                                focusedTextColor = TextPrimary,
+                                unfocusedTextColor = TextPrimary
+                            ),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).testTag("engineer_text_input")
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        IconButton(
+                            onClick = {
+                                if (engineerText.isNotBlank()) {
+                                    onEngineerTextCommand(engineerText)
+                                    engineerText = ""
+                                }
+                            },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(Radius.md))
+                                .background(ElectricLime)
+                                .testTag("engineer_text_send_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Send,
+                                contentDescription = "Send request to engineer",
+                                tint = Color.Black
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            "Set up the lead vocal",
+                            "1176 on the drums",
+                            "Start recording"
+                        ).forEach { chip ->
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(Radius.lg))
+                                    .background(StudioCard)
+                                    .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.lg))
+                                    .clickable { onEngineerTextCommand(chip) }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                                    .testTag("engineer_chip_${chip.lowercase().replace(" ", "_")}")
+                            ) {
+                                Text(text = chip, color = ElectricLime, fontSize = 10.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // TOP HERO: AI Mixing Assistant Status & Action Center
         item {
             Card(
@@ -121,14 +358,12 @@ fun AiMixingStudio(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
-                                Text(
-                                    text = "AI TACTICAL MIX ASSISTANT",
+                                Text(text = stringResource(R.string.ui_ai_tactical_mix_assistant),
                                     color = NeonCyan,
                                     fontSize = 15.sp,
                                     fontWeight = FontWeight.ExtraBold
                                 )
-                                Text(
-                                    text = "Deterministic, bounded spectral & gain intelligence",
+                                Text(text = stringResource(R.string.ui_deterministic_bounded_spectral_gain_intelligence),
                                     color = TextMuted,
                                     fontSize = 10.sp
                                 )
@@ -231,21 +466,19 @@ fun AiMixingStudio(
                             Box(
                                 modifier = Modifier
                                     .size(8.dp)
-                                    .clip(RoundedCornerShape(4.dp))
+                                    .clip(RoundedCornerShape(Radius.sm))
                                     .background(ElectricLime)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
-                                Text(
-                                    text = "ON-DEVICE NEURAL MODEL ENGINE",
+                                Text(text = stringResource(R.string.ui_on_device_neural_model_engine),
                                     color = ElectricLime,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.ExtraBold
                                 )
-                                Text(
-                                    text = "100% Offline • Zero Network Latency • SIMD Quantized MLP",
+                                Text(text = stringResource(R.string.ui_100_offline_zero_network_latency_simd_quantized_),
                                     color = TextMuted,
-                                    fontSize = 9.sp
+                                    fontSize = 10.sp
                                 )
                             }
                         }
@@ -253,9 +486,9 @@ fun AiMixingStudio(
                         val avgLatencyMs = features.mapNotNull { it.neuralResult?.inferenceLatencyMs }.average().let { if (it.isNaN()) 0.38 else it }
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
+                                .clip(RoundedCornerShape(Radius.sm))
                                 .background(StudioCard)
-                                .border(1.dp, ElectricLime, RoundedCornerShape(4.dp))
+                                .border(1.dp, ElectricLime, RoundedCornerShape(Radius.sm))
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             Text(
@@ -273,22 +506,22 @@ fun AiMixingStudio(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0xFF070B12))
+                            .clip(RoundedCornerShape(Radius.md))
+                            .background(PanelDeep)
                             .padding(8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column {
-                            Text(text = "Model Architecture", color = TextMuted, fontSize = 9.sp)
-                            Text(text = "PulseNeural-v1 (16x32x7)", color = TextPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = stringResource(R.string.ui_model_architecture), color = TextMuted, fontSize = 10.sp)
+                            Text(text = stringResource(R.string.ui_pulseneural_v1_16x32x7), color = TextPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         }
-                        Column {
-                            Text(text = "Quantization", color = TextMuted, fontSize = 9.sp)
-                            Text(text = "8-Bit Float Quantized", color = TextPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = stringResource(R.string.ui_quantization), color = TextMuted, fontSize = 10.sp)
+                            Text(text = stringResource(R.string.ui_8_bit_float_quantized), color = TextPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         }
-                        Column {
-                            Text(text = "Execution Target", color = TextMuted, fontSize = 9.sp)
-                            Text(text = "Local CPU / ARM Neon", color = TextPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = stringResource(R.string.ui_execution_target), color = TextMuted, fontSize = 10.sp)
+                            Text(text = stringResource(R.string.ui_local_cpu_arm_neon), color = TextPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -317,16 +550,14 @@ fun AiMixingStudio(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
-                                Text(
-                                    text = "SMALL MODEL AUTO-DETECTOR (OLLAMA / LLAMA)",
+                                Text(text = stringResource(R.string.ui_small_model_auto_detector_ollama_llama),
                                     color = NeonCyan,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.ExtraBold
                                 )
-                                Text(
-                                    text = "Auto-discovers Ollama (11434) & Llama.cpp (8080) servers",
+                                Text(text = stringResource(R.string.ui_auto_discovers_ollama_11434_llama_cpp_8080_serve),
                                     color = TextMuted,
-                                    fontSize = 9.sp
+                                    fontSize = 10.sp
                                 )
                             }
                         }
@@ -357,14 +588,14 @@ fun AiMixingStudio(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0xFF080E1A))
+                            .clip(RoundedCornerShape(Radius.md))
+                            .background(PanelDeep)
                             .padding(8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text(text = "Status", color = TextMuted, fontSize = 9.sp)
+                            Text(text = stringResource(R.string.ui_status), color = TextMuted, fontSize = 10.sp)
                             Text(
                                 text = if (detectorState.isScanning) "Scanning..." else if (detectorState.detectedModels.isNotEmpty()) "Ready (${detectorState.detectedModels.size} Models Found)" else "Fallback Mode",
                                 color = if (detectorState.detectedModels.isNotEmpty()) ElectricLime else StudioAmber,
@@ -374,7 +605,7 @@ fun AiMixingStudio(
                         }
 
                         Column(horizontalAlignment = Alignment.End) {
-                            Text(text = "Active Server", color = TextMuted, fontSize = 9.sp)
+                            Text(text = stringResource(R.string.ui_active_server), color = TextMuted, fontSize = 10.sp)
                             Text(
                                 text = detectorState.activeModel?.let { "${it.provider.displayName} @ ${it.baseUrl.replace("http://", "")}" } ?: "http://10.0.2.2:11434",
                                 color = TextPrimary,
@@ -388,8 +619,7 @@ fun AiMixingStudio(
                     Spacer(modifier = Modifier.height(10.dp))
 
                     // Discovered Models Selector Chips
-                    Text(
-                        text = "DISCOVERED SMALL MODELS",
+                    Text(text = stringResource(R.string.ui_discovered_small_models),
                         color = TextSecondary,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
@@ -404,9 +634,9 @@ fun AiMixingStudio(
                             val isSel = model.isSelected || model.id == detectorState.activeModel?.id || model.name == detectorState.activeModel?.name
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(Radius.md))
                                     .background(if (isSel) NeonCyan.copy(alpha = 0.2f) else StudioCard)
-                                    .border(1.dp, if (isSel) NeonCyan else StudioCardBorder, RoundedCornerShape(8.dp))
+                                    .border(1.dp, if (isSel) NeonCyan else StudioCardBorder, RoundedCornerShape(Radius.md))
                                     .clickable { onSelectLocalModel?.invoke(model) }
                                     .padding(horizontal = 10.dp, vertical = 6.dp)
                                     .testTag("model_chip_${model.name}"),
@@ -430,7 +660,7 @@ fun AiMixingStudio(
                                         Text(
                                             text = "${model.provider.displayName} • ${model.parameterSize}",
                                             color = TextMuted,
-                                            fontSize = 8.sp
+                                            fontSize = 10.sp
                                         )
                                     }
                                 }
@@ -448,7 +678,7 @@ fun AiMixingStudio(
                         OutlinedTextField(
                             value = customEndpointUrlText,
                             onValueChange = { customEndpointUrlText = it },
-                            label = { Text("Custom Endpoint IP / Host", fontSize = 10.sp, color = TextMuted) },
+                            label = { Text(stringResource(R.string.ui_custom_endpoint_ip_host), fontSize = 10.sp, color = TextMuted) },
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = NeonCyan,
                                 unfocusedBorderColor = StudioCardBorder,
@@ -464,7 +694,7 @@ fun AiMixingStudio(
                             colors = ButtonDefaults.buttonColors(containerColor = StudioCard),
                             modifier = Modifier.testTag("probe_custom_url_button")
                         ) {
-                            Text("Probe", fontSize = 11.sp, color = NeonCyan)
+                            Text(stringResource(R.string.ui_probe), fontSize = 11.sp, color = NeonCyan)
                         }
                     }
 
@@ -486,7 +716,7 @@ fun AiMixingStudio(
                         OutlinedTextField(
                             value = localModelPromptText,
                             onValueChange = { localModelPromptText = it },
-                            placeholder = { Text("Ask local model about EQ, reverb, compress or gain...", fontSize = 10.sp, color = TextMuted) },
+                            placeholder = { Text(stringResource(R.string.ui_ask_local_model_about_eq_reverb_compress_or_gain), fontSize = 10.sp, color = TextMuted) },
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = ElectricLime,
                                 unfocusedBorderColor = StudioCardBorder,
@@ -504,7 +734,7 @@ fun AiMixingStudio(
                                 }
                             },
                             modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.md))
                                 .background(ElectricLime)
                                 .testTag("send_local_model_prompt_button")
                         ) {
@@ -529,16 +759,15 @@ fun AiMixingStudio(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(6.dp))
-                                .background(Color(0xFF070C16))
-                                .border(1.dp, ElectricLime.copy(alpha = 0.5f), RoundedCornerShape(6.dp))
+                                .clip(RoundedCornerShape(Radius.md))
+                                .background(PanelDeep)
+                                .border(1.dp, ElectricLime.copy(alpha = 0.5f), RoundedCornerShape(Radius.md))
                                 .padding(10.dp)
                         ) {
                             Column {
-                                Text(
-                                    text = "MODEL RESPONSE:",
+                                Text(text = stringResource(R.string.ui_model_response),
                                     color = ElectricLime,
-                                    fontSize = 9.sp,
+                                    fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
@@ -563,16 +792,14 @@ fun AiMixingStudio(
                 border = androidx.compose.foundation.BorderStroke(1.dp, StudioCardBorder)
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "NATURAL LANGUAGE MIX COMMANDS",
+                    Text(text = stringResource(R.string.ui_natural_language_mix_commands),
                         color = TextSecondary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(
-                        text = "Local validator converts prompts to bounded, undoable parameter edits",
+                    Text(text = stringResource(R.string.ui_local_validator_converts_prompts_to_bounded_undo),
                         color = TextMuted,
-                        fontSize = 9.sp
+                        fontSize = 10.sp
                     )
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -584,7 +811,7 @@ fun AiMixingStudio(
                         OutlinedTextField(
                             value = promptText,
                             onValueChange = { promptText = it },
-                            placeholder = { Text("e.g. \"Make vocals brighter\", \"Glue drums\", \"Clean mud\"...", fontSize = 11.sp, color = TextMuted) },
+                            placeholder = { Text(stringResource(R.string.ui_e_g_make_vocals_brighter_glue_drums_clean_mud), fontSize = 11.sp, color = TextMuted) },
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = NeonCyan,
                                 unfocusedBorderColor = StudioCardBorder,
@@ -607,7 +834,7 @@ fun AiMixingStudio(
                                 }
                             },
                             modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(Radius.md))
                                 .background(NeonCyan)
                                 .testTag("submit_ai_prompt_button")
                         ) {
@@ -635,9 +862,9 @@ fun AiMixingStudio(
                         ).forEach { chip ->
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
+                                    .clip(RoundedCornerShape(Radius.lg))
                                     .background(StudioCard)
-                                    .border(1.dp, StudioCardBorder, RoundedCornerShape(12.dp))
+                                    .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.lg))
                                     .clickable { onNaturalLanguagePrompt(chip) }
                                     .padding(horizontal = 10.dp, vertical = 4.dp)
                             ) {
@@ -657,8 +884,7 @@ fun AiMixingStudio(
                 border = androidx.compose.foundation.BorderStroke(1.dp, StudioCardBorder)
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "REFERENCE TARGET MATCHER",
+                    Text(text = stringResource(R.string.ui_reference_target_matcher),
                         color = StudioAmber,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
@@ -674,9 +900,9 @@ fun AiMixingStudio(
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(6.dp))
+                                    .clip(RoundedCornerShape(Radius.md))
                                     .background(if (isSel) StudioAmber.copy(alpha = 0.2f) else StudioCard)
-                                    .border(1.dp, if (isSel) StudioAmber else StudioCardBorder, RoundedCornerShape(6.dp))
+                                    .border(1.dp, if (isSel) StudioAmber else StudioCardBorder, RoundedCornerShape(Radius.md))
                                     .clickable { selectedReferenceIndex = idx }
                                     .padding(vertical = 6.dp),
                                 contentAlignment = Alignment.Center
@@ -697,8 +923,8 @@ fun AiMixingStudio(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0xFF090D14))
+                            .clip(RoundedCornerShape(Radius.md))
+                            .background(SurfaceSunken)
                             .padding(8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
@@ -709,7 +935,7 @@ fun AiMixingStudio(
                         }
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
+                                .clip(RoundedCornerShape(Radius.sm))
                                 .background(StudioCard)
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
@@ -728,8 +954,7 @@ fun AiMixingStudio(
 
         // SPECTRAL BANDS & STEM CLASSIFIER SUMMARY
         item {
-            Text(
-                text = "TRACK STEM CLASSIFICATION & TELEMETRY",
+            Text(text = stringResource(R.string.ui_track_stem_classification_telemetry),
                 color = TextSecondary,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold
@@ -741,8 +966,8 @@ fun AiMixingStudio(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .border(1.dp, StudioCardBorder, RoundedCornerShape(8.dp)),
+                    .clip(RoundedCornerShape(Radius.md))
+                    .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.md)),
                 color = StudioSurface
             ) {
                 Column(modifier = Modifier.padding(10.dp)) {
@@ -755,7 +980,7 @@ fun AiMixingStudio(
                             Box(
                                 modifier = Modifier
                                     .size(8.dp)
-                                    .clip(RoundedCornerShape(2.dp))
+                                    .clip(RoundedCornerShape(Radius.sm))
                                     .background(Color(trk?.colorHex ?: 0xFF00E5FF))
                             )
                             Spacer(modifier = Modifier.width(6.dp))
@@ -772,15 +997,15 @@ fun AiMixingStudio(
                                 Text(
                                     text = "Neural: ${(nr.confidence * 100).toInt()}% • ",
                                     color = ElectricLime,
-                                    fontSize = 9.sp,
+                                    fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
+                                    .clip(RoundedCornerShape(Radius.sm))
                                     .background(NeonCyan.copy(alpha = 0.15f))
-                                    .border(1.dp, NeonCyan, RoundedCornerShape(4.dp))
+                                    .border(1.dp, NeonCyan, RoundedCornerShape(Radius.sm))
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
@@ -825,25 +1050,25 @@ fun AiMixingStudio(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(Color(0xFF080D17))
+                                .clip(RoundedCornerShape(Radius.sm))
+                                .background(PanelDeep)
                                 .padding(horizontal = 6.dp, vertical = 3.dp),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
                                 text = "Neural Target: LUFS Offset ${String.format("%+.1f", nr.targetLufsOffsetDb)} dB",
                                 color = TextMuted,
-                                fontSize = 9.sp
+                                fontSize = 10.sp
                             )
                             Text(
                                 text = "Comp: ${String.format("%.1f", nr.suggestedCompRatio)}:1",
                                 color = TextMuted,
-                                fontSize = 9.sp
+                                fontSize = 10.sp
                             )
                             Text(
                                 text = "Punch: ${String.format("%.2f", nr.transientPunchScore)}",
                                 color = ElectricLime,
-                                fontSize = 9.sp
+                                fontSize = 10.sp
                             )
                         }
                     }
@@ -855,8 +1080,8 @@ fun AiMixingStudio(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(8.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(Color(0xFF0A0E16))
+                            .clip(RoundedCornerShape(Radius.sm))
+                            .background(PanelDeep)
                     ) {
                         val subW = feat.subEnergy.coerceIn(0.01f, 1f)
                         val lowW = feat.lowEnergy.coerceIn(0.01f, 1f)
@@ -864,11 +1089,11 @@ fun AiMixingStudio(
                         val hMidW = feat.highMidEnergy.coerceIn(0.01f, 1f)
                         val airW = feat.airEnergy.coerceIn(0.01f, 1f)
 
-                        Box(modifier = Modifier.weight(subW).fillMaxSize().background(Color(0xFFE53935)))
-                        Box(modifier = Modifier.weight(lowW).fillMaxSize().background(Color(0xFFFB8C00)))
-                        Box(modifier = Modifier.weight(midW).fillMaxSize().background(Color(0xFFFFD600)))
-                        Box(modifier = Modifier.weight(hMidW).fillMaxSize().background(Color(0xFF00E676)))
-                        Box(modifier = Modifier.weight(airW).fillMaxSize().background(Color(0xFF00E5FF)))
+                        Box(modifier = Modifier.weight(subW).fillMaxSize().background(MeterRed))
+                        Box(modifier = Modifier.weight(lowW).fillMaxSize().background(StudioAmber))
+                        Box(modifier = Modifier.weight(midW).fillMaxSize().background(MeterYellow))
+                        Box(modifier = Modifier.weight(hMidW).fillMaxSize().background(ElectricLime))
+                        Box(modifier = Modifier.weight(airW).fillMaxSize().background(NeonCyan))
                     }
                 }
             }
@@ -889,13 +1114,12 @@ fun AiMixingStudio(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(Radius.md))
                         .background(StudioSurface)
                         .padding(16.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = "Session is well-balanced! No clipping or masking detected.",
+                    Text(text = stringResource(R.string.ui_session_is_well_balanced_no_clipping_or_masking_),
                         color = ElectricLime,
                         fontSize = 12.sp
                     )
@@ -918,19 +1142,39 @@ fun AiMixingStudio(
                                 text = "${sug.trackName} • ${sug.parameter}",
                                 color = NeonCyan,
                                 fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
                             )
+
+                            IconButton(
+                                onClick = {
+                                    clipboard.setText(
+                                        AnnotatedString(
+                                            "${sug.trackName} • ${sug.parameter}: " +
+                                                "${sug.currentValue} -> ${sug.proposedValue}. ${sug.reason}"
+                                        )
+                                    )
+                                },
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ContentCopy,
+                                    contentDescription = "Copy suggestion",
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
 
                             Box(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
+                                    .clip(RoundedCornerShape(Radius.sm))
                                     .background(StudioCard)
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
                                     text = "${(sug.confidence * 100).toInt()}% Confidence",
                                     color = ElectricLime,
-                                    fontSize = 9.sp
+                                    fontSize = 10.sp
                                 )
                             }
                         }
@@ -940,7 +1184,7 @@ fun AiMixingStudio(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(text = "Current: ${sug.currentValue}", color = TextMuted, fontSize = 10.sp)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(text = "➔", color = StudioAmber, fontSize = 10.sp)
+                            Text(text = stringResource(R.string.ui_label), color = StudioAmber, fontSize = 10.sp)
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(text = "Proposed: ${sug.proposedValue}", color = StudioAmber, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }

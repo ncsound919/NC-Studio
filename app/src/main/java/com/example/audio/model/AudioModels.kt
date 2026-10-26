@@ -38,14 +38,28 @@ data class EqBand(
 )
 
 /**
- * 4-Band Parametric EQ settings.
+ * Compressor circuit model. Each type has its own knee, attack/release
+ * behaviour and ratio personality rather than only a reskinned label.
+ */
+enum class CompressorType(val displayName: String, val character: String) {
+    VCA("Studio VCA", "Clean, fast and modern"),
+    LA_2A("LA-2A Opto", "Slow, smooth opto leveling"),
+    FET_1176("1176 FET", "Fast, aggressive FET punch"),
+    TUBE_TECH("Tube-Tech CL 1B", "Silky vari-mu tube glue")
+}
+
+/**
+ * 4-Band Parametric EQ settings plus dedicated high-pass and low-pass filters.
+ * The HPF/LPF run before the four musical bands.
  */
 data class EqConfig(
     val enabled: Boolean = true,
-    val band1: EqBand = EqBand(FilterType.HIGH_PASS, 35f, 0f, 0.707f),
+    val band1: EqBand = EqBand(FilterType.LOW_SHELF, 100f, 0f, 0.707f),
     val band2: EqBand = EqBand(FilterType.PEAKING, 350f, 0f, 1.2f),
     val band3: EqBand = EqBand(FilterType.PEAKING, 2500f, 0f, 1.2f),
-    val band4: EqBand = EqBand(FilterType.HIGH_SHELF, 8500f, 0f, 0.707f)
+    val band4: EqBand = EqBand(FilterType.HIGH_SHELF, 8500f, 0f, 0.707f),
+    val highPass: EqBand = EqBand(FilterType.HIGH_PASS, 30f, 0f, 0.707f, enabled = false),
+    val lowPass: EqBand = EqBand(FilterType.LOW_PASS, 18000f, 0f, 0.707f, enabled = false)
 )
 
 /**
@@ -58,8 +72,55 @@ data class CompressorConfig(
     val attackMs: Float = 15f,
     val releaseMs: Float = 120f,
     val kneeWidthDb: Float = 4f,
-    val makeupGainDb: Float = 2f
-)
+    val makeupGainDb: Float = 2f,
+    val type: CompressorType = CompressorType.VCA
+) {
+    /**
+     * Applies the time constants and knee that belong to a circuit model while
+     * keeping the user's threshold and makeup gain.
+     */
+    fun withType(newType: CompressorType): CompressorConfig = when (newType) {
+        CompressorType.VCA -> copy(
+            type = newType,
+            ratio = ratio.coerceIn(1f, 16f),
+            attackMs = 10f,
+            releaseMs = 100f,
+            kneeWidthDb = 4f
+        )
+        CompressorType.LA_2A -> copy(
+            type = newType,
+            ratio = 3f,
+            attackMs = 10f,
+            releaseMs = 120f,
+            kneeWidthDb = 8f
+        )
+        CompressorType.FET_1176 -> copy(
+            type = newType,
+            ratio = ratio.coerceAtLeast(4f).coerceAtMost(20f),
+            attackMs = 0.5f,
+            releaseMs = 80f,
+            kneeWidthDb = 0f
+        )
+        CompressorType.TUBE_TECH -> copy(
+            type = newType,
+            ratio = 2.5f,
+            attackMs = 3f,
+            releaseMs = 150f,
+            kneeWidthDb = 6f
+        )
+    }
+}
+
+/**
+ * Saturation circuit flavour. The drive/warmth/mix controls stay shared, but
+ * each model shapes harmonics differently.
+ */
+enum class SaturationType(val displayName: String, val character: String) {
+    TAPE("Tape", "Soft tape compression and HF smoothing"),
+    TUBE("Tube", "Asymmetric second-harmonic warmth"),
+    TRANSFORMER("Transformer", "Iron weight and low-mid colour"),
+    CONSOLE("Console", "Tight op-amp clip")
+}
 
 /**
  * Master limiter configuration.
@@ -145,8 +206,11 @@ data class SaturationConfig(
     val enabled: Boolean = false,
     val driveDb: Float = 0.0f, // 0 to +24 dB
     val warmth: Float = 0.5f,  // Asymmetry & second harmonic warmth
-    val mix: Float = 1.0f      // Dry/Wet blend
-)
+    val mix: Float = 1.0f,     // Dry/Wet blend
+    val type: SaturationType = SaturationType.TAPE
+) {
+    fun withType(newType: SaturationType): SaturationConfig = copy(type = newType)
+}
 
 /**
  * Ping-Pong / Stereo Delay with sidechain ducking.

@@ -9,12 +9,15 @@ import com.example.audio.dsp.ChannelLimiter
 import com.example.audio.dsp.DuckingDelayProcessor
 import com.example.audio.dsp.FourBandEq
 import com.example.audio.dsp.LufsMeter
+import com.example.audio.dsp.NoiseReductionProcessor
 import com.example.audio.dsp.PanLaw
 import com.example.audio.dsp.ParameterSmoother
 import com.example.audio.dsp.PeakLimiter
+import com.example.audio.dsp.ResonanceSmootherProcessor
 import com.example.audio.dsp.SaturationProcessor
 import com.example.audio.dsp.SchroederReverb
 import com.example.audio.dsp.StereoCompressor
+import com.example.audio.dsp.VocalRiderProcessor
 import com.example.audio.model.AudioTelemetry
 import com.example.audio.model.ChannelLimiterConfig
 import com.example.audio.model.CompressorConfig
@@ -22,8 +25,10 @@ import com.example.audio.model.DuckingDelayConfig
 import com.example.audio.model.EqConfig
 import com.example.audio.model.MasterLimiterConfig
 import com.example.audio.model.ProjectSession
+import com.example.audio.model.ResonanceSmootherConfig
 import com.example.audio.model.ReverbConfig
 import com.example.audio.model.SaturationConfig
+import com.example.audio.model.VocalRiderConfig
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
@@ -81,6 +86,9 @@ class AudioTrackPlaybackEngine(
     private val trackChoruses = Array(trackCount) { com.example.audio.dsp.StereoChorusProcessor(sampleRate.toFloat()) }
     private val trackDelays = Array(trackCount) { DuckingDelayProcessor(sampleRate.toFloat()) }
     private val trackLimiters = Array(trackCount) { ChannelLimiter(sampleRate.toFloat()) }
+    private val trackNoiseReductions = Array(trackCount) { NoiseReductionProcessor(sampleRate.toFloat()) }
+    private val trackResonanceSmoothers = Array(trackCount) { ResonanceSmootherProcessor(sampleRate.toFloat()) }
+    private val trackVocalRiders = Array(trackCount) { VocalRiderProcessor(sampleRate.toFloat()) }
 
     // Master bus DSP
     private var masterGainDb = 0.0f
@@ -157,7 +165,7 @@ class AudioTrackPlaybackEngine(
         )
         val audioTrackBufferSize = max(minBufferSize, bufferFrames * 2 * 2 * 4)
 
-        val track = AudioTrack.Builder()
+        val trackBuilder = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -172,9 +180,11 @@ class AudioTrackPlaybackEngine(
                     .build()
             )
             .setBufferSizeInBytes(audioTrackBufferSize)
-            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
             .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            trackBuilder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+        }
+        val track = trackBuilder.build()
 
         if (preferredDevice != null &&
             android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M
@@ -197,7 +207,7 @@ class AudioTrackPlaybackEngine(
 
         var audioTrack: AudioTrack? = null
         try {
-            audioTrack = AudioTrack.Builder()
+            val trackBuilder = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -212,9 +222,11 @@ class AudioTrackPlaybackEngine(
                         .build()
                 )
                 .setBufferSizeInBytes(audioTrackBufferSize)
-                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
                 .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                trackBuilder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+            }
+            audioTrack = trackBuilder.build()
 
             audioTrack.play()
             activeAudioTrack = audioTrack
@@ -285,6 +297,9 @@ class AudioTrackPlaybackEngine(
                     val chorus = trackChoruses[t]
                     val delay = trackDelays[t]
                     val limiter = trackLimiters[t]
+                    val noiseReduction = trackNoiseReductions[t]
+                    val resonanceSmoother = trackResonanceSmoothers[t]
+                    val vocalRider = trackVocalRiders[t]
 
                     var trackPeak = 0.0f
 
@@ -309,19 +324,28 @@ class AudioTrackPlaybackEngine(
                         // 1. 4-Band Parametric EQ
                         eq.processSampleInto(rawL, rawR, stageOut)
 
-                        // 2. Tape / Tube Saturation
+                        // 2. Noise reduction / gate
+                        noiseReduction.processSampleInto(stageOut[0], stageOut[1], stageOut)
+
+                        // 3. Dynamic resonance suppression (de-harsh / de-ess band)
+                        resonanceSmoother.processSampleInto(stageOut[0], stageOut[1], stageOut)
+
+                        // 4. Tape / Tube Saturation
                         saturator.processSampleInto(stageOut[0], stageOut[1], stageOut)
 
-                        // 3. Stereo Dynamic Compressor
+                        // 5. Stereo Dynamic Compressor
                         comp.processSampleInto(stageOut[0], stageOut[1], stageOut)
 
-                        // 4. Stereo Chorus / Vocal Doubler
+                        // 6. Vocal rider / automatic leveler
+                        vocalRider.processSampleInto(stageOut[0], stageOut[1], stageOut)
+
+                        // 7. Stereo Chorus / Vocal Doubler
                         chorus.processSampleInto(stageOut[0], stageOut[1], stageOut)
 
-                        // 5. Stereo Ducking Delay
+                        // 8. Stereo Ducking Delay
                         delay.processSampleInto(stageOut[0], stageOut[1], stageOut)
 
-                        // 6. Channel Brickwall Limiter
+                        // 9. Channel Brickwall Limiter
                         limiter.processSampleInto(stageOut[0], stageOut[1], stageOut)
 
                         val processedL = stageOut[0] * gain * panL
@@ -491,6 +515,24 @@ class AudioTrackPlaybackEngine(
                     val t = cmd.trackIndex
                     if (t in 0 until trackCount) trackLimiters[t].configure(cmd.config)
                 }
+                is AudioEngineCommand.SetNoiseReduction -> {
+                    val t = cmd.trackIndex
+                    if (t in 0 until trackCount) {
+                        trackNoiseReductions[t].configure(
+                            cmd.config.enabled,
+                            cmd.config.thresholdDb,
+                            cmd.config.reductionDb
+                        )
+                    }
+                }
+                is AudioEngineCommand.SetResonanceSmoother -> {
+                    val t = cmd.trackIndex
+                    if (t in 0 until trackCount) trackResonanceSmoothers[t].configure(cmd.config)
+                }
+                is AudioEngineCommand.SetVocalRider -> {
+                    val t = cmd.trackIndex
+                    if (t in 0 until trackCount) trackVocalRiders[t].configure(cmd.config)
+                }
                 is AudioEngineCommand.SetMasterGain -> {
                     masterGainDb = cmd.gainDb
                     val linear = if (cmd.gainDb <= -60f) 0f else 10.0.pow(cmd.gainDb / 20.0).toFloat()
@@ -600,6 +642,9 @@ class AudioTrackPlaybackEngine(
             commandQueue.enqueue(AudioEngineCommand.SetChorus(track.index, track.chorusConfig))
             commandQueue.enqueue(AudioEngineCommand.SetDuckingDelay(track.index, track.delayConfig))
             commandQueue.enqueue(AudioEngineCommand.SetChannelLimiter(track.index, track.limiterConfig))
+            commandQueue.enqueue(AudioEngineCommand.SetNoiseReduction(track.index, track.noiseReductionConfig))
+            commandQueue.enqueue(AudioEngineCommand.SetResonanceSmoother(track.index, track.resonanceSmootherConfig))
+            commandQueue.enqueue(AudioEngineCommand.SetVocalRider(track.index, track.vocalRiderConfig))
         }
     }
 

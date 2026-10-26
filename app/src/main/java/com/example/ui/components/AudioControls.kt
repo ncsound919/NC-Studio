@@ -27,9 +27,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,15 +54,21 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ui.theme.Radius
 import com.example.ui.theme.ClipRed
 import com.example.ui.theme.ElectricLime
 import com.example.ui.theme.NeonCyan
+import com.example.ui.theme.RulerTick
 import com.example.ui.theme.StudioAmber
 import com.example.ui.theme.StudioBackground
+import com.example.ui.theme.PanelInset
 import com.example.ui.theme.StudioCard
 import com.example.ui.theme.StudioCardBorder
 import com.example.ui.theme.StudioPurple
 import com.example.ui.theme.StudioSurface
+import com.example.ui.theme.SurfaceRaised
+import com.example.ui.theme.SurfaceSunken
+import com.example.ui.theme.TrackHeader
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
@@ -90,7 +99,18 @@ fun AudioRotaryKnob(
     testTag: String = "rotary_knob_${label.lowercase().replace(" ", "_")}"
 ) {
     val totalRange = (range.endInclusive - range.start).coerceAtLeast(0.001f)
-    val normalized = ((value - range.start) / totalRange).coerceIn(0f, 1f)
+
+    // Knob gestures own their value while dragging. Reading the composed
+    // `value` inside a long-lived pointerInput would keep using the value from
+    // the start of the gesture and make the knob feel sticky.
+    val latestValue by rememberUpdatedState(value)
+    val latestOnValueChange by rememberUpdatedState(onValueChange)
+    var dragValue by remember { mutableFloatStateOf(value) }
+    var isDragging by remember { mutableStateOf(false) }
+    LaunchedEffect(value) {
+        if (!isDragging) dragValue = value
+    }
+    val normalized = ((dragValue - range.start) / totalRange).coerceIn(0f, 1f)
 
     // Sweep from 135 deg to 405 deg (270 degrees total)
     val startAngle = 135f
@@ -108,7 +128,7 @@ fun AudioRotaryKnob(
         Text(
             text = label.uppercase(),
             color = TextSecondary,
-            fontSize = 9.sp,
+            fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace,
             letterSpacing = 0.5.sp,
@@ -122,18 +142,30 @@ fun AudioRotaryKnob(
         Box(
             modifier = Modifier
                 .size(knobSize)
-                .pointerInput(range) {
-                    detectVerticalDragGestures { _, dragAmount ->
-                        // Drag up is negative y -> increases value
-                        val sensitivity = totalRange / 180f
-                        val delta = -dragAmount * sensitivity
-                        val newVal = (value + delta).coerceIn(range.start, range.endInclusive)
-                        onValueChange(newVal)
-                    }
+                .pointerInput(totalRange) {
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            isDragging = true
+                            dragValue = latestValue
+                        },
+                        onVerticalDrag = { _, dragAmount ->
+                            // Drag up is negative y -> increases value.
+                            val sensitivity = totalRange / 180f
+                            val next = (dragValue - dragAmount * sensitivity)
+                                .coerceIn(range.start, range.endInclusive)
+                            dragValue = next
+                            latestOnValueChange(next)
+                        },
+                        onDragEnd = { isDragging = false },
+                        onDragCancel = { isDragging = false }
+                    )
                 }
                 .pointerInput(defaultValue) {
                     detectTapGestures(
-                        onDoubleTap = { onValueChange(defaultValue) }
+                        onDoubleTap = {
+                            dragValue = defaultValue
+                            latestOnValueChange(defaultValue)
+                        }
                     )
                 },
             contentAlignment = Alignment.Center
@@ -145,7 +177,7 @@ fun AudioRotaryKnob(
 
                 // 1. Background Arc Track
                 drawArc(
-                    color = Color(0xFF1E293B),
+                    color = SurfaceRaised,
                     startAngle = startAngle,
                     sweepAngle = sweepMax,
                     useCenter = false,
@@ -183,7 +215,7 @@ fun AudioRotaryKnob(
                     val tStart = Offset(center.x + (outerRadius + 2f) * cos(rad), center.y + (outerRadius + 2f) * sin(rad))
                     val tEnd = Offset(center.x + (outerRadius + 6f) * cos(rad), center.y + (outerRadius + 6f) * sin(rad))
                     drawLine(
-                        color = Color(0xFF64748B),
+                        color = TextMuted,
                         start = tStart,
                         end = tEnd,
                         strokeWidth = 1.5f
@@ -194,9 +226,9 @@ fun AudioRotaryKnob(
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            Color(0xFF3B4455),
-                            Color(0xFF1F2633),
-                            Color(0xFF0F141D)
+                            StudioCardBorder,
+                            StudioCard,
+                            TrackHeader
                         ),
                         center = center,
                         radius = innerRadius
@@ -207,7 +239,7 @@ fun AudioRotaryKnob(
 
                 // Knob Bezel Border
                 drawCircle(
-                    color = Color(0xFF475569),
+                    color = RulerTick,
                     radius = innerRadius,
                     center = center,
                     style = Stroke(width = 1.5f)
@@ -248,12 +280,12 @@ fun AudioRotaryKnob(
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(3.dp))
-                .background(Color(0xFF090D14))
-                .border(0.5.dp, Color(0xFF1E293B), RoundedCornerShape(3.dp))
+                .background(SurfaceSunken)
+                .border(0.5.dp, SurfaceRaised, RoundedCornerShape(3.dp))
                 .padding(horizontal = 4.dp, vertical = 1.dp)
         ) {
             Text(
-                text = valueFormatter(value),
+                text = valueFormatter(dragValue),
                 color = accentColor,
                 fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace,
@@ -279,7 +311,14 @@ fun AudioFaderSlider(
     testTag: String = "fader_${label.lowercase().replace(" ", "_")}"
 ) {
     val totalRange = (range.endInclusive - range.start).coerceAtLeast(0.001f)
-    val fraction = ((value - range.start) / totalRange).coerceIn(0f, 1f)
+    val latestValue by rememberUpdatedState(value)
+    val latestOnValueChange by rememberUpdatedState(onValueChange)
+    var dragValue by remember { mutableFloatStateOf(value) }
+    var isDragging by remember { mutableStateOf(false) }
+    LaunchedEffect(value) {
+        if (!isDragging) dragValue = value
+    }
+    val fraction = ((dragValue - range.start) / totalRange).coerceIn(0f, 1f)
 
     Column(
         modifier = modifier
@@ -299,8 +338,8 @@ fun AudioFaderSlider(
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                text = if (value <= -59f) "-∞ dB" else "%+.1f dB".format(value),
-                color = if (value > 0f) StudioAmber else accentColor,
+                text = if (dragValue <= -59f) "-∞ dB" else "%+.1f dB".format(dragValue),
+                color = if (dragValue > 0f) StudioAmber else accentColor,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace
@@ -313,24 +352,40 @@ fun AudioFaderSlider(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(34.dp)
-                .clip(RoundedCornerShape(4.dp))
-                .background(Color(0xFF0F141D))
-                .border(1.dp, StudioCardBorder, RoundedCornerShape(4.dp))
-                .pointerInput(range) {
-                    detectDragGestures { change, _ ->
-                        val tapFrac = (change.position.x / size.width).coerceIn(0f, 1f)
-                        val newVal = range.start + tapFrac * totalRange
-                        onValueChange(newVal)
-                    }
+                .clip(RoundedCornerShape(Radius.sm))
+                .background(TrackHeader)
+                .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.sm))
+                .pointerInput(totalRange) {
+                    detectDragGestures(
+                        onDragStart = { offset ->
+                            isDragging = true
+                            val frac = (offset.x / size.width).coerceIn(0f, 1f)
+                            val next = range.start + frac * totalRange
+                            dragValue = next
+                            latestOnValueChange(next)
+                        },
+                        onDragEnd = { isDragging = false },
+                        onDragCancel = { isDragging = false },
+                        onDrag = { change, _ ->
+                            val frac = (change.position.x / size.width).coerceIn(0f, 1f)
+                            val next = range.start + frac * totalRange
+                            dragValue = next
+                            latestOnValueChange(next)
+                        }
+                    )
                 }
                 .pointerInput(defaultValue) {
                     detectTapGestures(
                         onTap = { offset ->
                             val tapFrac = (offset.x / size.width).coerceIn(0f, 1f)
-                            val newVal = range.start + tapFrac * totalRange
-                            onValueChange(newVal)
+                            val next = range.start + tapFrac * totalRange
+                            dragValue = next
+                            latestOnValueChange(next)
                         },
-                        onDoubleTap = { onValueChange(defaultValue) }
+                        onDoubleTap = {
+                            dragValue = defaultValue
+                            latestOnValueChange(defaultValue)
+                        }
                     )
                 }
         ) {
@@ -340,7 +395,7 @@ fun AudioFaderSlider(
 
                 // 1. Recessed Fader Slot
                 drawRoundRect(
-                    color = Color(0xFF05070B),
+                    color = PanelInset,
                     topLeft = Offset(8f, trackY - 3f),
                     size = Size(size.width - 16f, 6f),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(3f, 3f)
@@ -358,7 +413,7 @@ fun AudioFaderSlider(
                 val zeroFrac = ((0.0f - range.start) / totalRange).coerceIn(0f, 1f)
                 val zeroX = size.width * zeroFrac
                 drawLine(
-                    color = Color(0xFFE2E8F0),
+                    color = TextPrimary,
                     start = Offset(zeroX, 2f),
                     end = Offset(zeroX, size.height - 2f),
                     strokeWidth = 1.5f
@@ -372,9 +427,9 @@ fun AudioFaderSlider(
                 drawRoundRect(
                     brush = Brush.verticalGradient(
                         colors = listOf(
-                            Color(0xFF475569),
-                            Color(0xFF1E293B),
-                            Color(0xFF0F172A)
+                            RulerTick,
+                            SurfaceRaised,
+                            TrackHeader
                         ),
                         startY = 3f,
                         endY = size.height - 3f
@@ -386,7 +441,7 @@ fun AudioFaderSlider(
 
                 // Fader Cap Rim
                 drawRoundRect(
-                    color = Color(0xFF64748B),
+                    color = TextMuted,
                     topLeft = Offset(capLeft, 3f),
                     size = Size(capWidth, capHeight),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f),
@@ -419,12 +474,12 @@ fun AudioSwitchToggle(
 ) {
     Row(
         modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(if (checked) activeColor.copy(alpha = 0.15f) else Color(0xFF141A24))
+            .clip(RoundedCornerShape(Radius.md))
+            .background(if (checked) activeColor.copy(alpha = 0.15f) else StudioCard)
             .border(
                 1.dp,
                 if (checked) activeColor else StudioCardBorder,
-                RoundedCornerShape(6.dp)
+                RoundedCornerShape(Radius.md)
             )
             .clickable { onCheckedChange(!checked) }
             .padding(horizontal = 10.dp, vertical = 6.dp)
@@ -437,7 +492,7 @@ fun AudioSwitchToggle(
             modifier = Modifier
                 .size(8.dp)
                 .clip(CircleShape)
-                .background(if (checked) activeColor else Color(0xFF334155))
+                .background(if (checked) activeColor else StudioCardBorder)
                 .border(
                     0.5.dp,
                     if (checked) Color.White else Color.Transparent,

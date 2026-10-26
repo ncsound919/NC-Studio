@@ -1,13 +1,14 @@
 package com.example.audio.engine
 
-import com.example.audio.dsp.AutoPitchProcessor
 import com.example.audio.dsp.AutomationInterpolator
 import com.example.audio.dsp.FourBandEq
 import com.example.audio.dsp.NoiseReductionProcessor
 import com.example.audio.dsp.PanLaw
 import com.example.audio.dsp.PeakLimiter
+import com.example.audio.dsp.ResonanceSmootherProcessor
 import com.example.audio.dsp.SchroederReverb
 import com.example.audio.dsp.StereoCompressor
+import com.example.audio.dsp.VocalRiderProcessor
 import com.example.audio.model.ProjectSession
 import java.io.File
 import kotlin.math.abs
@@ -56,16 +57,12 @@ object OfflineRenderer {
 
         val trackCount = project.tracks.size.coerceAtLeast(16)
 
-        // Preprocess track buffers: apply AutoPitch where enabled
-        val renderBuffers = trackBuffers.mapIndexed { idx, buf ->
-            val trk = project.tracks.getOrNull(idx)
-            if (trk != null && trk.autoPitchConfig.enabled) {
-                val ap = AutoPitchProcessor(sampleRate.toFloat())
-                ap.configure(true, trk.autoPitchConfig.correctionStrength)
-                ap.processBuffer(buf)
-            } else buf.copyOf()
-        }.toTypedArray()
-        val paddedBuffers = Array(trackCount) { i -> if (i < renderBuffers.size) renderBuffers[i] else FloatArray(0) }
+        // Track buffers are supplied already clip-composited and pre-rendered
+        // by the session layer (including AutoPitch), matching what the live
+        // engine plays. DSP below is the per-channel strip only.
+        val paddedBuffers = Array(trackCount) { i ->
+            if (i < trackBuffers.size) trackBuffers[i] else FloatArray(0)
+        }
 
         val trackEqs = Array(trackCount) { FourBandEq(sampleRate.toFloat()) }
         val trackSaturators = Array(trackCount) { com.example.audio.dsp.SaturationProcessor() }
@@ -74,6 +71,8 @@ object OfflineRenderer {
         val trackDelays = Array(trackCount) { com.example.audio.dsp.DuckingDelayProcessor(sampleRate.toFloat()) }
         val trackLimiters = Array(trackCount) { com.example.audio.dsp.ChannelLimiter(sampleRate.toFloat()) }
         val trackNoiseReductions = Array(trackCount) { NoiseReductionProcessor(sampleRate.toFloat()) }
+        val trackResonanceSmoothers = Array(trackCount) { ResonanceSmootherProcessor(sampleRate.toFloat()) }
+        val trackVocalRiders = Array(trackCount) { VocalRiderProcessor(sampleRate.toFloat()) }
         val masterReverb = SchroederReverb(sampleRate.toFloat())
         val masterLimiter = PeakLimiter(sampleRate.toFloat())
 
@@ -90,6 +89,8 @@ object OfflineRenderer {
                 trackDelays[t].configure(trk.delayConfig)
                 trackLimiters[t].configure(trk.limiterConfig)
                 trackNoiseReductions[t].configure(trk.noiseReductionConfig.enabled, trk.noiseReductionConfig.thresholdDb, trk.noiseReductionConfig.reductionDb)
+                trackResonanceSmoothers[t].configure(trk.resonanceSmootherConfig)
+                trackVocalRiders[t].configure(trk.vocalRiderConfig)
             }
         }
 
@@ -132,8 +133,10 @@ object OfflineRenderer {
 
                     trackEqs[t].processSampleInto(rawL, rawR, stageOut)
                     trackNoiseReductions[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
+                    trackResonanceSmoothers[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
                     trackSaturators[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
                     trackCompressors[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
+                    trackVocalRiders[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
                     trackChoruses[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
                     trackDelays[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
                     trackLimiters[t].processSampleInto(stageOut[0], stageOut[1], stageOut)
@@ -212,7 +215,7 @@ object OfflineRenderer {
         outputFile: File,
         onProgress: (Float) -> Unit = {},
         normalize: Boolean = true
-    ): Boolean {
+    ): File? {
         val sampleRate = project.sampleRate
         val pcmFloat = renderSessionToPcmBuffer(project, trackBuffers, onProgress, normalize = normalize)
 
@@ -289,11 +292,12 @@ object OfflineRenderer {
                 muxer.stop()
                 muxer.release()
             }
-            true
+            outputFile
         } catch (e: Exception) {
             e.printStackTrace()
-            // Fallback to WAV (16-bit for maximum compatibility of the fallback path)
-            renderSessionToWav(project, trackBuffers, outputFile, onProgress, bitsPerSample = 16)
+            // Encoder unavailable: write a real WAV with a .wav extension so the
+            // file is not mislabeled as AAC/M4A.
+            wavFallback(project, trackBuffers, outputFile, onProgress, bitsPerSample = 16)
         }
     }
 
@@ -306,24 +310,31 @@ object OfflineRenderer {
         trackBuffers: Array<FloatArray>,
         outputDir: File,
         bitsPerSample: Int = 24,
-        normalize: Boolean = true
+        normalize: Boolean = false,
+        onStemProgress: (completed: Int, total: Int, trackName: String) -> Unit = { _, _, _ -> }
     ): List<File> {
         outputDir.mkdirs()
         val result = mutableListOf<File>()
         val trackCount = project.tracks.size
         for (t in 0 until trackCount) {
             val trk = project.tracks[t]
-            // Mute all tracks except the target one
+            // A stem must contain exactly one track regardless of the session's
+            // current mute/solo state. Normalizing each stem independently would
+            // also destroy the relative balance of the exported set.
             val stemProject = project.copy(tracks = project.tracks.mapIndexed { idx, track ->
-                if (idx == t) track else track.copy(isMuted = true)
+                if (idx == t) track.copy(isMuted = false, isSoloed = false)
+                else track.copy(isMuted = true, isSoloed = false)
             })
-            // Pad to trackCount so indexing in renderer matches
-            val padded = Array(project.tracks.size) { i -> if (i == t && i < trackBuffers.size) trackBuffers[i] else FloatArray(0) }
+            // Only hand the renderer the target buffer; all other tracks are empty.
+            val padded = Array(trackCount) { i ->
+                if (i == t && i < trackBuffers.size) trackBuffers[i] else FloatArray(0)
+            }
             val pcm = renderSessionToPcmBuffer(stemProject, padded, normalize = normalize)
             val safeName = trk.name.replace(Regex("[^A-Za-z0-9_-]"), "_")
             val outFile = File(outputDir, "stem_${t + 1}_${safeName}.wav")
             WavAudioIO.writeWavFile(outFile, pcm, channels = 2, sampleRate = project.sampleRate, bitsPerSample = bitsPerSample)
             result.add(outFile)
+            onStemProgress(t + 1, trackCount, trk.name)
         }
         return result
     }
@@ -338,7 +349,7 @@ object OfflineRenderer {
         outputFile: File,
         onProgress: (Float) -> Unit = {},
         normalize: Boolean = true
-    ): Boolean {
+    ): File? {
         val pcmFloat = renderSessionToPcmBuffer(project, trackBuffers, onProgress, normalize = normalize)
         val pcmBytes = ByteArray(pcmFloat.size * 2)
         for (i in pcmFloat.indices) {
@@ -400,11 +411,10 @@ object OfflineRenderer {
             }
             codec.stop(); codec.release()
             if (muxerStarted) { muxer.stop(); muxer.release() }
-            true
+            outputFile
         } catch (e: Exception) {
             e.printStackTrace()
-            renderSessionToWav(project, trackBuffers, outputFile, onProgress, bitsPerSample = 24)
-            true
+            wavFallback(project, trackBuffers, outputFile, onProgress, bitsPerSample = 24)
         }
     }
 
@@ -418,7 +428,7 @@ object OfflineRenderer {
         outputFile: File,
         onProgress: (Float) -> Unit = {},
         normalize: Boolean = true
-    ): Boolean {
+    ): File? {
         val pcmFloat = renderSessionToPcmBuffer(project, trackBuffers, onProgress, normalize = normalize)
         val pcmBytes = ByteArray(pcmFloat.size * 2)
         for (i in pcmFloat.indices) {
@@ -480,12 +490,29 @@ object OfflineRenderer {
             }
             codec.stop(); codec.release()
             if (muxerStarted) { muxer.stop(); muxer.release() }
-            true
+            outputFile
         } catch (e: Exception) {
             e.printStackTrace()
-            renderSessionToWav(project, trackBuffers, outputFile, onProgress, bitsPerSample = 16)
-            true
+            wavFallback(project, trackBuffers, outputFile, onProgress, bitsPerSample = 16)
         }
+    }
+
+    /**
+     * Writes a WAV fallback beside the requested compressed file and removes the
+     * empty/mislabeled target. Returning the real path lets the UI report the
+     * format that was actually produced.
+     */
+    private fun wavFallback(
+        project: ProjectSession,
+        trackBuffers: Array<FloatArray>,
+        outputFile: File,
+        onProgress: (Float) -> Unit,
+        bitsPerSample: Int
+    ): File {
+        val wavFile = File(outputFile.parentFile, outputFile.nameWithoutExtension + ".wav")
+        renderSessionToWav(project, trackBuffers, wavFile, onProgress, bitsPerSample = bitsPerSample)
+        outputFile.delete()
+        return wavFile
     }
 
     /**

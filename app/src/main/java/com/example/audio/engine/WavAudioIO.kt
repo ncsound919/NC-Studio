@@ -194,7 +194,8 @@ object WavAudioIO {
     }
 
     /**
-     * Synthesize rich procedural musical audio stems for default 8-track project.
+     * Test fixture only: synthesize procedural stems used by DSP tests.
+     * Production sessions start empty and never load this stock music.
      * Duration: 16 seconds loop at 120 BPM (32 beats / 8 bars).
      */
     fun generateProceduralStem(

@@ -10,9 +10,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -23,6 +26,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Science
+import com.example.R
 import com.example.audio.model.MasterPreset
 import com.example.audio.model.PresetLibrary
 import androidx.compose.material.icons.filled.Speed
@@ -33,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,11 +48,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.audio.engine.OfflineRenderer
+import com.example.ui.theme.Radius
 import com.example.ui.theme.ClipRed
 import com.example.ui.theme.ElectricLime
 import com.example.ui.theme.NeonCyan
@@ -59,6 +66,7 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import java.io.File
+import java.util.Locale
 
 @Composable
 fun DspTestDialog(
@@ -78,8 +86,7 @@ fun DspTestDialog(
                     modifier = Modifier.size(22.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "DSP Core Unit Tests & Regression",
+                Text(text = stringResource(R.string.ui_dsp_core_unit_tests_regression),
                     color = TextPrimary,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
@@ -88,8 +95,7 @@ fun DspTestDialog(
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "Offline mathematical test vectors: Sine, Impulse, Noise, Pan Law (-3dB), Limiter ceiling, and Bit-Identical determinism.",
+                Text(text = stringResource(R.string.ui_offline_mathematical_test_vectors_sine_impulse_n),
                     color = TextSecondary,
                     fontSize = 11.sp
                 )
@@ -100,9 +106,9 @@ fun DspTestDialog(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(6.dp))
+                                .clip(RoundedCornerShape(Radius.md))
                                 .background(StudioCard)
-                                .border(1.dp, StudioCardBorder, RoundedCornerShape(6.dp))
+                                .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.md))
                                 .padding(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -123,7 +129,7 @@ fun DspTestDialog(
                                 Text(
                                     text = res.message,
                                     color = TextMuted,
-                                    fontSize = 9.sp,
+                                    fontSize = 10.sp,
                                     fontFamily = FontFamily.Monospace
                                 )
                             }
@@ -137,7 +143,7 @@ fun DspTestDialog(
                 onClick = onDismiss,
                 colors = ButtonDefaults.buttonColors(containerColor = NeonCyan)
             ) {
-                Text("Done", color = Color.Black, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.ui_done), color = Color.Black, fontWeight = FontWeight.Bold)
             }
         }
     )
@@ -147,14 +153,24 @@ fun DspTestDialog(
 fun ExportDialog(
     progress: Float,
     exportedFile: File?,
+    errorMessage: String? = null,
+    sampleRate: Int = 48000,
+    durationSeconds: Float = 16f,
+    stemFiles: List<File> = emptyList(),
+    destinationName: String = "App storage / exports",
+    onChooseDestination: () -> Unit = {},
     onStartExport: (com.example.audio.engine.ExportFormat) -> Unit,
     onStartStemsExport: () -> Unit = {},
+    onShareFile: (File) -> Unit = {},
+    onOpenFile: (File) -> Unit = {},
+    onShareAllStems: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var selectedFormat by remember { mutableStateOf(com.example.audio.engine.ExportFormat.WAV_24BIT) }
+    val isRendering = exportedFile == null && progress > 0f && progress < 1f && stemFiles.isEmpty()
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isRendering) onDismiss() },
         modifier = Modifier.testTag("export_dialog"),
         containerColor = StudioSurface,
         title = {
@@ -166,8 +182,7 @@ fun ExportDialog(
                     modifier = Modifier.size(22.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Offline Session Export",
+                Text(text = stringResource(R.string.ui_offline_session_export),
                     color = TextPrimary,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
@@ -175,18 +190,63 @@ fun ExportDialog(
             }
         },
         text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "Renders multi-track session with full DSP chain (EQ, compression, chorus, ducking delay, reverb, limiter) to studio audio files.",
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(text = stringResource(R.string.ui_renders_multi_track_session_with_full_dsp_chain_),
                     color = TextSecondary,
                     fontSize = 11.sp
                 )
 
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "Destination  $destinationName",
+                        color = TextMuted,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = onChooseDestination,
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Text(stringResource(R.string.ui_change), color = NeonCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Text(
+                    text = "Session  ${formatDuration(durationSeconds)}  •  ${sampleRate / 1000} kHz",
+                    color = TextMuted,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+
+                if (errorMessage != null) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(Radius.md))
+                            .background(ClipRed.copy(alpha = 0.1f))
+                            .border(1.dp, ClipRed.copy(alpha = 0.4f), RoundedCornerShape(Radius.md))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = errorMessage,
+                            color = ClipRed,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
                 Spacer(modifier = Modifier.height(12.dp))
 
                 if (exportedFile == null && progress == 0f) {
-                    Text(
-                        text = "EXPORT AUDIO FORMAT",
+                    Text(text = stringResource(R.string.ui_export_audio_format),
                         color = NeonCyan,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
@@ -200,9 +260,9 @@ fun ExportDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 3.dp)
-                                .clip(RoundedCornerShape(6.dp))
+                                .clip(RoundedCornerShape(Radius.md))
                                 .background(if (isSel) NeonCyan.copy(alpha = 0.15f) else StudioCard)
-                                .border(1.dp, if (isSel) NeonCyan else StudioCardBorder, RoundedCornerShape(6.dp))
+                                .border(1.dp, if (isSel) NeonCyan else StudioCardBorder, RoundedCornerShape(Radius.md))
                                 .clickable { selectedFormat = fmt }
                                 .padding(10.dp)
                         ) {
@@ -228,6 +288,13 @@ fun ExportDialog(
                                     fontSize = 10.sp,
                                     modifier = Modifier.padding(start = 16.dp, top = 2.dp)
                                 )
+                                Text(
+                                    text = "${formatExportSpec(fmt, sampleRate)}  •  ~${formatExportSize(fmt, sampleRate, durationSeconds)}",
+                                    color = TextMuted,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier.padding(start = 16.dp, top = 2.dp)
+                                )
                             }
                         }
                     }
@@ -249,11 +316,16 @@ fun ExportDialog(
                         color = NeonCyan,
                         trackColor = StudioCard
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(text = stringResource(R.string.ui_keep_this_dialog_open_rendering_cannot_be_cancel),
+                        color = TextSecondary,
+                        fontSize = 11.sp
+                    )
                 } else if (exportedFile != null) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(RoundedCornerShape(Radius.md))
                             .background(StudioCard)
                             .padding(10.dp)
                     ) {
@@ -267,7 +339,7 @@ fun ExportDialog(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Export Succeeded!",
+                                    text = if (stemFiles.size > 1) "${stemFiles.size} stems exported" else "Export Succeeded!",
                                     color = ElectricLime,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
@@ -280,10 +352,71 @@ fun ExportDialog(
                                 fontSize = 11.sp
                             )
                             Text(
-                                text = "Size: ${exportedFile.length() / 1024} KB • Stereo 48kHz",
+                                text = "Size: ${exportedFile.length() / 1024} KB • Stereo ${sampleRate / 1000} kHz",
                                 color = TextMuted,
                                 fontSize = 10.sp
                             )
+                        }
+                    }
+
+                    if (stemFiles.size > 1) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        stemFiles.forEach { file ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = file.name,
+                                    color = TextSecondary,
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = "${file.length() / 1024} KB",
+                                    color = TextMuted,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                TextButton(
+                                    onClick = { onOpenFile(file) },
+                                    modifier = Modifier.heightIn(min = 48.dp)
+                                ) {
+                                    Text(stringResource(R.string.ui_open), color = TextSecondary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                                TextButton(
+                                    onClick = { onShareFile(file) },
+                                    modifier = Modifier.heightIn(min = 48.dp)
+                                ) {
+                                    Text(stringResource(R.string.ui_share), color = NeonCyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = onShareAllStems,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                                .testTag("share_all_stems_button"),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, StudioCardBorder)
+                        ) {
+                            Text(stringResource(R.string.ui_share_all_stems), color = TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(
+                                onClick = { onOpenFile(exportedFile) },
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) {
+                                Text(stringResource(R.string.ui_open_file), color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            TextButton(
+                                onClick = { onShareFile(exportedFile) },
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) {
+                                Text(stringResource(R.string.ui_share_file), color = NeonCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -293,7 +426,7 @@ fun ExportDialog(
             if (exportedFile == null && progress == 0f) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onStartStemsExport) {
-                        Text("Export Stems", color = TextSecondary, fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.ui_export_stems), color = TextSecondary, fontWeight = FontWeight.Bold)
                     }
                     Button(
                         onClick = { onStartExport(selectedFormat) },
@@ -308,16 +441,50 @@ fun ExportDialog(
                     onClick = onDismiss,
                     colors = ButtonDefaults.buttonColors(containerColor = ElectricLime)
                 ) {
-                    Text("Close", color = Color.Black, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.ui_close), color = Color.Black, fontWeight = FontWeight.Bold)
                 }
             }
         },
         dismissButton = {
-            OutlinedButton(onClick = onDismiss) {
-                Text("Cancel", color = TextSecondary)
+            if (!isRendering) {
+                OutlinedButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.ui_cancel), color = TextSecondary)
+                }
             }
         }
     )
+}
+
+internal fun formatDuration(seconds: Float): String {
+    val total = seconds.coerceAtLeast(0f).toInt()
+    return "%d:%02d".format(total / 60, total % 60)
+}
+
+internal fun formatExportSpec(
+    format: com.example.audio.engine.ExportFormat,
+    sampleRate: Int
+): String = when (format) {
+    com.example.audio.engine.ExportFormat.WAV_24BIT -> "${sampleRate / 1000} kHz • 24-bit PCM"
+    com.example.audio.engine.ExportFormat.FLAC_LOSSLESS -> "${sampleRate / 1000} kHz • 16-bit FLAC"
+    com.example.audio.engine.ExportFormat.AAC_320KBPS -> "${sampleRate / 1000} kHz • AAC 320 kbps"
+    com.example.audio.engine.ExportFormat.MP3_320KBPS -> "${sampleRate / 1000} kHz • MP3 320 kbps"
+}
+
+internal fun formatExportSize(
+    format: com.example.audio.engine.ExportFormat,
+    sampleRate: Int,
+    durationSeconds: Float
+): String {
+    val seconds = durationSeconds.coerceAtLeast(1f)
+    val bytes = when (format) {
+        com.example.audio.engine.ExportFormat.WAV_24BIT -> sampleRate * 3L * 2L * seconds.toLong()
+        com.example.audio.engine.ExportFormat.FLAC_LOSSLESS -> (sampleRate * 2L * 2L * seconds.toLong() * 0.6f).toLong()
+        else -> (320_000L / 8L * seconds.toLong())
+    }
+    return when {
+        bytes >= 1024L * 1024L -> String.format(Locale.US, "%.1f MB", bytes / (1024f * 1024f))
+        else -> "${(bytes / 1024L).coerceAtLeast(1L)} KB"
+    }
 }
 
 @Composable
@@ -340,8 +507,7 @@ fun UsbAudioInterfaceDialog(
                     modifier = Modifier.size(22.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "USB Type-C Audio Interface",
+                Text(text = stringResource(R.string.ui_usb_type_c_audio_interface),
                     color = TextPrimary,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
@@ -350,8 +516,7 @@ fun UsbAudioInterfaceDialog(
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "Connect any USB Class Compliant audio interface, DAC, mixer, or USB-C microphone directly to your device port.",
+                Text(text = stringResource(R.string.ui_connect_any_usb_class_compliant_audio_interface_),
                     color = TextSecondary,
                     fontSize = 11.sp
                 )
@@ -362,21 +527,19 @@ fun UsbAudioInterfaceDialog(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(RoundedCornerShape(Radius.md))
                             .background(StudioCard)
                             .padding(12.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "No USB Audio Interface Connected",
+                            Text(text = stringResource(R.string.ui_no_usb_audio_interface_connected),
                                 color = StudioAmber,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
                             )
                             Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "Plug in a USB-C Audio Interface (Focusrite Scarlett, MOTU, UA Volt, Behringer, USB DAC) to enable low-latency multi-channel routing.",
+                            Text(text = stringResource(R.string.ui_plug_in_a_usb_c_audio_interface_focusrite_scarle),
                                 color = TextMuted,
                                 fontSize = 10.sp,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -390,12 +553,12 @@ fun UsbAudioInterfaceDialog(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(6.dp))
+                                    .clip(RoundedCornerShape(Radius.md))
                                     .background(if (isSelected) NeonCyan.copy(alpha = 0.15f) else StudioCard)
                                     .border(
                                         1.dp,
                                         if (isSelected) NeonCyan else StudioCardBorder,
-                                        RoundedCornerShape(6.dp)
+                                        RoundedCornerShape(Radius.md)
                                     )
                                     .clickable { onSelectDevice(dev.id) }
                                     .padding(10.dp),
@@ -412,7 +575,7 @@ fun UsbAudioInterfaceDialog(
                                     Text(
                                         text = "${dev.typeName} • ${dev.sampleRates.joinToString("/") { "${it/1000}k" }} • ${dev.channelCounts.maxOrNull() ?: 2} Channels",
                                         color = TextMuted,
-                                        fontSize = 9.sp
+                                        fontSize = 10.sp
                                     )
                                 }
                                 if (isSelected) {
@@ -434,12 +597,12 @@ fun UsbAudioInterfaceDialog(
                 onClick = onRefresh,
                 colors = ButtonDefaults.buttonColors(containerColor = NeonCyan)
             ) {
-                Text("Refresh", color = Color.Black, fontWeight = FontWeight.Bold)
+                Text(stringResource(R.string.ui_refresh), color = Color.Black, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
             OutlinedButton(onClick = onDismiss) {
-                Text("Done", color = TextSecondary)
+                Text(stringResource(R.string.ui_done), color = TextSecondary)
             }
         }
     )
@@ -451,7 +614,9 @@ fun AudioImportDialog(
     selectedTrackIndex: Int,
     onSelectTrack: (Int) -> Unit,
     onLaunchPicker: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    isImporting: Boolean = false,
+    errorMessage: String? = null
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -465,8 +630,7 @@ fun AudioImportDialog(
                     modifier = Modifier.size(22.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Import Audio File / Stem",
+                Text(text = stringResource(R.string.ui_import_audio_file_stem),
                     color = TextPrimary,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
@@ -475,11 +639,33 @@ fun AudioImportDialog(
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "Select destination track to import your WAV, MP3, FLAC, or M4A audio stem:",
+                Text(text = stringResource(R.string.ui_select_destination_track_to_import_your_wav_mp3_),
                     color = TextSecondary,
                     fontSize = 11.sp
                 )
+
+                if (isImporting) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = NeonCyan,
+                        trackColor = StudioCard
+                    )
+                    Text(text = stringResource(R.string.ui_decoding_audio_and_building_waveform),
+                        color = NeonCyan,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
+
+                if (errorMessage != null && !isImporting) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = errorMessage,
+                        color = ClipRed,
+                        fontSize = 11.sp
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(10.dp))
 
@@ -492,21 +678,21 @@ fun AudioImportDialog(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(6.dp))
+                                .clip(RoundedCornerShape(Radius.md))
                                 .background(if (isSelected) ElectricLime.copy(alpha = 0.15f) else StudioCard)
                                 .border(
                                     1.dp,
                                     if (isSelected) ElectricLime else StudioCardBorder,
-                                    RoundedCornerShape(6.dp)
+                                    RoundedCornerShape(Radius.md)
                                 )
-                                .clickable { onSelectTrack(trk.index) }
+                                .clickable(enabled = !isImporting) { onSelectTrack(trk.index) }
                                 .padding(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
                                 modifier = Modifier
                                     .size(8.dp)
-                                    .clip(RoundedCornerShape(2.dp))
+                                    .clip(RoundedCornerShape(Radius.sm))
                                     .background(Color(trk.colorHex))
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -524,14 +710,15 @@ fun AudioImportDialog(
         confirmButton = {
             Button(
                 onClick = onLaunchPicker,
+                enabled = !isImporting,
                 colors = ButtonDefaults.buttonColors(containerColor = ElectricLime)
             ) {
-                Text("Choose File", color = Color.Black, fontWeight = FontWeight.Bold)
+                Text(if (isImporting) "Importing..." else "Choose File", color = Color.Black, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
             OutlinedButton(onClick = onDismiss) {
-                Text("Cancel", color = TextSecondary)
+                Text(stringResource(R.string.ui_cancel), color = TextSecondary)
             }
         }
     )
@@ -557,14 +744,12 @@ fun MasterPresetDialog(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
-                    Text(
-                        text = "Master Bus Engineering Presets",
+                    Text(text = stringResource(R.string.ui_master_bus_engineering_presets),
                         color = TextPrimary,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Text(
-                        text = "Industry master bus chains & Schroeder reverb curves",
+                    Text(text = stringResource(R.string.ui_industry_master_bus_chains_schroeder_reverb_curv),
                         color = TextMuted,
                         fontSize = 10.sp
                     )
@@ -580,9 +765,9 @@ fun MasterPresetDialog(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
+                            .clip(RoundedCornerShape(Radius.md))
                             .background(StudioCard)
-                            .border(1.dp, StudioCardBorder, RoundedCornerShape(6.dp))
+                            .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.md))
                             .clickable {
                                 onSelectPreset(preset)
                                 onDismiss()
@@ -611,7 +796,7 @@ fun MasterPresetDialog(
                                     Text(
                                         text = "${preset.masterReverb.decayTimeSec}s RT60",
                                         color = StudioAmber,
-                                        fontSize = 9.sp,
+                                        fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
@@ -629,7 +814,7 @@ fun MasterPresetDialog(
         },
         confirmButton = {
             OutlinedButton(onClick = onDismiss) {
-                Text("Close", color = TextSecondary)
+                Text(stringResource(R.string.ui_close), color = TextSecondary)
             }
         }
     )

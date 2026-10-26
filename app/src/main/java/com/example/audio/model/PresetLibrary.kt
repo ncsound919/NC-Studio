@@ -14,7 +14,9 @@ data class TrackPreset(
     val chorusConfig: ChorusConfig,
     val delayConfig: DuckingDelayConfig,
     val limiterConfig: ChannelLimiterConfig,
-    val reverbSendLevel: Float
+    val reverbSendLevel: Float,
+    val vocalRiderConfig: VocalRiderConfig = VocalRiderConfig(),
+    val resonanceSmootherConfig: ResonanceSmootherConfig = ResonanceSmootherConfig()
 )
 
 data class MasterPreset(
@@ -34,17 +36,20 @@ object PresetLibrary {
             description = "High-pass air lift with tight 4:1 VCA compression & 350ms ducking delay",
             eqConfig = EqConfig(
                 enabled = true,
-                band1 = EqBand(FilterType.HIGH_PASS, 110f, 0f, 0.707f, enabled = true),
+                band1 = EqBand(FilterType.LOW_SHELF, 100f, 0f, 0.707f, enabled = true),
                 band2 = EqBand(FilterType.PEAKING, 350f, -2.0f, 1.2f, enabled = true),
                 band3 = EqBand(FilterType.PEAKING, 3200f, 2.5f, 1.4f, enabled = true),
-                band4 = EqBand(FilterType.HIGH_SHELF, 12000f, 3.5f, 0.707f, enabled = true)
+                band4 = EqBand(FilterType.HIGH_SHELF, 12000f, 3.5f, 0.707f, enabled = true),
+                highPass = EqBand(FilterType.HIGH_PASS, 110f, 0f, 0.707f, enabled = true)
             ),
-            saturationConfig = SaturationConfig(enabled = true, driveDb = 3.5f, warmth = 0.45f, mix = 0.85f),
-            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -18f, ratio = 4.0f, attackMs = 12f, releaseMs = 90f, makeupGainDb = 3.0f),
+            saturationConfig = SaturationConfig(enabled = true, driveDb = 3.5f, warmth = 0.45f, mix = 0.85f).withType(SaturationType.TUBE),
+            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -18f, ratio = 4.0f, attackMs = 12f, releaseMs = 90f, makeupGainDb = 3.0f).withType(CompressorType.LA_2A),
             chorusConfig = ChorusConfig(enabled = false),
             delayConfig = DuckingDelayConfig(enabled = true, timeMs = 350f, feedback = 0.30f, mix = 0.20f, duckingEnabled = true, duckingThresholdDb = -20f, duckingDepthDb = -12f),
             limiterConfig = ChannelLimiterConfig(enabled = true, ceilingDb = -0.5f, releaseMs = 30f),
-            reverbSendLevel = 0.30f
+            reverbSendLevel = 0.30f,
+            vocalRiderConfig = VocalRiderConfig(enabled = true, targetLufs = -18f, maxGainDb = 4f, minGainDb = -5f, sensitivity = 0.55f),
+            resonanceSmootherConfig = ResonanceSmootherConfig(enabled = true, frequencyHz = 3200f, thresholdDb = -20f, depthDb = -4f, qFactor = 5f)
         ),
         TrackPreset(
             name = "Hip-Hop Forward Vocal",
@@ -52,17 +57,20 @@ object PresetLibrary {
             description = "Aggressive 5:1 compression with harmonic tube drive for in-your-face rap vocals",
             eqConfig = EqConfig(
                 enabled = true,
-                band1 = EqBand(FilterType.HIGH_PASS, 95f, 0f, 0.707f, enabled = true),
+                band1 = EqBand(FilterType.LOW_SHELF, 100f, 0f, 0.707f, enabled = true),
                 band2 = EqBand(FilterType.PEAKING, 250f, -3.0f, 1.5f, enabled = true),
                 band3 = EqBand(FilterType.PEAKING, 2800f, 3.8f, 1.6f, enabled = true),
-                band4 = EqBand(FilterType.HIGH_SHELF, 10000f, 2.0f, 0.707f, enabled = true)
+                band4 = EqBand(FilterType.HIGH_SHELF, 10000f, 2.0f, 0.707f, enabled = true),
+                highPass = EqBand(FilterType.HIGH_PASS, 95f, 0f, 0.707f, enabled = true)
             ),
-            saturationConfig = SaturationConfig(enabled = true, driveDb = 6.0f, warmth = 0.60f, mix = 0.90f),
-            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -20f, ratio = 5.5f, attackMs = 8f, releaseMs = 110f, makeupGainDb = 4.5f),
+            saturationConfig = SaturationConfig(enabled = true, driveDb = 6.0f, warmth = 0.60f, mix = 0.90f).withType(SaturationType.TUBE),
+            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -20f, ratio = 5.5f, attackMs = 8f, releaseMs = 110f, makeupGainDb = 4.5f).withType(CompressorType.FET_1176),
             chorusConfig = ChorusConfig(enabled = false),
             delayConfig = DuckingDelayConfig(enabled = true, timeMs = 280f, feedback = 0.25f, mix = 0.15f, duckingEnabled = true, duckingThresholdDb = -18f, duckingDepthDb = -14f),
             limiterConfig = ChannelLimiterConfig(enabled = true, ceilingDb = -0.3f, releaseMs = 25f),
-            reverbSendLevel = 0.18f
+            reverbSendLevel = 0.18f,
+            vocalRiderConfig = VocalRiderConfig(enabled = true, targetLufs = -16f, maxGainDb = 5f, minGainDb = -6f, sensitivity = 0.7f),
+            resonanceSmootherConfig = ResonanceSmootherConfig(enabled = true, frequencyHz = 2800f, thresholdDb = -18f, depthDb = -5f, qFactor = 4.5f)
         ),
         TrackPreset(
             name = "R&B Silk Harmonies",
@@ -70,17 +78,20 @@ object PresetLibrary {
             description = "Stereo chorus double layer with 450ms ducked delay & lush hall send",
             eqConfig = EqConfig(
                 enabled = true,
-                band1 = EqBand(FilterType.HIGH_PASS, 140f, 0f, 0.707f, enabled = true),
+                band1 = EqBand(FilterType.LOW_SHELF, 100f, 0f, 0.707f, enabled = true),
                 band2 = EqBand(FilterType.PEAKING, 400f, -1.5f, 1.0f, enabled = true),
                 band3 = EqBand(FilterType.PEAKING, 4500f, 2.0f, 1.2f, enabled = true),
-                band4 = EqBand(FilterType.HIGH_SHELF, 11000f, 4.0f, 0.707f, enabled = true)
+                band4 = EqBand(FilterType.HIGH_SHELF, 11000f, 4.0f, 0.707f, enabled = true),
+                highPass = EqBand(FilterType.HIGH_PASS, 140f, 0f, 0.707f, enabled = true)
             ),
-            saturationConfig = SaturationConfig(enabled = true, driveDb = 2.0f, warmth = 0.70f, mix = 0.60f),
-            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -15f, ratio = 2.8f, attackMs = 25f, releaseMs = 180f, makeupGainDb = 2.0f),
+            saturationConfig = SaturationConfig(enabled = true, driveDb = 2.0f, warmth = 0.70f, mix = 0.60f).withType(SaturationType.TRANSFORMER),
+            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -15f, ratio = 2.8f, attackMs = 25f, releaseMs = 180f, makeupGainDb = 2.0f).withType(CompressorType.TUBE_TECH),
             chorusConfig = ChorusConfig(enabled = true, rateHz = 1.4f, depthMs = 4.5f, feedback = 0.25f, stereoSpread = 0.95f, mix = 0.50f),
             delayConfig = DuckingDelayConfig(enabled = true, timeMs = 450f, feedback = 0.40f, mix = 0.30f, duckingEnabled = true, duckingThresholdDb = -24f, duckingDepthDb = -16f),
             limiterConfig = ChannelLimiterConfig(enabled = false),
-            reverbSendLevel = 0.50f
+            reverbSendLevel = 0.50f,
+            vocalRiderConfig = VocalRiderConfig(enabled = true, targetLufs = -20f, maxGainDb = 4f, minGainDb = -5f, sensitivity = 0.4f),
+            resonanceSmootherConfig = ResonanceSmootherConfig(enabled = true, frequencyHz = 3600f, thresholdDb = -22f, depthDb = -4f, qFactor = 5f)
         ),
         TrackPreset(
             name = "Trap 808 & Sub Bass",
@@ -88,13 +99,14 @@ object PresetLibrary {
             description = "55Hz sub boost with heavy 2nd-harmonic tube saturation & punchy 6:1 comp",
             eqConfig = EqConfig(
                 enabled = true,
-                band1 = EqBand(FilterType.HIGH_PASS, 28f, 0f, 0.707f, enabled = true),
+                band1 = EqBand(FilterType.LOW_SHELF, 100f, 0f, 0.707f, enabled = true),
                 band2 = EqBand(FilterType.PEAKING, 55f, 4.5f, 1.8f, enabled = true),
                 band3 = EqBand(FilterType.PEAKING, 450f, -4.0f, 2.0f, enabled = true),
-                band4 = EqBand(FilterType.HIGH_SHELF, 6000f, -6.0f, 0.707f, enabled = true)
+                band4 = EqBand(FilterType.HIGH_SHELF, 6000f, -6.0f, 0.707f, enabled = true),
+                highPass = EqBand(FilterType.HIGH_PASS, 28f, 0f, 0.707f, enabled = true)
             ),
-            saturationConfig = SaturationConfig(enabled = true, driveDb = 8.5f, warmth = 0.75f, mix = 1.0f),
-            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -14f, ratio = 6.0f, attackMs = 20f, releaseMs = 160f, makeupGainDb = 3.5f),
+            saturationConfig = SaturationConfig(enabled = true, driveDb = 8.5f, warmth = 0.75f, mix = 1.0f).withType(SaturationType.TRANSFORMER),
+            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -14f, ratio = 6.0f, attackMs = 20f, releaseMs = 160f, makeupGainDb = 3.5f).withType(CompressorType.FET_1176),
             chorusConfig = ChorusConfig(enabled = false),
             delayConfig = DuckingDelayConfig(enabled = false),
             limiterConfig = ChannelLimiterConfig(enabled = true, ceilingDb = -0.3f, releaseMs = 40f),
@@ -106,13 +118,14 @@ object PresetLibrary {
             description = "Fast attack VCA drum compressor with tape distortion for maximum punch",
             eqConfig = EqConfig(
                 enabled = true,
-                band1 = EqBand(FilterType.HIGH_PASS, 35f, 0f, 0.707f, enabled = true),
+                band1 = EqBand(FilterType.LOW_SHELF, 100f, 0f, 0.707f, enabled = true),
                 band2 = EqBand(FilterType.PEAKING, 120f, 2.0f, 1.2f, enabled = true),
                 band3 = EqBand(FilterType.PEAKING, 2500f, 1.8f, 1.4f, enabled = true),
-                band4 = EqBand(FilterType.HIGH_SHELF, 8500f, 2.5f, 0.707f, enabled = true)
+                band4 = EqBand(FilterType.HIGH_SHELF, 8500f, 2.5f, 0.707f, enabled = true),
+                highPass = EqBand(FilterType.HIGH_PASS, 35f, 0f, 0.707f, enabled = true)
             ),
-            saturationConfig = SaturationConfig(enabled = true, driveDb = 6.0f, warmth = 0.50f, mix = 0.80f),
-            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -22f, ratio = 8.0f, attackMs = 5f, releaseMs = 70f, makeupGainDb = 5.0f),
+            saturationConfig = SaturationConfig(enabled = true, driveDb = 6.0f, warmth = 0.50f, mix = 0.80f).withType(SaturationType.TAPE),
+            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -22f, ratio = 8.0f, attackMs = 5f, releaseMs = 70f, makeupGainDb = 5.0f).withType(CompressorType.FET_1176),
             chorusConfig = ChorusConfig(enabled = false),
             delayConfig = DuckingDelayConfig(enabled = false),
             limiterConfig = ChannelLimiterConfig(enabled = true, ceilingDb = -0.3f, releaseMs = 20f),
@@ -124,13 +137,14 @@ object PresetLibrary {
             description = "Clean high-shelf air, subtle chorus width & smooth room send",
             eqConfig = EqConfig(
                 enabled = true,
-                band1 = EqBand(FilterType.HIGH_PASS, 80f, 0f, 0.707f, enabled = true),
+                band1 = EqBand(FilterType.LOW_SHELF, 100f, 0f, 0.707f, enabled = true),
                 band2 = EqBand(FilterType.PEAKING, 500f, -1.5f, 1.0f, enabled = true),
                 band3 = EqBand(FilterType.PEAKING, 3000f, 1.5f, 1.2f, enabled = true),
-                band4 = EqBand(FilterType.HIGH_SHELF, 9000f, 3.0f, 0.707f, enabled = true)
+                band4 = EqBand(FilterType.HIGH_SHELF, 9000f, 3.0f, 0.707f, enabled = true),
+                highPass = EqBand(FilterType.HIGH_PASS, 80f, 0f, 0.707f, enabled = true)
             ),
-            saturationConfig = SaturationConfig(enabled = true, driveDb = 1.5f, warmth = 0.30f, mix = 0.50f),
-            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -12f, ratio = 2.5f, attackMs = 30f, releaseMs = 200f, makeupGainDb = 1.5f),
+            saturationConfig = SaturationConfig(enabled = true, driveDb = 1.5f, warmth = 0.30f, mix = 0.50f).withType(SaturationType.TAPE),
+            compressorConfig = CompressorConfig(enabled = true, thresholdDb = -12f, ratio = 2.5f, attackMs = 30f, releaseMs = 200f, makeupGainDb = 1.5f).withType(CompressorType.TUBE_TECH),
             chorusConfig = ChorusConfig(enabled = true, rateHz = 0.8f, depthMs = 2.5f, feedback = 0.15f, stereoSpread = 0.80f, mix = 0.25f),
             delayConfig = DuckingDelayConfig(enabled = true, timeMs = 320f, feedback = 0.20f, mix = 0.15f),
             limiterConfig = ChannelLimiterConfig(enabled = false),

@@ -2,6 +2,7 @@ package com.example.audio.dsp
 
 import com.example.audio.model.ChannelLimiterConfig
 import com.example.audio.model.CompressorConfig
+import com.example.audio.model.CompressorType
 import com.example.audio.model.DuckingDelayConfig
 import com.example.audio.model.EqBand
 import com.example.audio.model.EqConfig
@@ -10,6 +11,7 @@ import com.example.audio.model.MasterLimiterConfig
 import com.example.audio.model.ResonanceSmootherConfig
 import com.example.audio.model.ReverbConfig
 import com.example.audio.model.SaturationConfig
+import com.example.audio.model.SaturationType
 import com.example.audio.model.VocalRiderConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -382,13 +384,22 @@ class AudioDspComprehensiveTest {
         val (qL, qR) = smoother.processSample(0.01f, 0.01f)
         assertEquals(0.01f, qL, 0.001f)
 
-        // Process hot resonant signal above threshold
-        var processedL = 0.0f
-        for (i in 0 until 100) {
-            val (l, _) = smoother.processSample(0.8f, 0.8f)
-            processedL = l
+        // Process a hot resonant tone above threshold. A constant DC offset is
+        // intentionally ignored by the band-limited detector.
+        var inputPeak = 0.0f
+        var outputPeak = 0.0f
+        for (i in 0 until 4800) {
+            val input = 0.8f * sin(2.0 * Math.PI * 3200.0 * i / sampleRate).toFloat()
+            val (l, _) = smoother.processSample(input, input)
+            if (i > 2400) {
+                inputPeak = maxOf(inputPeak, abs(input))
+                outputPeak = maxOf(outputPeak, abs(l))
+            }
         }
-        assertTrue("Resonance smoother should attenuate harsh peaks", abs(processedL) < 0.8f)
+        assertTrue(
+            "Resonance smoother should attenuate a 3.2 kHz peak (in $inputPeak, out $outputPeak)",
+            outputPeak < inputPeak * 0.85f
+        )
     }
 
     @Test
@@ -411,6 +422,91 @@ class AudioDspComprehensiveTest {
             riddenL = l
         }
         assertTrue("Vocal rider should boost quiet vocals upward", riddenL > 0.05f)
+    }
+
+    @Test
+    fun compressorModels_haveDifferentKneesAndAttackBehaviour() {
+        val base = CompressorConfig(
+            enabled = true,
+            thresholdDb = -24f,
+            ratio = 4f,
+            attackMs = 15f,
+            releaseMs = 120f,
+            makeupGainDb = 0f
+        )
+        val la2a = base.withType(CompressorType.LA_2A)
+        val fet = base.withType(CompressorType.FET_1176)
+        val tube = base.withType(CompressorType.TUBE_TECH)
+
+        assertEquals(0f, fet.kneeWidthDb, 0.001f)
+        assertTrue("LA-2A should use a soft opto knee", la2a.kneeWidthDb >= 6f)
+        assertTrue("Tube-Tech should use a soft vari-mu knee", tube.kneeWidthDb >= 6f)
+        assertTrue("1176 attack should be faster than LA-2A", fet.attackMs < la2a.attackMs)
+
+        fun gainReduction(config: CompressorConfig): Float {
+            val comp = StereoCompressor(sampleRate)
+            comp.configure(config)
+            repeat(80) { comp.processSample(0.8f, 0.8f) }
+            return comp.currentGainReductionDb
+        }
+
+        val fetGr = gainReduction(fet)
+        val laGr = gainReduction(la2a)
+        val tubeGr = gainReduction(tube)
+        assertTrue("1176 should clamp down faster than LA-2A ($fetGr vs $laGr)", fetGr > laGr)
+        assertTrue("Tube-Tech should behave differently from the FET ($tubeGr vs $fetGr)", abs(tubeGr - fetGr) > 0.1f)
+    }
+
+    @Test
+    fun saturationModels_produceDistinctHarmonicShapes() {
+        fun render(type: SaturationType): FloatArray {
+            val sat = SaturationProcessor()
+            sat.configure(
+                SaturationConfig(
+                    enabled = true,
+                    driveDb = 12f,
+                    warmth = 0.6f,
+                    mix = 1f,
+                    type = type
+                )
+            )
+            return FloatArray(512) { i ->
+                val input = 0.7f * sin(2.0 * Math.PI * 440.0 * i / sampleRate).toFloat()
+                sat.processSample(input, input).first
+            }
+        }
+
+        val tape = render(SaturationType.TAPE)
+        val tube = render(SaturationType.TUBE)
+        val iron = render(SaturationType.TRANSFORMER)
+        val console = render(SaturationType.CONSOLE)
+
+        fun difference(a: FloatArray, b: FloatArray): Float =
+            a.indices.sumOf { abs(a[it] - b[it]).toDouble() }.toFloat()
+
+        assertTrue("Tape and tube must not be the same curve", difference(tape, tube) > 1f)
+        assertTrue("Tube and transformer must not be the same curve", difference(tube, iron) > 1f)
+        assertTrue("Console and tape must not be the same curve", difference(console, tape) > 1f)
+        assertTrue("All saturation models must stay bounded", (tape + tube + iron + console).all { abs(it) <= 1f })
+    }
+
+    @Test
+    fun fourBandEq_highPassAndLowPassFiltersShapeTheExtremes() {
+        val config = EqConfig(
+            enabled = true,
+            band1 = EqBand(FilterType.PEAKING, 100f, 0f, 1f, enabled = true),
+            band2 = EqBand(FilterType.PEAKING, 500f, 0f, 1f, enabled = true),
+            band3 = EqBand(FilterType.PEAKING, 2500f, 0f, 1f, enabled = true),
+            band4 = EqBand(FilterType.HIGH_SHELF, 8000f, 0f, 0.707f, enabled = true),
+            highPass = EqBand(FilterType.HIGH_PASS, 180f, 0f, 0.707f, enabled = true),
+            lowPass = EqBand(FilterType.LOW_PASS, 6000f, 0f, 0.707f, enabled = true)
+        )
+        val eq = FourBandEq(sampleRate)
+        eq.updateConfig(config)
+
+        assertTrue("High-pass must cut 50 Hz", eq.calculateTotalResponseDb(50f) < -8f)
+        assertTrue("Low-pass must cut 16 kHz", eq.calculateTotalResponseDb(16000f) < -8f)
+        assertTrue("Midrange should stay close to unity", abs(eq.calculateTotalResponseDb(1000f)) < 1.5f)
     }
 }
 

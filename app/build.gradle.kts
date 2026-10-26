@@ -68,6 +68,10 @@ android {
       isIncludeAndroidResources = true
       all {
         it.maxHeapSize = "4096m"
+        // Each DawViewModel creates a full 16-track demo session (~200 MB).
+        // Without a fresh worker per test class, the accumulated sessions from
+        // earlier classes exhaust the heap and make the audio/UI tests flaky.
+        it.forkEvery = 1
       }
     }
   }
@@ -75,6 +79,16 @@ android {
     includeInApk = false
     includeInBundle = true
   }
+}
+
+// Robolectric's Android SDK 36 runtime requires Java 21. Pin only the test
+// worker JVM so `./gradlew test` works even when the daemon runs on JDK 17.
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+  javaLauncher.set(
+    javaToolchains.launcherFor {
+      languageVersion.set(org.gradle.jvm.toolchain.JavaLanguageVersion.of(21))
+    }
+  )
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
@@ -105,6 +119,7 @@ dependencies {
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
+  implementation(libs.androidx.documentfile)
   // implementation(libs.androidx.datastore.preferences)
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)
