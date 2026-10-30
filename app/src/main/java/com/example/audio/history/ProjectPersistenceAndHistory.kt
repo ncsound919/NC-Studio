@@ -133,6 +133,13 @@ class UndoManager(private val maxHistory: Int = 50) {
     }
 }
 
+/** One named project on disk, newest first in the Open dialog. */
+data class SavedProject(
+    val file: File,
+    val name: String,
+    val modifiedAt: Long,
+)
+
 /**
  * Handles versioned JSON project serialization, loading, and crash-recovery journal.
  */
@@ -146,21 +153,85 @@ class ProjectPersistence(private val context: Context) {
 
     private val projectsDir = File(context.filesDir, "projects").apply { mkdirs() }
     private val journalFile = File(context.filesDir, "recovery_journal.json")
+    private val lastProjectFile = File(projectsDir, LAST_PROJECT_NAME)
 
-    fun saveProject(session: ProjectSession, fileName: String = "session_${session.projectName.replace(" ", "_")}.json"): File {
-        val file = File(projectsDir, fileName)
+    /**
+     * Saves a named project and refreshes the last-session snapshot used on the
+     * next launch. The crash journal is cleared because this is a clean save.
+     */
+    fun saveProject(session: ProjectSession, fileName: String = defaultFileName(session)): File {
+        val file = File(projectsDir, safeFileName(fileName))
         val json = adapter.toJson(session)
-        file.writeText(json)
-        // Also clear recovery journal since cleanly saved
-        if (journalFile.exists()) journalFile.delete()
+        writeAtomically(file, json)
+        writeAtomically(lastProjectFile, json)
+        clearCrashRecoveryJournal()
         return file
+    }
+
+    /** Periodic auto-save and the startup snapshot; never creates a named file. */
+    fun saveLastSession(session: ProjectSession): File {
+        writeAtomically(lastProjectFile, adapter.toJson(session))
+        clearCrashRecoveryJournal()
+        return lastProjectFile
+    }
+
+    fun loadLastSession(): ProjectSession? = loadProject(lastProjectFile)
+
+    fun hasLastSession(): Boolean = lastProjectFile.exists() && lastProjectFile.length() > 10
+
+    fun clearCrashRecoveryJournal() {
+        if (journalFile.exists()) journalFile.delete()
+    }
+
+    fun listSavedProjects(): List<SavedProject> {
+        val files = projectsDir.listFiles { f ->
+            f.isFile && f.extension == "json" && f.name != LAST_PROJECT_NAME && !f.name.endsWith(".tmp")
+        } ?: return emptyList()
+        return files
+            .sortedByDescending { it.lastModified() }
+            .map { file ->
+                SavedProject(
+                    file = file,
+                    name = file.nameWithoutExtension.replace('_', ' '),
+                    modifiedAt = file.lastModified(),
+                )
+            }
     }
 
     fun writeCrashRecoveryJournal(session: ProjectSession) {
         try {
-            val json = adapter.toJson(session)
-            journalFile.writeText(json)
-        } catch (_: Exception) {}
+            writeAtomically(journalFile, adapter.toJson(session))
+        } catch (_: Exception) {
+            // The journal is best-effort: a failed write must never break editing.
+        }
+    }
+
+    /**
+     * Writes through a temp file and renames it into place, so an interrupted or
+     * crashed write can never leave a truncated session that fails to load.
+     */
+    private fun writeAtomically(target: File, contents: String) {
+        val temp = File(target.parentFile, "${target.name}.tmp")
+        val backup = File(target.parentFile, "${target.name}.bak")
+        try {
+            temp.writeText(contents)
+            if (!temp.renameTo(target)) {
+                // Some filesystems refuse to replace an existing file on rename.
+                // Move the old file aside instead of writing the live file in
+                // place, then restore it if the second rename also fails.
+                if (target.exists() && !target.renameTo(backup)) {
+                    throw java.io.IOException("Could not replace ${target.name}")
+                }
+                if (!temp.renameTo(target)) {
+                    backup.renameTo(target)
+                    throw java.io.IOException("Could not replace ${target.name}")
+                }
+                backup.delete()
+            }
+        } catch (e: Exception) {
+            temp.delete()
+            throw e
+        }
     }
 
     fun hasCrashRecoveryJournal(): Boolean {
@@ -187,7 +258,20 @@ class ProjectPersistence(private val context: Context) {
         }
     }
 
-    fun listSavedProjects(): List<File> {
-        return projectsDir.listFiles { f -> f.extension == "json" }?.toList() ?: emptyList()
+    private fun defaultFileName(session: ProjectSession): String =
+        "session_${session.projectName.replace(' ', '_')}.json"
+
+    /** Keeps a project name from creating a path or an unopenable file. */
+    private fun safeFileName(raw: String): String {
+        val cleaned = raw.trim()
+            .replace(Regex("[^A-Za-z0-9 ._-]"), "_")
+            .replace(Regex("\\s+"), " ")
+            .take(80)
+            .ifBlank { "Untitled Project" }
+        return if (cleaned.endsWith(".json", ignoreCase = true)) cleaned else "$cleaned.json"
+    }
+
+    companion object {
+        const val LAST_PROJECT_NAME = "last_project.json"
     }
 }

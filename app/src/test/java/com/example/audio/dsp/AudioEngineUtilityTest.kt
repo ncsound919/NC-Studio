@@ -36,7 +36,7 @@ class AudioEngineUtilityTest {
             timelineStartFrame = 5,
             trackIndex = 0
         )
-        val output = ClipCompositor.compositeClipsToTrackBuffer(source, listOf(clip), 50L)
+        val output = ClipCompositor.compositeClipsFromSources(mapOf(clip.sourcePath to source), listOf(clip), 50L)
 
         // Output should have samples from 5 to 14
         assertEquals(1.0f, output[10], 0.001f) // Frame 5, L

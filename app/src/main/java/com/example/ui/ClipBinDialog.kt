@@ -211,7 +211,7 @@ fun ClipBinDialog(
                                                 fontSize = 10.sp
                                             )
                                             Text(
-                                                text = "${String.format("%.2f", durationSec)}s (${clip.lengthFrames} frames)",
+                                                text = "${String.format(java.util.Locale.US, "%.2f", durationSec)}s (${clip.lengthFrames} frames)",
                                                 color = TextMuted,
                                                 fontSize = 10.sp,
                                                 fontFamily = FontFamily.Monospace

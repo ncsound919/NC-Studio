@@ -6,7 +6,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -69,6 +68,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
@@ -85,9 +86,12 @@ import androidx.compose.ui.window.Dialog
 import com.example.R
 import com.example.audio.model.AudioClip
 import com.example.audio.model.DawSettings
+import com.example.audio.model.EditMode
 import com.example.audio.model.FadeCurve
 import com.example.audio.model.GridResolution
+import com.example.audio.model.TimelineTool
 import com.example.audio.model.ProjectSession
+import com.example.audio.model.StripSilenceMode
 import com.example.audio.model.TrackData
 import com.example.ui.components.AudioRotaryKnob
 import com.example.ui.components.StudioTooltip
@@ -111,6 +115,7 @@ import com.example.ui.theme.StudioSurface
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.overlay.audio.sample.SampleEdit
 import kotlinx.coroutines.delay
 import kotlin.math.ceil
 
@@ -127,11 +132,23 @@ fun TimelineView(
     onOpenClipBin: () -> Unit,
     onToggleMagneticSnap: () -> Unit = {},
     onCycleGridResolution: () -> Unit = {},
+    onSetTimelineTool: (TimelineTool) -> Unit = {},
+    onSetEditMode: (EditMode) -> Unit = {},
+    onTrimClipToFrame: (Int, String, Boolean, Long, Long) -> Unit = { _, _, _, _, _ -> },
+    onEditSelectionChange: (Int, Long, Long) -> Unit = { _, _, _ -> },
+    onClearEditSelection: () -> Unit = {},
+    onBeginClipGesture: (Int, String) -> Unit = { _, _ -> },
+    onEndClipGesture: () -> Unit = {},
+    onHealClip: (Int, String) -> Unit = { _, _ -> },
+    onCrossfadeClips: () -> Unit = {},
+    onSeparateAtSelection: () -> Unit = {},
+    onClearSelectedClips: () -> Unit = {},
+    onSpotClipAtFrame: (Int, String, Long, Boolean) -> Unit = { _, _, _, _ -> },
     onSetLoopRange: (Long, Long) -> Unit = { _, _ -> },
     onSetPunchRange: (Long, Long) -> Unit = { _, _ -> },
     onToggleClipSelection: (Int, String) -> Unit = { _, _ -> },
     onClearClipSelection: () -> Unit = {},
-    onMoveClip: (Int, String, Long) -> Unit = { _, _, _ -> },
+    onMoveClip: (Int, String, Long, Long) -> Unit = { _, _, _, _ -> },
     onNudgeClip: (Int, String, Boolean) -> Unit = { _, _, _ -> },
     onSetClipGain: (Int, String, Float) -> Unit = { _, _, _ -> },
     onSetClipFadeIn: (Int, String, Float, FadeCurve) -> Unit = { _, _, _, _ -> },
@@ -139,6 +156,7 @@ fun TimelineView(
     onPasteChorusSection: (Int, String, Int) -> Unit = { _, _, _ -> },
     onPasteChorusDouble: (Int, String, Int) -> Unit = { _, _, _ -> },
     onAdaptChorusLoop: (Int, String, Int) -> Unit = { _, _, _ -> },
+    onStripSilence: (SampleEdit.StripSettings, StripSilenceMode) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val totalFrames = session.totalLengthFrames.toFloat().coerceAtLeast(1f)
@@ -157,6 +175,9 @@ fun TimelineView(
 
     val haptics = LocalHapticFeedback.current
     var showClipAdjustModal by remember { mutableStateOf(false) }
+    // Spot request: only the track and clip are remembered, so the dialog always
+    // reads the clip's current position out of the session.
+    var spotRequest by remember { mutableStateOf<SpotRequest?>(null) }
     var snapFlashFrame by remember { mutableStateOf<Long?>(null) }
     var zoom by remember { mutableFloatStateOf(1f) }
     val contentScroll = rememberScrollState()
@@ -284,7 +305,7 @@ fun TimelineView(
                         )
                         Spacer(modifier = Modifier.width(2.dp))
                         Text(
-                            text = if (zoom <= 1.01f) "FIT" else "x${String.format("%.1f", zoom)}",
+                            text = if (zoom <= 1.01f) "FIT" else "x${String.format(java.util.Locale.US, "%.1f", zoom)}",
                             color = NeonCyan,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
@@ -342,6 +363,181 @@ fun TimelineView(
             )
         }
 
+        // Pro Tools style tool rail: the tool decides what a drag on a clip means
+        // before the gesture starts, and the edit mode decides where edits land.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 6.dp)
+                .horizontalScroll(rememberScrollState())
+                .testTag("timeline_tool_rail"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            TimelineTool.values().forEach { tool ->
+                val active = settings.timelineTool == tool
+                Box(
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(Radius.md))
+                        .background(if (active) NeonCyan.copy(alpha = 0.22f) else StudioCard)
+                        .border(1.dp, if (active) NeonCyan else StudioCardBorder, RoundedCornerShape(Radius.md))
+                        .clickable(role = androidx.compose.ui.semantics.Role.Button) {
+                            haptics.studioTick(settings.enableHapticFeedback)
+                            onSetTimelineTool(tool)
+                        }
+                        .semantics {
+                            contentDescription = "${tool.displayName} tool"
+                            stateDescription = if (active) "Active. ${tool.description}" else tool.description
+                        }
+                        .padding(horizontal = 10.dp)
+                        .testTag("timeline_tool_${tool.name.lowercase()}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = tool.displayName.uppercase(),
+                        color = if (active) NeonCyan else TextMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .height(28.dp)
+                    .background(StudioCardBorder)
+            )
+
+            EditMode.values().forEach { mode ->
+                val active = settings.editMode == mode
+                Box(
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(Radius.md))
+                        .background(if (active) StudioAmber.copy(alpha = 0.2f) else StudioCard)
+                        .border(1.dp, if (active) StudioAmber else StudioCardBorder, RoundedCornerShape(Radius.md))
+                        .clickable(role = androidx.compose.ui.semantics.Role.Button) {
+                            haptics.studioTick(settings.enableHapticFeedback)
+                            onSetEditMode(mode)
+                        }
+                        .semantics {
+                            contentDescription = "${mode.displayName} edit mode"
+                            stateDescription = if (active) "Active. ${mode.description}" else mode.description
+                        }
+                        .padding(horizontal = 10.dp)
+                        .testTag("edit_mode_${mode.name.lowercase()}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = mode.displayName.uppercase(),
+                        color = if (active) StudioAmber else TextMuted,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .height(28.dp)
+                    .background(StudioCardBorder)
+            )
+
+            // Pro Tools edit commands, also on keyboard: B separates at the
+            // playhead, Ctrl+E at the selection, Ctrl+H heals, Ctrl+F crossfades.
+            Box(
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(if (uiState.editSelection != null) NeonCyan.copy(alpha = 0.18f) else StudioCard)
+                    .border(
+                        1.dp,
+                        if (uiState.editSelection != null) NeonCyan else StudioCardBorder,
+                        RoundedCornerShape(Radius.md)
+                    )
+                    .clickable(role = androidx.compose.ui.semantics.Role.Button) { onSeparateAtSelection() }
+                    .semantics { contentDescription = "Separate clips at the selection" }
+                    .padding(horizontal = 10.dp)
+                    .testTag("action_separate_at_selection"),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = stringResource(R.string.timeline_sep),
+                    color = if (uiState.editSelection != null) NeonCyan else TextMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(StudioCard)
+                    .clickable(role = androidx.compose.ui.semantics.Role.Button) {
+                        firstSelectedClip?.let { onHealClip(selectedTrack?.index ?: 0, it.id) }
+                    }
+                    .semantics { contentDescription = "Heal separation" }
+                    .padding(horizontal = 10.dp)
+                    .testTag("action_heal_clip"),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = stringResource(R.string.timeline_heal),
+                    color = if (firstSelectedClip != null) TextPrimary else TextMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(StudioCard)
+                    .clickable(role = androidx.compose.ui.semantics.Role.Button) { onCrossfadeClips() }
+                    .semantics { contentDescription = "Crossfade selected clips" }
+                    .padding(horizontal = 10.dp)
+                    .testTag("action_crossfade_clips"),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = stringResource(R.string.timeline_crossfade),
+                    color = if (selectedClips.size >= 2) TextPrimary else TextMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(StudioCard)
+                    .clickable(role = androidx.compose.ui.semantics.Role.Button) { onClearSelectedClips() }
+                    .semantics { contentDescription = "Clear selected clips" }
+                    .padding(horizontal = 10.dp)
+                    .testTag("action_clear_clips"),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = stringResource(R.string.timeline_clear),
+                    color = if (selectedClips.isNotEmpty()) TextPrimary else TextMuted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -365,141 +561,61 @@ fun TimelineView(
                 )
             }
 
-            if (firstSelectedClip != null) {
+            // One clip button system: every clip operation, including Strip
+            // Silence, lives in ClipActionsSheet. The toolbar exposes one entry
+            // point so an edit never depends on finding a particular icon.
+            StudioTooltip("Clip actions: strip silence, fades, split, duplicate, nudge") {
                 Box(
                     modifier = Modifier
                         .heightIn(min = 48.dp)
                         .clip(RoundedCornerShape(Radius.md))
-                        .background(StudioPurple.copy(alpha = 0.25f))
-                        .border(1.dp, StudioPurple, RoundedCornerShape(Radius.md))
-                        .clickable(role = androidx.compose.ui.semantics.Role.Button) { showClipAdjustModal = true }
-                        .padding(horizontal = 10.dp)
-                        .testTag("open_clip_adjust_modal"),
+                        .background(if (firstSelectedClip != null) StudioPurple.copy(alpha = 0.25f) else StudioCard)
+                        .border(
+                            1.dp,
+                            if (firstSelectedClip != null) StudioPurple else StudioCardBorder,
+                            RoundedCornerShape(Radius.md)
+                        )
+                        .clickable(
+                            enabled = firstSelectedClip != null,
+                            role = androidx.compose.ui.semantics.Role.Button
+                        ) { showClipAdjustModal = true }
+                        .padding(horizontal = 12.dp)
+                        .testTag("open_clip_actions_sheet"),
                     contentAlignment = Alignment.Center
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Icon(Icons.Default.Tune, contentDescription = null, tint = StudioPurple, modifier = Modifier.size(14.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Tune,
+                            contentDescription = null,
+                            tint = if (firstSelectedClip != null) StudioPurple else TextMuted,
+                            modifier = Modifier.size(15.dp)
+                        )
                         Text(
-                            text = "${firstSelectedClip.name} • Fades",
-                            color = StudioPurple,
+                            text = "CLIP",
+                            color = if (firstSelectedClip != null) StudioPurple else TextMuted,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1
+                        )
+                        val summary = when {
+                            selectedClips.size > 1 -> "${selectedClips.size} selected"
+                            firstSelectedClip != null -> firstSelectedClip.name
+                            else -> "no clip"
+                        }
+                        Text(
+                            text = summary,
+                            color = TextMuted,
+                            fontSize = 9.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.widthIn(max = 140.dp)
+                            modifier = Modifier.widthIn(max = 110.dp)
                         )
                     }
                 }
-            }
-
-            StudioTooltip("Split clip at playhead") {
-            IconButton(
-                onClick = {
-                    onSplitClipAtPlayhead(uiState.selectedTrackIndex)
-                    markEditLanded()
-                },
-                enabled = firstSelectedClip != null,
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(Radius.md))
-                    .background(StudioCard)
-                    .testTag("split_clip_button")
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.CallSplit,
-                    contentDescription = "Split clip at playhead",
-                    tint = if (firstSelectedClip != null) NeonCyan else TextMuted,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-            }
-
-            StudioTooltip("Trim clip end") {
-            IconButton(
-                onClick = {
-                    activeClips.forEach { onTrimClipEnd(uiState.selectedTrackIndex, it.id) }
-                    if (activeClips.isNotEmpty()) markEditLanded()
-                },
-                enabled = firstSelectedClip != null,
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(Radius.md))
-                    .background(StudioCard)
-                    .testTag("trim_clip_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ContentCut,
-                    contentDescription = "Trim clip end",
-                    tint = if (firstSelectedClip != null) StudioAmber else TextMuted,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-            }
-
-            StudioTooltip("Duplicate clip") {
-            IconButton(
-                onClick = {
-                    activeClips.forEach { onDuplicateClip(uiState.selectedTrackIndex, it.id) }
-                    if (activeClips.isNotEmpty()) markEditLanded()
-                },
-                enabled = firstSelectedClip != null,
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(Radius.md))
-                    .background(StudioCard)
-                    .testTag("duplicate_clip_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ContentCopy,
-                    contentDescription = "Duplicate clip",
-                    tint = if (firstSelectedClip != null) ElectricLime else TextMuted,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-            }
-
-            StudioTooltip("Nudge clip left") {
-            IconButton(
-                onClick = {
-                    activeClips.forEach { onNudgeClip(uiState.selectedTrackIndex, it.id, false) }
-                    if (activeClips.isNotEmpty()) markEditLanded()
-                },
-                enabled = firstSelectedClip != null,
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(Radius.md))
-                    .background(StudioCard)
-                    .testTag("nudge_clip_prev")
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Nudge clip left",
-                    tint = if (firstSelectedClip != null) StudioAmber else TextMuted,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-            }
-
-            StudioTooltip("Nudge clip right") {
-            IconButton(
-                onClick = {
-                    activeClips.forEach { onNudgeClip(uiState.selectedTrackIndex, it.id, true) }
-                    if (activeClips.isNotEmpty()) markEditLanded()
-                },
-                enabled = firstSelectedClip != null,
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(Radius.md))
-                    .background(StudioCard)
-                    .testTag("nudge_clip_next")
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                    contentDescription = "Nudge clip right",
-                    tint = if (firstSelectedClip != null) StudioAmber else TextMuted,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
             }
         }
 
@@ -677,7 +793,7 @@ fun TimelineView(
                         centerX = startX,
                         viewportWidth = maxWidth,
                         accentColor = NeonCyan,
-                        label = "Loop start",
+                        label = stringResource(R.string.label_loop_start),
                         testTag = "loop_start_handle",
                         hapticsEnabled = settings.enableHapticFeedback,
                         onDrag = { deltaPx ->
@@ -691,7 +807,7 @@ fun TimelineView(
                         centerX = endX,
                         viewportWidth = maxWidth,
                         accentColor = NeonCyan,
-                        label = "Loop end",
+                        label = stringResource(R.string.label_loop_end),
                         testTag = "loop_end_handle",
                         hapticsEnabled = settings.enableHapticFeedback,
                         onDrag = { deltaPx ->
@@ -713,7 +829,7 @@ fun TimelineView(
                         centerX = x,
                         viewportWidth = maxWidth,
                         accentColor = StudioAmber,
-                        label = "Punch in point",
+                        label = stringResource(R.string.label_punch_in_point),
                         testTag = "punch_in_handle",
                         hapticsEnabled = settings.enableHapticFeedback,
                         onDrag = { deltaPx ->
@@ -732,7 +848,7 @@ fun TimelineView(
                         centerX = x,
                         viewportWidth = maxWidth,
                         accentColor = StudioAmber,
-                        label = "Punch out point",
+                        label = stringResource(R.string.label_punch_out_point),
                         testTag = "punch_out_handle",
                         hapticsEnabled = settings.enableHapticFeedback,
                         onDrag = { deltaPx ->
@@ -802,6 +918,30 @@ fun TimelineView(
                             }
                         }
 
+                        // Pro Tools edit selection: the range operations act on.
+                        val editSelectionRange = uiState.editSelection?.let { it.startFrame..it.endFrame }
+                        editSelectionRange?.let { range ->
+                            val startX = frameToX(range.start)
+                            val endX = frameToX(range.endInclusive)
+                            drawRect(
+                                color = ElectricLime.copy(alpha = 0.10f),
+                                topLeft = Offset(startX, 0f),
+                                size = Size((endX - startX).coerceAtLeast(1f), size.height)
+                            )
+                            drawLine(
+                                color = ElectricLime,
+                                start = Offset(startX, 0f),
+                                end = Offset(startX, size.height),
+                                strokeWidth = 2f
+                            )
+                            drawLine(
+                                color = ElectricLime,
+                                start = Offset(endX, 0f),
+                                end = Offset(endX, size.height),
+                                strokeWidth = 2f
+                            )
+                        }
+
                         snapFlashFrame?.let { snapFrame ->
                             val snapX = frameToX(snapFrame)
                             drawLine(
@@ -849,11 +989,31 @@ fun TimelineView(
                         selectedClipIds = uiState.selectedClipIds,
                         contentZoom = zoom,
                         scrollState = contentScroll,
+                        editSelectionRange = uiState.editSelection
+                            ?.takeIf { it.trackIndex == index }
+                            ?.let { it.startFrame..it.endFrame },
                         onSelect = { onSelectTrack(index) },
                         onToggleClip = { clipId -> onToggleClipSelection(index, clipId) },
-                        onMoveClip = { clipId, frame -> onMoveClip(index, clipId, frame) },
+                        onMoveClip = { clipId, frame, tolerance ->
+                            onBeginClipGesture(index, "Move clip")
+                            onMoveClip(index, clipId, frame, tolerance)
+                        },
+                        onTrimClip = { clipId, isStartEdge, frame, tolerance ->
+                            onBeginClipGesture(index, if (isStartEdge) "Trim clip start" else "Trim clip end")
+                            onTrimClipToFrame(index, clipId, isStartEdge, frame, tolerance)
+                        },
+                        onEditSelectionDrag = { start, end -> onEditSelectionChange(index, start, end) },
+                        onEditSelectionCommit = { onEndClipGesture(); onSelectTrack(index) },
                         onClipDragStart = { snapFlashFrame = null },
-                        onClipDragEnd = { markEditLanded() },
+                        onClipDragEnd = { movedClipId ->
+                            onEndClipGesture()
+                            markEditLanded()
+                            // Spot mode asks for the destination once the drop
+                            // settles, the way the Pro Tools spot dialog does.
+                            if (movedClipId != null && settings.editMode == EditMode.SPOT) {
+                                spotRequest = SpotRequest(index, movedClipId)
+                            }
+                        },
                         onFadeIn = { clipId, ms ->
                             val curve = track.clips.firstOrNull { it.id == clipId }?.fadeInCurve ?: FadeCurve.EQUAL_POWER
                             onSetClipFadeIn(index, clipId, ms, curve)
@@ -904,13 +1064,38 @@ fun TimelineView(
         }
     }
 
-    // Clip Adjustment Modal Dialog
+    // Pro Tools Spot dialog: opened when a drag settles in Spot edit mode.
+    val spotClip = spotRequest?.let { request ->
+        session.tracks.getOrNull(request.trackIndex)
+            ?.clips
+            ?.firstOrNull { it.id == request.clipId }
+    }
+    if (spotClip != null) {
+        SpotClipDialog(
+            clipName = spotClip.name,
+            startFrame = spotClip.timelineStartFrame,
+            clipLengthFrames = spotClip.lengthFrames,
+            sampleRate = session.sampleRate,
+            onDismiss = { spotRequest = null },
+            onSpot = { frame, placeByEnd ->
+                val request = spotRequest
+                if (request != null) {
+                    onSpotClipAtFrame(request.trackIndex, request.clipId, frame, placeByEnd)
+                    markEditLanded()
+                }
+                spotRequest = null
+            }
+        )
+    }
+
+    // One clip sheet: fades, chorus adapting, edit commands and Strip Silence.
     if (showClipAdjustModal && firstSelectedClip != null) {
         val trackForModal = selectedTrack ?: return@TimelineView
         val clipForModal = firstSelectedClip
-        ClipAdjustModal(
+        ClipActionsSheet(
             clip = clipForModal,
             track = trackForModal,
+            selectedCount = selectedClips.size,
             onDismiss = { showClipAdjustModal = false },
             onSetGain = { g -> onSetClipGain(trackForModal.index, clipForModal.id, g) },
             onSetFadeIn = { ms, curve -> onSetClipFadeIn(trackForModal.index, clipForModal.id, ms, curve) },
@@ -926,617 +1111,33 @@ fun TimelineView(
             onAdaptChorusLoop = {
                 onAdaptChorusLoop(trackForModal.index, clipForModal.id, 3)
                 showClipAdjustModal = false
-            }
-        )
-    }
-}
-
-@Composable
-fun TrackLane(
-    track: TrackData,
-    isSelected: Boolean,
-    totalFrames: Long,
-    sampleRate: Int,
-    tempoBpm: Float,
-    settings: DawSettings,
-    selectedClipId: String? = null,
-    selectedClipIds: Set<String> = emptySet(),
-    contentZoom: Float = 1f,
-    scrollState: ScrollState = rememberScrollState(),
-    onSelect: () -> Unit,
-    onToggleClip: (String) -> Unit = {},
-    onMoveClip: (String, Long) -> Unit = { _, _ -> },
-    onClipDragStart: () -> Unit = {},
-    onClipDragEnd: () -> Unit = {},
-    onFadeIn: (String, Float) -> Unit = { _, _ -> },
-    onFadeOut: (String, Float) -> Unit = { _, _ -> },
-    modifier: Modifier = Modifier
-) {
-    val selectedClip = track.clips.firstOrNull { it.id == selectedClipId }
-    val selectedClips = track.clips.filter { it.id in selectedClipIds }
-    val haptics = LocalHapticFeedback.current
-    Row(
-        modifier = modifier
-            .background(if (isSelected) TrackLaneSelected else StudioSurface)
-            .border(0.5.dp, if (isSelected) NeonCyan.copy(alpha = 0.5f) else StudioCardBorder)                    .clickable { onSelect() }
-                    .semantics {
-                        stateDescription = if (isSelected) "Selected track" else "Not selected"
-                    }
-            .testTag("track_lane_${track.index}")
-    ) {
-        // Track Header (left label)
-        Row(
-            modifier = Modifier
-                .width(110.dp)
-                .fillMaxHeight()
-                .background(TrackHeader)
-                .padding(horizontal = 6.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .width(4.dp)
-                    .fillMaxHeight()
-                    .clip(RoundedCornerShape(Radius.sm))
-                    .background(Color(track.colorHex))
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Column {
-                Text(
-                    text = "${track.index + 1}. ${track.name}",
-                    color = TextPrimary,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "${track.stemCategory.displayName} • ${if (track.isMuted) "MUTED" else "ACTIVE"}",
-                    color = if (track.isMuted) TextMuted else NeonCyan,
-                    fontSize = 10.sp
-                )
-            }
-        }
-
-        // Clip Track Area with Magnetic Grid Guides and Visual Fades
-        BoxWithConstraints(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .padding(vertical = 4.dp, horizontal = 2.dp)
-        ) {
-            val viewportWidth = maxWidth
-            val contentWidth = viewportWidth * contentZoom
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .horizontalScroll(scrollState)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .width(contentWidth)
-                        .fillMaxHeight()
-                ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val laneWidth = size.width
-                val laneHeight = size.height
-
-                // Tempo-derived grid: bar lines always land on real bars.
-                val total = totalFrames.coerceAtLeast(1L).toDouble()
-                val beatFrames = sampleRate * 60.0 / tempoBpm.coerceAtLeast(1f)
-                val barFrames = beatFrames * 4.0
-                val barPx = laneWidth * (barFrames / total)
-                val barStride = maxOf(1, ceil(8f / barPx.toFloat()).toInt())
-                val barCount = ceil(total / barFrames).toInt().coerceAtMost(1_000)
-
-                for (bar in 1..barCount step barStride) {
-                    val x = (bar * barFrames / total * laneWidth).toFloat()
-                    drawLine(
-                        color = GridMajor,
-                        start = Offset(x, 0f),
-                        end = Offset(x, laneHeight),
-                        strokeWidth = 1f
-                    )
-                }
-
-                val subdivisionsPerBeat = when (settings.gridResolution) {
-                    GridResolution.BEAT -> 1
-                    GridResolution.SIXTEENTH -> 4
-                    else -> 0
-                }
-                if (subdivisionsPerBeat > 0) {
-                    val stepFrames = beatFrames / subdivisionsPerBeat
-                    val stepPx = laneWidth * (stepFrames / total)
-                    if (stepPx >= 8f) {
-                        val stepCount = ceil(total / stepFrames).toInt().coerceAtMost(16_000)
-                        for (step in 0..stepCount) {
-                            if (step % (4 * subdivisionsPerBeat) == 0) continue // bar line already drawn
-                            val x = (step * stepFrames / total * laneWidth).toFloat()
-                            val isBeat = step % subdivisionsPerBeat == 0
-                            drawLine(
-                                color = if (isBeat) GridMinor else GridMinor.copy(alpha = 0.55f),
-                                start = Offset(x, 0f),
-                                end = Offset(x, laneHeight),
-                                strokeWidth = 0.5f
-                            )
-                        }
-                    }
-                }
-
-                if (settings.gridResolution == GridResolution.CLIP_BOUNDARIES) {
-                    for (clip in track.clips) {
-                        val startX = (clip.timelineStartFrame.toDouble() / total * laneWidth).toFloat()
-                        val endX = ((clip.timelineStartFrame + clip.lengthFrames).toDouble() / total * laneWidth).toFloat()
-                        drawLine(GridMajor, Offset(startX, 0f), Offset(startX, laneHeight), 1f)
-                        drawLine(GridMajor, Offset(endX, 0f), Offset(endX, laneHeight), 1f)
-                    }
-                }
-
-                // Render clips as waveform boxes with visual fade ramps
-                for (clip in track.clips) {
-                    val clipStartFrac = (clip.timelineStartFrame.toFloat() / totalFrames).coerceIn(0f, 1f)
-                    val clipLenFrac = (clip.lengthFrames.toFloat() / totalFrames).coerceIn(0.01f, 1f)
-
-                    val clipX = clipStartFrac * laneWidth
-                    val clipW = clipLenFrac * laneWidth
-                    // Clip background (playing-clip highlight removed from per-lane canvas to
-                    // avoid per-frame waveform redraws during playback; playhead is drawn by
-                    // the track-lane container overlay instead).
-                    val clipColor = Color(track.colorHex).copy(alpha = if (track.isMuted) 0.25f else 0.8f)
-                    drawRoundRect(
-                        color = clipColor,
-                        topLeft = Offset(clipX, 2f),
-                        size = Size(clipW, laneHeight - 4f),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f)
-                    )
-
-                    if (clip.id in selectedClipIds || selectedClipId == clip.id) {
-                        drawRoundRect(
-                            color = Color.White,
-                            topLeft = Offset(clipX, 2f),
-                            size = Size(clipW, laneHeight - 4f),
-                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f),
-                            style = Stroke(width = 1.5f)
-                        )
-                    }
-
-                    // Draw real waveform peaks; show a placeholder baseline while decoding.
-                    val peaks = com.example.audio.engine.WaveformCache.get(clip.id)
-                    val centerY = laneHeight / 2f
-                    if (peaks != null) {
-                        for (b in peaks.indices) {
-                            val px = clipX + (b.toFloat() / peaks.size) * clipW
-                            val minV = peaks[b][0]
-                            val maxV = peaks[b][1]
-                            val top = centerY - maxV.coerceIn(-1f, 1f) * (laneHeight - 12f) * 0.5f
-                            val bot = centerY - minV.coerceIn(-1f, 1f) * (laneHeight - 12f) * 0.5f
-                            drawLine(
-                                color = Color.White.copy(alpha = 0.85f),
-                                start = Offset(px, top),
-                                end = Offset(px, bot),
-                                strokeWidth = 1.2f
-                            )
-                        }
-                    } else {
-                        drawLine(
-                            color = Color.White.copy(alpha = 0.3f),
-                            start = Offset(clipX + 2f, centerY),
-                            end = Offset((clipX + clipW - 2f).coerceAtLeast(clipX + 2f), centerY),
-                            strokeWidth = 1f
-                        )
-                    }
-
-                    // 1. Visual Fade-In Ramp Overlay
-                    if (clip.fadeInFrames > 0L) {
-                        val fadeInFrac = (clip.fadeInFrames.toFloat() / totalFrames).coerceIn(0f, clipLenFrac)
-                        val fadeInWidth = fadeInFrac * laneWidth
-
-                        val fadePath = Path().apply {
-                            moveTo(clipX, laneHeight - 2f)
-                            lineTo(clipX + fadeInWidth, 2f)
-                            lineTo(clipX, 2f)
-                            close()
-                        }
-                        drawPath(fadePath, color = Color.Black.copy(alpha = 0.45f))
-                        drawLine(
-                            color = ElectricLime,
-                            start = Offset(clipX, laneHeight - 2f),
-                            end = Offset(clipX + fadeInWidth, 2f),
-                            strokeWidth = 2f
-                        )
-                    }
-
-                    // 2. Visual Fade-Out Ramp Overlay
-                    if (clip.fadeOutFrames > 0L) {
-                        val fadeOutFrac = (clip.fadeOutFrames.toFloat() / totalFrames).coerceIn(0f, clipLenFrac)
-                        val fadeOutWidth = fadeOutFrac * laneWidth
-
-                        val fadeOutPath = Path().apply {
-                            moveTo(clipX + clipW, laneHeight - 2f)
-                            lineTo(clipX + clipW - fadeOutWidth, 2f)
-                            lineTo(clipX + clipW, 2f)
-                            close()
-                        }
-                        drawPath(fadeOutPath, color = Color.Black.copy(alpha = 0.45f))
-                        drawLine(
-                            color = StudioAmber,
-                            start = Offset(clipX + clipW, laneHeight - 2f),
-                            end = Offset(clipX + clipW - fadeOutWidth, 2f),
-                            strokeWidth = 2f
-                        )
-                    }
-                }
-            }
-
-            // Transparent clip hit areas make multi-select possible without
-            // drawing extra chrome. Fade grips sit above them.
-            track.clips.forEach { clip ->
-                val clipStartFrac = (clip.timelineStartFrame.toFloat() / totalFrames).coerceIn(0f, 1f)
-                val clipLenFrac = (clip.lengthFrames.toFloat() / totalFrames).coerceIn(0.01f, 1f)
-                val isChosen = clip.id in selectedClipIds
-                val contentWidthPx = with(androidx.compose.ui.platform.LocalDensity.current) {
-                    contentWidth.toPx()
-                }.coerceAtLeast(1f)
-                val framesPerPixel = totalFrames / contentWidthPx
-                Box(
-                    modifier = Modifier
-                        .offset(x = contentWidth * clipStartFrac)
-                        .width(contentWidth * clipLenFrac)
-                        .fillMaxHeight()
-                        .testTag("clip_${clip.id}")
-                        .semantics {
-                            contentDescription = "Clip ${clip.name}"
-                            stateDescription = if (isChosen) "Selected" else "Not selected"
-                        }
-                        .clickable { onToggleClip(clip.id) }
-                        .pointerInput(clip.id, contentWidthPx) {
-                            var dragFrame = clip.timelineStartFrame
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = {
-                                    dragFrame = clip.timelineStartFrame
-                                    haptics.studioConfirm(settings.enableHapticFeedback)
-                                    onClipDragStart()
-                                },
-                                onDragCancel = { onClipDragEnd() },
-                                onDragEnd = { onClipDragEnd() },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    dragFrame = (dragFrame + dragAmount.x * framesPerPixel).toLong()
-                                        .coerceAtLeast(0L)
-                                    onMoveClip(clip.id, dragFrame)
-                                }
-                            )
-                        }
-                )
-            }
-
-            // Fade handles stay on the selected clip(s). Each target is a
-            // full 48dp square even though the visible grip is a 2dp line.
-            (if (selectedClips.isNotEmpty()) selectedClips else listOfNotNull(selectedClip)).forEach { clip ->
-                val clipStartFrac = (clip.timelineStartFrame.toFloat() / totalFrames).coerceIn(0f, 1f)
-                val clipLenFrac = (clip.lengthFrames.toFloat() / totalFrames).coerceIn(0.01f, 1f)
-                val clipX = contentWidth * clipStartFrac
-                val clipW = contentWidth * clipLenFrac
-                val durationMs = (clip.lengthFrames / 48f).coerceAtLeast(1f)
-                val density = androidx.compose.ui.platform.LocalDensity.current
-                val msPerPx = durationMs / with(density) { clipW.toPx() }.coerceAtLeast(1f)
-
-                FadeDragHandle(
-                    label = "Fade in",
-                    valueMs = clip.fadeInFrames / 48f,
-                    accentColor = ElectricLime,
-                    msPerPixel = msPerPx,
-                    maxMs = durationMs,
-                    onValueChange = { onFadeIn(clip.id, it) },
-                    onDragStart = { haptics.studioTick(settings.enableHapticFeedback) },
-                    testTag = "fade_in_handle",
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .offset(x = (clipX - 24.dp).coerceIn(0.dp, (contentWidth - 48.dp).coerceAtLeast(0.dp)))
-                )
-
-                FadeDragHandle(
-                    label = "Fade out",
-                    valueMs = clip.fadeOutFrames / 48f,
-                    accentColor = StudioAmber,
-                    msPerPixel = msPerPx,
-                    maxMs = durationMs,
-                    onValueChange = { onFadeOut(clip.id, it) },
-                    onDragStart = { haptics.studioTick(settings.enableHapticFeedback) },
-                    testTag = "fade_out_handle",
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .offset(x = (clipX + clipW - 24.dp).coerceIn(0.dp, (contentWidth - 48.dp).coerceAtLeast(0.dp)))
-                )
-            }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun FadeDragHandle(
-    label: String,
-    valueMs: Float,
-    accentColor: Color,
-    msPerPixel: Float,
-    maxMs: Float,
-    onValueChange: (Float) -> Unit,
-    onDragStart: () -> Unit = {},
-    testTag: String,
-    modifier: Modifier = Modifier
-) {
-    var dragValue by remember { mutableStateOf<Float?>(null) }
-    var dragMsTotal by remember { mutableFloatStateOf(0f) }
-
-    Box(
-        modifier = modifier
-            .size(48.dp)
-            .testTag(testTag)
-            .semantics {
-                contentDescription = label
-                stateDescription = "${valueMs.toInt()} milliseconds"
-            }
-            .pointerInput(maxMs, msPerPixel) {
-                detectDragGestures(
-                    onDragStart = {
-                        onDragStart()
-                        dragMsTotal = valueMs.coerceIn(0f, maxMs)
-                        dragValue = dragMsTotal
-                    },
-                    onDragEnd = { dragValue = null },
-                    onDragCancel = { dragValue = null },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        dragMsTotal = (dragMsTotal + dragAmount.x * msPerPixel).coerceIn(0f, maxMs)
-                        dragValue = dragMsTotal
-                        onValueChange(dragMsTotal)
-                    }
-                )
             },
-        contentAlignment = Alignment.TopCenter
-    ) {
-        Box(
-            modifier = Modifier
-                .width(3.dp)
-                .height(18.dp)
-                .background(accentColor)
-        )
-        dragValue?.let { ms ->
-            Box(
-                modifier = Modifier
-                    .padding(top = 16.dp)
-                    .clip(RoundedCornerShape(Radius.sm))
-                    .background(StudioBackground)
-                    .border(1.dp, accentColor, RoundedCornerShape(Radius.sm))
-                    .padding(horizontal = 4.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text = "${ms.toInt()} ms",
-                    color = accentColor,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    maxLines = 1
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun RangeHandle(
-    centerX: androidx.compose.ui.unit.Dp,
-    viewportWidth: androidx.compose.ui.unit.Dp,
-    accentColor: Color,
-    label: String,
-    testTag: String,
-    hapticsEnabled: Boolean = true,
-    onDrag: (Float) -> Unit
-) {
-    val haptics = LocalHapticFeedback.current
-    Box(
-        modifier = Modifier
-            .offset(
-                x = (centerX - 24.dp).coerceIn(
-                    0.dp,
-                    (viewportWidth - 48.dp).coerceAtLeast(0.dp)
-                )
-            )
-            .width(48.dp)
-            .fillMaxHeight()
-            .testTag(testTag)
-            .semantics { contentDescription = label }
-            .pointerInput(label) {
-                detectDragGestures(
-                    onDragStart = { haptics.studioConfirm(hapticsEnabled) },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        onDrag(dragAmount.x)
-                    }
-                )
+            onSeparateAtPlayhead = {
+                onSplitClipAtPlayhead(trackForModal.index)
+                markEditLanded()
             },
-        contentAlignment = Alignment.Center
-    ) {
-        Box(
-            modifier = Modifier
-                .width(3.dp)
-                .height(22.dp)
-                .clip(RoundedCornerShape(Radius.sm))
-                .background(accentColor)
+            onSeparateAtSelection = onSeparateAtSelection,
+            onHeal = { onHealClip(trackForModal.index, clipForModal.id) },
+            onCrossfade = onCrossfadeClips,
+            onDuplicate = {
+                onDuplicateClip(trackForModal.index, clipForModal.id)
+                markEditLanded()
+            },
+            onNudgeBack = { onNudgeClip(trackForModal.index, clipForModal.id, false) },
+            onNudgeForward = { onNudgeClip(trackForModal.index, clipForModal.id, true) },
+            onDeleteClips = onClearSelectedClips,
+            onStripSilence = onStripSilence,
         )
     }
 }
 
-@Composable
-fun ClipAdjustModal(
-    clip: AudioClip,
-    track: TrackData,
-    onDismiss: () -> Unit,
-    onSetGain: (Float) -> Unit,
-    onSetFadeIn: (Float, FadeCurve) -> Unit,
-    onSetFadeOut: (Float, FadeCurve) -> Unit,
-    onPasteChorusSection: (Int) -> Unit,
-    onPasteChorusDouble: () -> Unit,
-    onAdaptChorusLoop: () -> Unit
-) {
-    var gainDb by remember { mutableStateOf(clip.gainDb) }
-    var fadeInMs by remember { mutableStateOf((clip.fadeInFrames / 48f)) }
-    var fadeOutMs by remember { mutableStateOf((clip.fadeOutFrames / 48f)) }
-    var selectedCurve by remember { mutableStateOf(clip.fadeInCurve) }
+/** What the pointer is doing on a clip, decided by the active timeline tool. */
+internal enum class ClipDragKind { MOVE, TRIM_START, TRIM_END, SELECT }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 560.dp)
-                .padding(8.dp),
-            colors = CardDefaults.cardColors(containerColor = StudioSurface),
-            border = androidx.compose.foundation.BorderStroke(1.dp, StudioCardBorder)
-        ) {
-            Column(
-                modifier = Modifier
-                    .verticalScroll(rememberScrollState())
-                    .padding(14.dp)
-            ) {
-                // Modal Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(stringResource(R.string.ui_clip_inspector_fades), color = NeonCyan, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                        Text("${clip.name} • Track ${track.index + 1}", color = TextSecondary, fontSize = 11.sp)
-                    }
-                    IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Default.Close, contentDescription = "Close clip inspector", tint = TextSecondary)
-                    }
-                }
+/** Width of the trim/fade zone at each end of a clip. */
+/** A spot that still needs a destination time from the engineer. */
+private data class SpotRequest(val trackIndex: Int, val clipId: String)
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Rotary Knobs Row for Gain, Fade-In, Fade-Out
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    AudioRotaryKnob(
-                        value = gainDb,
-                        onValueChange = {
-                            gainDb = it
-                            onSetGain(it)
-                        },
-                        range = -24f..12f,
-                        label = "Clip Gain",
-                        accentColor = StudioAmber,
-                        defaultValue = 0f,
-                        valueFormatter = { "%+.1f dB".format(it) }
-                    )
-
-                    AudioRotaryKnob(
-                        value = fadeInMs,
-                        onValueChange = {
-                            fadeInMs = it
-                            onSetFadeIn(it, selectedCurve)
-                        },
-                        range = 0f..2000f,
-                        label = "Fade In",
-                        accentColor = ElectricLime,
-                        defaultValue = 0f,
-                        valueFormatter = { "%.0f ms".format(it) }
-                    )
-
-                    AudioRotaryKnob(
-                        value = fadeOutMs,
-                        onValueChange = {
-                            fadeOutMs = it
-                            onSetFadeOut(it, selectedCurve)
-                        },
-                        range = 0f..2000f,
-                        label = "Fade Out",
-                        accentColor = StudioPurple,
-                        defaultValue = 0f,
-                        valueFormatter = { "%.0f ms".format(it) }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Fade Curve Selector
-                Text(stringResource(R.string.ui_fade_curve_algorithm), color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    FadeCurve.values().forEach { curve ->
-                        val isSel = selectedCurve == curve
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .clip(RoundedCornerShape(Radius.md))
-                                .background(if (isSel) NeonCyan.copy(alpha = 0.2f) else StudioCard)
-                                .border(1.dp, if (isSel) NeonCyan else StudioCardBorder, RoundedCornerShape(Radius.md))
-                                .clickable(role = androidx.compose.ui.semantics.Role.Button) {
-                                    selectedCurve = curve
-                                    onSetFadeIn(fadeInMs, curve)
-                                    onSetFadeOut(fadeOutMs, curve)
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = curve.displayName.substringBefore(" "),
-                                color = if (isSel) NeonCyan else TextSecondary,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Fast Chorus Pasting Actions
-                Text(stringResource(R.string.ui_chorus_adapting), color = StudioPurple, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Button(
-                        onClick = { onPasteChorusSection(4) },
-                        colors = ButtonDefaults.buttonColors(containerColor = StudioPurple),
-                        shape = RoundedCornerShape(Radius.md),
-                        modifier = Modifier.heightIn(min = 48.dp)
-                    ) {
-                        Text(stringResource(R.string.ui_chorus_4_bars), fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-
-                    Button(
-                        onClick = { onPasteChorusDouble() },
-                        colors = ButtonDefaults.buttonColors(containerColor = NeonCyan),
-                        shape = RoundedCornerShape(Radius.md),
-                        modifier = Modifier.heightIn(min = 48.dp)
-                    ) {
-                        Text(stringResource(R.string.ui_doubler_layer), fontSize = 11.sp, color = Color.Black, fontWeight = FontWeight.Bold)
-                    }
-
-                    Button(
-                        onClick = { onAdaptChorusLoop() },
-                        colors = ButtonDefaults.buttonColors(containerColor = ElectricLime),
-                        shape = RoundedCornerShape(Radius.md),
-                        modifier = Modifier.heightIn(min = 48.dp)
-                    ) {
-                        Text(stringResource(R.string.ui_4_bar_loop), fontSize = 11.sp, color = Color.Black, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-    }
-}
+internal val EDGE_ZONE_WIDTH = 18.dp
+/** Height of a fade grip strip: leaves the rest of the lane height trimmable. */
+internal val FADE_GRIP_HEIGHT = 24.dp

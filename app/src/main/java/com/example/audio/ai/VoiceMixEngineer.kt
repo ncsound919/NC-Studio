@@ -91,7 +91,7 @@ class VoiceMixEngineer(private val context: Context) : RecognitionListener {
             try {
                 recognizer?.stopListening()
             } catch (_: Throwable) {
-            }
+            /* best-effort recognizer/TTS cleanup: the engine may already be gone */ }
         }
     }
 
@@ -100,7 +100,7 @@ class VoiceMixEngineer(private val context: Context) : RecognitionListener {
             try {
                 recognizer?.cancel()
             } catch (_: Throwable) {
-            }
+            /* best-effort recognizer/TTS cleanup: the engine may already be gone */ }
             if (listening) {
                 listening = false
                 onListeningChanged?.invoke(false)
@@ -164,9 +164,9 @@ class VoiceMixEngineer(private val context: Context) : RecognitionListener {
 
     private fun speakNow(text: String) {
         try {
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "pulse_engineer")
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nc_studio_engineer")
         } catch (_: Throwable) {
-        }
+        /* best-effort recognizer/TTS cleanup: the engine may already be gone */ }
     }
 
     fun shutdown() {
@@ -174,14 +174,14 @@ class VoiceMixEngineer(private val context: Context) : RecognitionListener {
             try {
                 recognizer?.destroy()
             } catch (_: Throwable) {
-            }
+            /* best-effort recognizer/TTS cleanup: the engine may already be gone */ }
             recognizer = null
             listening = false
             try {
                 tts?.stop()
                 tts?.shutdown()
             } catch (_: Throwable) {
-            }
+            /* best-effort recognizer/TTS cleanup: the engine may already be gone */ }
             tts = null
             ttsReady = false
             pendingSpeech = null

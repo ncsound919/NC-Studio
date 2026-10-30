@@ -16,15 +16,18 @@ import com.example.audio.model.ResonanceSmootherConfig
 import com.example.audio.model.SaturationConfig
 import com.example.audio.model.SaturationType
 import com.example.audio.model.VocalRiderConfig
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -37,11 +40,20 @@ class DawViewModelRobolectricTest {
     fun setUp() {
         application = ApplicationProvider.getApplicationContext()
         application.getSharedPreferences("pulse_ui_prefs", 0).edit().clear().commit()
-        // A previous test's debounced journal must not leak into this session.
+        // A previous test's journal or last-session snapshot must not leak into
+        // this session.
         application.deleteFile("recovery_journal.json")
+        File(application.filesDir, "projects").deleteRecursively()
         viewModel = DawViewModel(application)
+        kotlinx.coroutines.runBlocking { viewModel.awaitSessionReady() }
         // The app ships an empty session; clip-editing tests install their own take.
         viewModel.installTestClip(0)
+    }
+
+    @After
+    fun tearDown() {
+        // Stop autosave/jobs so a later test's setUp cannot race a stale write.
+        viewModel.onCleared()
     }
 
     @Test
@@ -243,24 +255,43 @@ class DawViewModelRobolectricTest {
     }
 
     @Test
-    fun smallModelAutoDetectionAndSelection() {
-        // Trigger local model scanning with Unconfined dispatcher for synchronous execution in test
+    fun smallModelScanNeverSubstitutesModelsThatWereNotDetected() {
         viewModel.scanForLocalModels(dispatcher = kotlinx.coroutines.Dispatchers.Unconfined)
 
         val state = viewModel.uiState.value.localModelDetectorState
         assertFalse(state.isScanning)
-        assertTrue(state.detectedModels.isNotEmpty())
+        // The scanner may find a real local server on this machine; what it must
+        // never do is invent one. The old fallback list contained qwen3.5:4b.
+        assertTrue(state.detectedModels.none { it.name == "qwen3.5:4b" })
+        assertEquals(
+            state.detectedModels.isEmpty(),
+            state.activeModel == null,
+        )
 
-        val firstModel = state.detectedModels.first()
-        viewModel.selectLocalModel(firstModel)
+        if (state.detectedModels.isEmpty()) {
+            viewModel.sendPromptToLocalModel(
+                "Recommend EQ settings for kick drum",
+                dispatcher = kotlinx.coroutines.Dispatchers.Unconfined,
+            )
+            assertNull(viewModel.uiState.value.localModelDetectorState.lastInferenceResponse)
+            assertEquals(StatusKind.ERROR, viewModel.uiState.value.statusKind)
+        }
+    }
 
-        assertEquals(firstModel.name, viewModel.settings.value.activeLocalModelName)
-        assertEquals(firstModel.name, viewModel.uiState.value.localModelDetectorState.activeModel?.name)
-
-        // Test sending prompt to selected small model
-        viewModel.sendPromptToLocalModel("Recommend EQ settings for kick drum", dispatcher = kotlinx.coroutines.Dispatchers.Unconfined)
-        val response = viewModel.uiState.value.localModelDetectorState.lastInferenceResponse
-        assertNotNull(response)
+    @Test
+    fun emptyTracksDoNotAllocatePlaybackBuffers() = kotlinx.coroutines.runBlocking {
+        application.deleteFile("recovery_journal.json")
+        File(application.filesDir, "projects").deleteRecursively()
+        val fresh = DawViewModel(application)
+        try {
+            fresh.awaitSessionReady()
+            assertTrue(
+                "a blank 16-track session must not reserve one full buffer per lane",
+                fresh.trackAudioBuffers.all { it.isEmpty() },
+            )
+        } finally {
+            fresh.onCleared()
+        }
     }
 
     @Test

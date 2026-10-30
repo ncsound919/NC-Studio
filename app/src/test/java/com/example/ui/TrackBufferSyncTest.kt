@@ -37,11 +37,13 @@ class TrackBufferSyncTest {
             assertTrue("initial buffer should contain audio", probeIndex >= 0)
 
             val clip = viewModel.session.value.tracks[0].clips.first()
-            viewModel.moveClipToFrame(0, clip.id, 50_000L)
+            // 48 000 frames = two beats at 120 BPM: Grid mode drops the clip on
+            // that grid line, so this lands exactly where it is asked to.
+            viewModel.moveClipToFrame(0, clip.id, 48_000L)
 
-            // The only clip now starts at 50 000 frames, so the probe becomes silent.
+            // The only clip now starts at 48 000 frames, so the probe becomes silent.
             waitUntil(10_000) { kotlin.math.abs(viewModel.trackAudioBuffers[0][probeIndex]) <= 1e-4f }
-            assertEquals(50_000L, viewModel.session.value.tracks[0].clips.first().timelineStartFrame)
+            assertEquals(48_000L, viewModel.session.value.tracks[0].clips.first().timelineStartFrame)
 
             viewModel.undo()
 
@@ -88,14 +90,43 @@ class TrackBufferSyncTest {
             viewModel.updateTrackAutoPitch(3, AutoPitchConfig(enabled = true, correctionStrength = 1f))
             waitUntil(10_000) {
                 val after = viewModel.trackAudioBuffers[3]
-                after.size == beforePitch.size &&
-                    after.indices.any { kotlin.math.abs(after[it] - beforePitch[it]) > 1e-4f }
+                after.isNotEmpty() &&
+                    (after.size != beforePitch.size ||
+                        after.indices.any { kotlin.math.abs(after[it] - beforePitch[it]) > 1e-4f })
             }
 
             viewModel.moveClipToFrame(3, clip.id, 100_000L)
             waitUntil(10_000) {
                 val movedProbe = viewModel.trackAudioBuffers[3]
                 movedProbe.size > probeIndex && kotlin.math.abs(movedProbe[probeIndex]) <= 1e-4f
+            }
+        } finally {
+            viewModel.viewModelScope.cancel()
+            viewModel.onCleared()
+        }
+    }
+
+    @Test
+    fun blankSessionNeverAllocatesSongLengthTrackBuffers() = runBlocking {
+        val application = ApplicationProvider.getApplicationContext<Application>()
+        val viewModel = DawViewModel(application)
+        try {
+            viewModel.awaitSessionReady()
+            assertTrue(viewModel.session.value.tracks.all { it.clips.isEmpty() })
+            // The session default is a 16-second project; sizing every lane to
+            // that (or worse, to a full song) is the heap regression this guards.
+            viewModel.trackAudioBuffers.forEachIndexed { index, buffer ->
+                assertTrue("empty track $index must not reserve a buffer", buffer.isEmpty())
+            }
+
+            viewModel.installTestClip(0)
+            val clipEnd = viewModel.session.value.tracks[0].clips.first().lengthFrames
+            assertTrue(
+                "a populated track is sized to its own content, not the session length",
+                viewModel.trackAudioBuffers[0].size == clipEnd.toInt() * 2,
+            )
+            viewModel.trackAudioBuffers.drop(1).forEachIndexed { index, buffer ->
+                assertTrue("track ${index + 1} stays empty", buffer.isEmpty())
             }
         } finally {
             viewModel.viewModelScope.cancel()

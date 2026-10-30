@@ -3,6 +3,7 @@ package com.example.audio.ai
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -96,20 +97,22 @@ class LocalModelDetectorTest {
     }
 
     @Test
-    fun testOfflineFallbackGeneration() {
+    fun offlineGenerationReportsAnErrorInsteadOfInventingAdvice() {
         val model = DiscoveredModelInfo(
             name = "llama3.2:1b",
             provider = LocalModelProvider.OLLAMA,
             baseUrl = "http://127.0.0.1:59999"
         )
 
-        val response = LocalModelDetector.generateWithLocalModel(
+        val reply = LocalModelDetector.generateWithLocalModel(
             model = model,
             prompt = "How to clean vocal mud and adjust high-shelf EQ?"
         )
 
-        assertNotNull(response)
-        assertTrue(response.contains("llama3.2:1b"))
-        assertTrue(response.contains("vocal clarity"))
+        assertFalse(reply.isSuccess)
+        assertNull(reply.text)
+        assertNotNull(reply.error)
+        assertTrue(reply.error!!.contains("No response from llama3.2:1b"))
+        assertFalse(reply.error!!.contains("vocal clarity"))
     }
 }

@@ -10,18 +10,28 @@ import org.junit.Test
 class SnapEngineTest {
 
     @Test
+    fun framesPerStep_followsSessionTempo() {
+        // 120 BPM at 48 kHz: one beat is 24 000 frames, one bar 96 000 frames.
+        assertEquals(24000L, SnapEngine.framesPerStep(GridResolution.BEAT, 48000, 120f))
+        assertEquals(96000L, SnapEngine.framesPerStep(GridResolution.BAR, 48000, 120f))
+        assertEquals(6000L, SnapEngine.framesPerStep(GridResolution.SIXTEENTH, 48000, 120f))
+        // 60 BPM halves the bar count per minute, so steps get twice as long.
+        assertEquals(48000L, SnapEngine.framesPerStep(GridResolution.BEAT, 48000, 60f))
+    }
+
+    @Test
     fun snapFrame_snapsToNearestBeatWhenEnabled() {
         val session = ProjectSession(tracks = emptyList())
-        // Beat resolution = 4800 frames. Target at 4900 should snap to 4800.
+        // One beat at 120 BPM = 24000 frames; 24500 is inside the tolerance window.
         val snapped = SnapEngine.snapFrame(
-            targetFrame = 4900L,
+            targetFrame = 24500L,
             session = session,
             isSnapEnabled = true,
             resolution = GridResolution.BEAT,
             toleranceFrames = 500L
         )
 
-        assertEquals(4800L, snapped)
+        assertEquals(24000L, snapped)
     }
 
     @Test

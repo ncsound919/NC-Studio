@@ -43,6 +43,9 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
+import com.overlay.studio.ui.StudioLevelMeter
+import com.overlay.studio.ui.StudioPalette
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -50,6 +53,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
 import com.example.audio.model.MasterPreset
 import com.example.audio.model.ProjectSession
 import com.example.audio.model.TrackData
@@ -61,13 +65,21 @@ import com.example.ui.theme.MeterYellow
 import com.example.ui.theme.NeonCyan
 import com.example.ui.theme.StudioAmber
 import com.example.ui.theme.StudioBackground
+import com.example.ui.theme.MasterStrip
+import com.example.ui.theme.PanelInset
+import com.example.ui.theme.PanelMuted
 import com.example.ui.theme.StudioCard
 import com.example.ui.theme.StudioCardBorder
+import com.example.ui.theme.StudioPurple
 import com.example.ui.theme.StudioSurface
+import com.example.ui.theme.SurfaceRaised
+import com.example.ui.theme.SurfaceSunken
 import com.example.ui.theme.TextMuted
+import com.example.ui.theme.TrackLaneBase
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import kotlin.math.log10
+import com.example.ui.theme.OnAccent
 
 /**
  * Snaps a pan value to center (0) when within a small threshold.
@@ -254,7 +266,7 @@ fun ChannelStrip(
             Text(
                 text = track.stemCategory.displayName,
                 color = NeonCyan,
-                fontSize = 9.sp,
+                fontSize = 10.sp,
                 maxLines = 1
             )
 
@@ -265,13 +277,13 @@ fun ChannelStrip(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.Center
             ) {
-                MiniBadge(text = "EQ", active = track.eqConfig.enabled, activeColor = NeonCyan)
+                MiniBadge(text = stringResource(R.string.label_eq), active = track.eqConfig.enabled, activeColor = NeonCyan)
                 Spacer(modifier = Modifier.width(2.dp))
-                MiniBadge(text = "SAT", active = track.saturationConfig.enabled, activeColor = StudioAmber)
+                MiniBadge(text = stringResource(R.string.label_sat), active = track.saturationConfig.enabled, activeColor = StudioAmber)
                 Spacer(modifier = Modifier.width(2.dp))
                 MiniBadge(text = if (gainReductionDb > 0.5f) "-" + gainReductionDb.toInt() else "CP", active = track.compressorConfig.enabled, activeColor = if (gainReductionDb > 0.5f) StudioAmber else ElectricLime)
                 Spacer(modifier = Modifier.width(2.dp))
-                MiniBadge(text = "DL", active = track.delayConfig.enabled, activeColor = Color(0xFFD05CE3))
+                MiniBadge(text = stringResource(R.string.label_dl), active = track.delayConfig.enabled, activeColor = StudioPurple)
             }
 
             Spacer(modifier = Modifier.height(4.dp))
@@ -281,7 +293,7 @@ fun ChannelStrip(
                 Text(
                     text = "REV ${(track.reverbSendLevel * 100).toInt()}%",
                     color = TextMuted,
-                    fontSize = 8.sp
+                    fontSize = 10.sp
                 )
                 Slider(
                     value = track.reverbSendLevel,
@@ -310,7 +322,7 @@ fun ChannelStrip(
                 Text(
                     text = "PAN $panText",
                     color = TextSecondary,
-                    fontSize = 8.sp,
+                    fontSize = 10.sp,
                     fontFamily = FontFamily.Monospace
                 )
                 Slider(
@@ -338,7 +350,7 @@ fun ChannelStrip(
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 MixerToggleBtn(
-                    label = "M",
+                    label = stringResource(R.string.label_m),
                     isActive = track.isMuted,
                     activeColor = ClipRed,
                     onClick = onToggleMute,
@@ -346,7 +358,7 @@ fun ChannelStrip(
                     contentDescription = "Mute track ${track.index + 1}"
                 )
                 MixerToggleBtn(
-                    label = "S",
+                    label = stringResource(R.string.label_s),
                     isActive = track.isSoloed,
                     activeColor = StudioAmber,
                     onClick = onToggleSolo,
@@ -396,7 +408,7 @@ fun ChannelStrip(
             Spacer(modifier = Modifier.height(4.dp))
 
             // Gain dB Readout
-            val gainText = if (track.gainDb <= -59.5f) "-inf" else String.format("%.1f", track.gainDb)
+            val gainText = if (track.gainDb <= -59.5f) "-inf" else String.format(java.util.Locale.US, "%.1f", track.gainDb)
             Text(
                 text = "$gainText dB",
                 color = if (track.gainDb > 0f) StudioAmber else TextPrimary,
@@ -426,7 +438,7 @@ fun MasterChannelStrip(
             .clip(RoundedCornerShape(8.dp))
             .border(1.5.dp, StudioAmber, RoundedCornerShape(8.dp))
             .testTag("master_channel_strip"),
-        color = Color(0xFF161B26)
+        color = MasterStrip
     ) {
         Column(
             modifier = Modifier
@@ -445,16 +457,16 @@ fun MasterChannelStrip(
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = "MASTER",
+                text = stringResource(R.string.mixer_master),
                 color = StudioAmber,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.ExtraBold
             )
 
             Text(
-                text = "BRICKWALL",
+                text = stringResource(R.string.mixer_brickwall),
                 color = TextMuted,
-                fontSize = 8.sp
+                fontSize = 10.sp
             )
 
             Spacer(modifier = Modifier.height(4.dp))
@@ -474,9 +486,9 @@ fun MasterChannelStrip(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "PRESETS",
+                    text = stringResource(R.string.mixer_presets),
                     color = StudioAmber,
-                    fontSize = 8.sp,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace
                 )
@@ -488,11 +500,11 @@ fun MasterChannelStrip(
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xFF090C12))
+                    .background(TrackLaneBase)
                     .padding(horizontal = 6.dp, vertical = 4.dp)
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    val lufsIntStr = if (integratedLufs <= -59f) "--" else String.format("%.1f", integratedLufs)
+                    val lufsIntStr = if (integratedLufs <= -59f) "--" else String.format(java.util.Locale.US, "%.1f", integratedLufs)
                     Text(
                         text = "$lufsIntStr LUFS",
                         color = ElectricLime,
@@ -501,9 +513,9 @@ fun MasterChannelStrip(
                         fontFamily = FontFamily.Monospace
                     )
                     Text(
-                        text = "ITU-R BS.1770",
+                        text = stringResource(R.string.mixer_itu_loudness),
                         color = TextMuted,
-                        fontSize = 7.sp
+                        fontSize = 10.sp
                     )
                 }
             }
@@ -547,7 +559,7 @@ fun MasterChannelStrip(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            val mGainText = if (session.masterGainDb <= -59.5f) "-inf" else String.format("%.1f", session.masterGainDb)
+            val mGainText = if (session.masterGainDb <= -59.5f) "-inf" else String.format(java.util.Locale.US, "%.1f", session.masterGainDb)
             Text(
                 text = "$mGainText dB",
                 color = StudioAmber,
@@ -582,12 +594,12 @@ fun VerticalFader(
         else ((gainDb + 60f) / 66f).coerceIn(0f, 1f)
     }
 
-    val gainText = if (gainDb <= -59.5f) "minus infinity" else "${String.format("%.1f", gainDb)} decibels"
+    val gainText = if (gainDb <= -59.5f) "minus infinity" else "${String.format(java.util.Locale.US, "%.1f", gainDb)} decibels"
 
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFF0B0E14))
+            .background(SurfaceSunken)
             .border(1.dp, StudioCardBorder, RoundedCornerShape(6.dp))
             .pointerInput(Unit) {
                 detectVerticalDragGestures { change, dragAmount ->
@@ -611,7 +623,7 @@ fun VerticalFader(
                 .width(4.dp)
                 .fillMaxHeight()
                 .padding(vertical = 12.dp)
-                .background(Color(0xFF1E2638))
+                .background(SurfaceRaised)
         )
 
         // 0 dB Unity tick line
@@ -619,7 +631,7 @@ fun VerticalFader(
         Canvas(modifier = Modifier.fillMaxSize()) {
             val y = size.height * (1f - unityPos)
             drawLine(
-                color = Color(0xFF64748B),
+                color = TextMuted,
                 start = Offset(4f, y),
                 end = Offset(size.width - 4f, y),
                 strokeWidth = 2f
@@ -636,14 +648,14 @@ fun VerticalFader(
 
             // Draw fader cap with metallic grip lines
             drawRoundRect(
-                color = Color(0xFFE2E8F0),
+                color = TextPrimary,
                 topLeft = Offset(4f, thumbY),
                 size = Size(size.width - 8f, thumbHeight),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f, 4f)
             )
             // Center white line
             drawLine(
-                color = Color.Black,
+                color = OnAccent,
                 start = Offset(6f, thumbY + thumbHeight / 2),
                 end = Offset(size.width - 6f, thumbY + thumbHeight / 2),
                 strokeWidth = 3f
@@ -657,37 +669,16 @@ fun LedPeakMeter(
     peakLinear: Float,
     modifier: Modifier = Modifier
 ) {
-    val peakDb = if (peakLinear > 1e-5f) 20f * log10(peakLinear) else -60f
-    val fraction = ((peakDb + 60f) / 66f).coerceIn(0f, 1f)
-
-    Canvas(
-        modifier = modifier
-            .clip(RoundedCornerShape(3.dp))
-            .background(Color(0xFF080B10))
-            .border(0.5.dp, StudioCardBorder, RoundedCornerShape(3.dp))
-    ) {
-        val totalSegments = 24
-        val segHeight = (size.height / totalSegments) - 1.5f
-        val activeSegments = (fraction * totalSegments).toInt()
-
-        for (i in 0 until totalSegments) {
-            val segIndexFromBottom = i
-            val y = size.height - (i + 1) * (segHeight + 1.5f)
-            val isLit = segIndexFromBottom < activeSegments
-
-            val segColor = when {
-                i >= 22 -> MeterRed
-                i >= 17 -> MeterYellow
-                else -> MeterGreen
-            }
-
-            drawRect(
-                color = if (isLit) segColor else segColor.copy(alpha = 0.12f),
-                topLeft = Offset(1f, y),
-                size = Size(size.width - 2f, segHeight)
-            )
-        }
-    }
+    // One meter implementation: shared peak-hold, -20 dB reference and
+    // green/amber/red zones, identical to NC Phone Beat.
+    StudioLevelMeter(
+        level = peakLinear,
+        modifier = modifier,
+        accent = StudioPalette.Lime,
+        vertical = true,
+        showPeakHold = true,
+        testTag = "led_peak_meter",
+    )
 }
 
 @Composable
@@ -700,7 +691,7 @@ fun MiniBadge(
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(4.dp))
-            .background(if (active) activeColor.copy(alpha = 0.2f) else Color(0xFF111622))
+            .background(if (active) activeColor.copy(alpha = 0.2f) else PanelMuted)
             .border(
                 1.dp,
                 if (active) activeColor else StudioCardBorder,
@@ -711,7 +702,7 @@ fun MiniBadge(
         Text(
             text = text,
             color = if (active) activeColor else TextMuted,
-            fontSize = 8.sp,
+            fontSize = 10.sp,
             fontWeight = FontWeight.Bold
         )
     }
@@ -746,7 +737,7 @@ fun MixerToggleBtn(
     ) {
         Text(
             text = label,
-            color = if (isActive) Color.Black else TextSecondary,
+            color = if (isActive) OnAccent else TextSecondary,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold
         )

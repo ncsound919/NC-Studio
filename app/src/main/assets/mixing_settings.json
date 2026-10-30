@@ -1,0 +1,154 @@
+{
+  "version": "1.0",
+  "genres": {
+    "pop": {
+      "reference_track": "Flowers - Miley Cyrus",
+      "reference_grammy": "Record of the Year 2024",
+      "tempo_range": [100, 130],
+      "lufs_target": [-8, -6],
+      "chains": {
+        "vocals": {
+          "plugins": ["Neve 1073", "1176", "LA-2A", "De-Esser", "Air Shelf"],
+          "eq": {"hp_freq": 80, "de_ess_freq": 6000, "de_ess_db": 3, "air_freq": 11000, "air_db": 2},
+          "compression": {"ratio": 3, "attack_ms": 20, "release_ms": 100, "threshold_db": -20},
+          "reverb": {"type": "plate", "decay_s": 1.2, "pre_delay_ms": 30, "wet_db": -18, "hp_freq": 200},
+          "delay": {"type": "1/8", "feedback": 25, "filtered": true},
+          "pan": 0,
+          "volume_db": -6
+        },
+        "kick": {
+          "plugins": ["SSL E", "Pultec EQP-1A"],
+          "eq": {"hp_freq": 30, "boost_freq": 60, "boost_db": 3, "attack_freq": 4000, "attack_db": 2},
+          "compression": {"ratio": 4, "attack_ms": 30, "release_ms": 100, "parallel": true},
+          "pan": 0, "volume_db": -8
+        },
+        "bass": {
+          "plugins": ["Neve 1073", "SSL Bus Comp"],
+          "eq": {"hp_freq": 30, "boost_freq": 80, "boost_db": 2, "cut_freq": 300, "cut_db": 2},
+          "compression": {"ratio": 3, "attack_ms": 10, "release_ms": 100, "sidechain": "kick"},
+          "pan": 0, "volume_db": -10
+        },
+        "drums_bus": {"plugins": ["SSL Bus Comp", "Parallel Comp"], "compression": {"ratio": 4, "attack_ms": 30, "release_ms": 100, "gr_db": 3}}
+      },
+      "mix_bus": {"plugins": ["SSL Bus Comp", "Tape Saturation"], "compression": {"ratio": 2, "attack_ms": 30, "release": "auto", "gr_db": 3}}
+    },
+    "hip_hop_classic": {
+      "reference_track": "Nuthin' but a 'G' Thang - Dr. Dre ft. Snoop Dogg",
+      "tempo_range": [85, 100],
+      "lufs_target": [-9, -7],
+      "chains": {
+        "vocals": {
+          "plugins": ["Neve 1073", "1176", "LA-2A", "De-Esser"],
+          "eq": {"hp_freq": 100, "de_ess_freq": 6000, "de_ess_db": 2, "air_freq": 10000, "air_db": 1},
+          "compression": {"ratio": 4, "attack_ms": 15, "release_ms": 80, "threshold_db": -18},
+          "reverb": {"type": "plate", "decay_s": 1.0, "pre_delay_ms": 20, "wet_db": -20, "hp_freq": 300},
+          "pan": 0, "volume_db": -5
+        },
+        "kick": {"plugins": ["SSL E", "Pultec EQP-1A"], "eq": {"hp_freq": 25, "boost_freq": 50, "boost_db": 4}, "compression": {"ratio": 4, "attack_ms": 10, "release_ms": 80}, "pan": 0, "volume_db": -6},
+        "bass": {"plugins": ["Neve 1073"], "eq": {"hp_freq": 30, "boost_freq": 60, "boost_db": 3}, "compression": {"ratio": 3, "attack_ms": 5, "release_ms": 100}, "pan": 0, "volume_db": -8},
+        "mix_bus": {"plugins": ["SSL Bus Comp", "Tape Saturation"], "compression": {"ratio": 2, "attack_ms": 30, "release": "auto", "gr_db": 2}}
+      }
+    },
+    "trap_drill": {
+      "reference_track": "Sicko Mode - Travis Scott ft. Drake",
+      "tempo_range": [130, 160],
+      "lufs_target": [-7, -5],
+      "chains": {
+        "vocals": {
+          "plugins": ["Hard Auto-Tune", "1176", "LA-2A", "De-Esser"],
+          "eq": {"hp_freq": 100, "de_ess_freq": 7000, "de_ess_db": 4, "air_freq": 12000, "air_db": 2},
+          "compression": {"ratio": 4, "attack_ms": 5, "release_ms": 50, "threshold_db": -16},
+          "reverb": {"type": "hall", "decay_s": 1.8, "pre_delay_ms": 10, "wet_db": -15, "hp_freq": 200},
+          "delay": {"type": "1/4", "feedback": 30, "filtered": true},
+          "pan": 0, "volume_db": -4
+        },
+        "808": {
+          "plugins": ["Neve 1073", "Saturation", "Sidechain"],
+          "eq": {"hp_freq": 25, "boost_freq": 60, "boost_db": 4, "cut_freq": 300, "cut_db": 3},
+          "compression": {"ratio": 2, "attack_ms": 10, "release_ms": 100, "sidechain": "kick"},
+          "pan": 0, "volume_db": -6
+        },
+        "kick": {"plugins": ["SSL E"], "eq": {"hp_freq": 30, "boost_freq": 50, "boost_db": 3, "attack_freq": 4000, "attack_db": 3}, "compression": {"ratio": 4, "attack_ms": 5, "release_ms": 80}, "pan": 0, "volume_db": -7},
+        "hats": {"plugins": ["HPF", "Boost"], "eq": {"hp_freq": 200, "boost_freq": 10000, "boost_db": 3}, "pan": 15, "volume_db": -12},
+        "mix_bus": {"plugins": ["SSL Bus Comp", "Tape Saturation", "Limiter"], "compression": {"ratio": 4, "attack_ms": 10, "release": "auto", "gr_db": 4}}
+      }
+    },
+    "house": {
+      "reference_track": "Show Me Love - Robin S. (StoneBridge Mix)",
+      "tempo_range": [120, 130],
+      "lufs_target": [-8, -6],
+      "chains": {
+        "kick": {"plugins": ["SSL E", "Pultec EQP-1A"], "eq": {"hp_freq": 30, "boost_freq": 60, "boost_db": 4, "attack_freq": 4000, "attack_db": 3}, "compression": {"ratio": 4, "attack_ms": 5, "release_ms": 50}, "pan": 0, "volume_db": -6},
+        "bass": {"plugins": ["Neve 1073", "Sidechain"], "eq": {"hp_freq": 30, "boost_freq": 80, "boost_db": 3}, "compression": {"ratio": 4, "attack_ms": 1, "release_ms": 50, "sidechain": "kick"}, "pan": 0, "volume_db": -8},
+        "hats": {"plugins": ["HPF", "Boost"], "eq": {"hp_freq": 300, "boost_freq": 9000, "boost_db": 3}, "pan": -10, "volume_db": -14},
+        "snare_clap": {"plugins": ["SSL E", "Plate Reverb"], "eq": {"hp_freq": 200, "boost_freq": 5000, "boost_db": 2}, "reverb": {"type": "plate", "decay_s": 1.0, "pre_delay_ms": 10, "wet_db": -15}, "pan": 0, "volume_db": -10},
+        "vocals": {"plugins": ["Neve 1073", "1176", "LA-2A"], "eq": {"hp_freq": 100, "air_freq": 10000, "air_db": 2}, "compression": {"ratio": 3, "attack_ms": 20, "release_ms": 100}, "reverb": {"type": "plate", "decay_s": 1.2, "pre_delay_ms": 20, "wet_db": -16}, "delay": {"type": "1/8 dotted", "feedback": 20, "filtered": true}, "pan": 0, "volume_db": -8},
+        "mix_bus": {"plugins": ["SSL Bus Comp", "Tape Saturation"], "compression": {"ratio": 2, "attack_ms": 10, "release": "auto", "gr_db": 3}}
+      }
+    },
+    "rnb": {
+      "reference_track": "Leave the Door Open - Silk Sonic",
+      "tempo_range": [60, 110],
+      "lufs_target": [-10, -7],
+      "chains": {
+        "vocals": {
+          "plugins": ["Neve 1073", "1176", "LA-2A", "De-Esser", "Air Shelf"],
+          "eq": {"hp_freq": 80, "de_ess_freq": 6000, "de_ess_db": 2, "air_freq": 11000, "air_db": 2},
+          "compression": {"ratio": 2.5, "attack_ms": 30, "release_ms": 120, "threshold_db": -22},
+          "reverb": {"type": "plate", "decay_s": 1.5, "pre_delay_ms": 35, "wet_db": -16, "hp_freq": 200},
+          "delay": {"type": "1/8", "feedback": 20, "filtered": true},
+          "pan": 0, "volume_db": -5
+        },
+        "harmonies": {"plugins": ["Neve 1073", "LA-2A"], "eq": {"hp_freq": 100, "air_freq": 10000, "air_db": 1}, "compression": {"ratio": 2, "attack_ms": 30, "release_ms": 100}, "pan": 60, "volume_db": -10},
+        "bass": {"plugins": ["Neve 1073", "SSL Bus Comp"], "eq": {"hp_freq": 30, "boost_freq": 80, "boost_db": 3, "cut_freq": 250, "cut_db": 2}, "compression": {"ratio": 3, "attack_ms": 10, "release_ms": 100, "sidechain": "kick"}, "pan": 0, "volume_db": -9},
+        "mix_bus": {"plugins": ["SSL Bus Comp", "Tape Saturation"], "compression": {"ratio": 2, "attack_ms": 30, "release": "auto", "gr_db": 2}}
+      }
+    },
+    "gospel": {
+      "reference_track": "Never Would Have Made It - Marvin Sapp",
+      "tempo_range": [60, 120],
+      "lufs_target": [-12, -9],
+      "chains": {
+        "lead_vocal": {
+          "plugins": ["Neve 1073", "LA-2A", "De-Esser"],
+          "eq": {"hp_freq": 80, "de_ess_freq": 5000, "de_ess_db": 2, "air_freq": 10000, "air_db": 1},
+          "compression": {"ratio": 2, "attack_ms": 30, "release_ms": 150, "threshold_db": -24},
+          "reverb": {"type": "hall", "decay_s": 2.5, "pre_delay_ms": 45, "wet_db": -14, "hp_freq": 200},
+          "pan": 0, "volume_db": -4
+        },
+        "choir": {
+          "plugins": ["Neve 1073", "LA-2A", "Mid-Side EQ"],
+          "eq": {"hp_freq": 100, "air_freq": 8000, "air_db": 2},
+          "compression": {"ratio": 2, "attack_ms": 30, "release_ms": 150},
+          "reverb": {"type": "hall", "decay_s": 3.0, "pre_delay_ms": 50, "wet_db": -12, "hp_freq": 200},
+          "pan": 0, "volume_db": -8
+        },
+        "mix_bus": {"plugins": ["SSL Bus Comp", "Tape Saturation"], "compression": {"ratio": 2, "attack_ms": 30, "release": "auto", "gr_db": 2}}
+      }
+    },
+    "rock": {
+      "reference_track": "Smells Like Teen Spirit - Nirvana",
+      "tempo_range": [100, 160],
+      "lufs_target": [-9, -7],
+      "chains": {
+        "vocals": {
+          "plugins": ["Neve 1073", "1176", "LA-2A", "De-Esser", "Slapback Delay"],
+          "eq": {"hp_freq": 100, "de_ess_freq": 6000, "de_ess_db": 3, "air_freq": 11000, "air_db": 2},
+          "compression": {"ratio": 4, "attack_ms": 15, "release_ms": 80, "threshold_db": -18},
+          "reverb": {"type": "plate", "decay_s": 1.2, "pre_delay_ms": 20, "wet_db": -20, "hp_freq": 200},
+          "delay": {"type": "slapback", "time_ms": 100, "feedback": 0, "filtered": true},
+          "pan": 0, "volume_db": -5
+        },
+        "guitars": {
+          "plugins": ["Neve 1073", "SSL E", "Parallel Distortion"],
+          "eq": {"hp_freq": 80, "cut_freq": 300, "cut_db": 3, "boost_freq": 3000, "boost_db": 2},
+          "compression": {"ratio": 3, "attack_ms": 10, "release_ms": 80},
+          "pan": 45, "volume_db": -10
+        },
+        "drums": {"plugins": ["SSL E", "Parallel Comp"], "eq": {"hp_freq": 30, "boost_freq": 50, "boost_db": 3, "attack_freq": 5000, "attack_db": 3}, "compression": {"ratio": 4, "attack_ms": 5, "release_ms": 80, "parallel": true}, "pan": 0, "volume_db": -6},
+        "bass": {"plugins": ["Neve 1073", "Saturation"], "eq": {"hp_freq": 30, "boost_freq": 80, "boost_db": 2, "cut_freq": 250, "cut_db": 2}, "compression": {"ratio": 3, "attack_ms": 10, "release_ms": 100}, "pan": 0, "volume_db": -9},
+        "mix_bus": {"plugins": ["SSL Bus Comp", "Tape Saturation"], "compression": {"ratio": 2, "attack_ms": 30, "release": "auto", "gr_db": 3}}
+      }
+    }
+  }
+}

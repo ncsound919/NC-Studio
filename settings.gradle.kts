@@ -22,6 +22,12 @@ dependencyResolutionManagement {
   }
 }
 
+includeBuild("../shared/kotlin-core")
+
 rootProject.name = "NC Studio"
 
 include(":app")
+include(":newdsp")
+// The sibling DSP project lives in a folder whose name contains a space, so
+// the default `newdsp/` project dir does not exist and configuration fails.
+project(":newdsp").projectDir = file("../new dsp")

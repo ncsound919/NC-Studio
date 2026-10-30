@@ -7,18 +7,26 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeRight
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.cancel
 import org.junit.Assert.*
+import org.junit.After
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import com.example.audio.engine.SnapEngine
 import com.example.audio.model.AudioTelemetry
 import com.example.audio.model.DawSettings
+import com.example.audio.model.EditMode
+import com.example.audio.model.GridResolution
 import com.example.ui.theme.MyApplicationTheme
 import java.io.File
 
@@ -29,9 +37,34 @@ class DawUiFunctionalTest {
     @get:Rule
     val composeTestRule = createComposeRule()
 
+    // Every test builds its own ViewModel; they are torn down in @After so a
+    // leaked instance cannot keep its crash-journal debounce alive and write
+    // project state into the next test's restore.
+    private val viewModels = mutableListOf<DawViewModel>()
+
+    private fun newViewModel(): DawViewModel =
+        DawViewModel(ApplicationProvider.getApplicationContext()).also { viewModels += it }
+
+    @After
+    fun tearDownViewModels() {
+        viewModels.forEach { vm ->
+            vm.viewModelScope.cancel()
+            vm.onCleared()
+        }
+        viewModels.clear()
+    }
+
+    @Before
+    fun clearPersistedSessionState() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        app.getSharedPreferences("pulse_ui_prefs", 0).edit().clear().commit()
+        app.deleteFile("recovery_journal.json")
+        File(app.filesDir, "projects").deleteRecursively()
+    }
+
     @Test
     fun functionalTest_transportButtons() {
-        val viewModel = DawViewModel(ApplicationProvider.getApplicationContext())
+        val viewModel = newViewModel()
 
         composeTestRule.setContent {
             TransportBar(
@@ -53,7 +86,9 @@ class DawUiFunctionalTest {
         composeTestRule.onNodeWithTag("transport_bar").assertIsDisplayed()
         
         // Play / Pause Toggle
+        composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("transport_play_pause_button").performClick()
+        composeTestRule.waitForIdle()
         assertTrue(viewModel.uiState.value.isPlaying)
         
         // Record
@@ -67,7 +102,7 @@ class DawUiFunctionalTest {
 
     @Test
     fun functionalTest_transportPunchStatusAndDismiss() {
-        val viewModel = DawViewModel(ApplicationProvider.getApplicationContext())
+        val viewModel = newViewModel()
 
         composeTestRule.setContent {
             val uiState = viewModel.uiState.collectAsState()
@@ -112,7 +147,7 @@ class DawUiFunctionalTest {
 
     @Test
     fun functionalTest_timelineZoomAndClipSelection() {
-        val viewModel = DawViewModel(ApplicationProvider.getApplicationContext())
+        val viewModel = newViewModel()
         viewModel.installTestClip(0)
         val session = viewModel.session.value
         val firstClip = session.tracks.first().clips.first()
@@ -146,7 +181,7 @@ class DawUiFunctionalTest {
 
     @Test
     fun functionalTest_fadeAndLoopHandlesDrag() {
-        val viewModel = DawViewModel(ApplicationProvider.getApplicationContext())
+        val viewModel = newViewModel()
         viewModel.installTestClip(0)
         val session = viewModel.session.value
         var fadeInMs = -1f
@@ -188,10 +223,11 @@ class DawUiFunctionalTest {
 
     @Test
     fun functionalTest_directClipDragMovesClip() {
-        val viewModel = DawViewModel(ApplicationProvider.getApplicationContext())
+        val viewModel = newViewModel()
         viewModel.installTestClip(0)
         val original = viewModel.session.value.tracks.first().clips.first()
         var movedTo: Long? = null
+        var trimmedTo: Long? = null
 
         composeTestRule.setContent {
             MyApplicationTheme {
@@ -205,12 +241,14 @@ class DawUiFunctionalTest {
                     onTrimClipEnd = { _, _ -> },
                     onDuplicateClip = { _, _ -> },
                     onOpenClipBin = {},
-                    onMoveClip = { _, _, frame -> movedTo = frame },
+                    onMoveClip = { _, _, frame, _ -> movedTo = frame },
+                    onTrimClipToFrame = { _, _, _, frame, _ -> trimmedTo = frame },
                     onToggleClipSelection = { _, _ -> }
                 )
             }
         }
 
+        // The Smart tool drags a clip body straight away: no long-press needed.
         composeTestRule.onNodeWithTag("clip_${original.id}")
             .performTouchInput {
                 down(center)
@@ -221,30 +259,163 @@ class DawUiFunctionalTest {
         composeTestRule.waitForIdle()
 
         assertTrue(
-            "Long-press drag should request a clip move to a later frame",
+            "A body drag should move the clip (moved=$movedTo, trimmed=$trimmedTo)",
             (movedTo ?: -1L) > original.timelineStartFrame
         )
     }
 
     @Test
-    fun functionalTest_clipMoveIsSnappedAndUndoable() {
-        val viewModel = DawViewModel(ApplicationProvider.getApplicationContext())
+    fun functionalTest_smartToolEdgeDragTrimsTheInPoint() {
+        val viewModel = newViewModel()
+        viewModel.installTestClip(0)
+        val installed = viewModel.session.value.tracks.first().clips.first()
+        // Pull the in point 2 s in, so there is take audio to uncover again.
+        viewModel.trimClipStartToFrame(0, installed.id, 96_000L)
+        val trimmedClip = viewModel.session.value.tracks.first().clips.first()
+        var movedTo: Long? = null
+        var trimmedTo: Long? = null
+        var trimmedStartEdge: Boolean? = null
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                TimelineView(
+                    session = viewModel.session.value,
+                    uiState = viewModel.uiState.value,
+                    settings = DawSettings(),
+                    onSeekFraction = {},
+                    onSelectTrack = {},
+                    onSplitClipAtPlayhead = {},
+                    onTrimClipEnd = { _, _ -> },
+                    onDuplicateClip = { _, _ -> },
+                    onOpenClipBin = {},
+                    onMoveClip = { _, _, frame, _ -> movedTo = frame },
+                    onTrimClipToFrame = { _, _, isStartEdge, frame, _ ->
+                        trimmedStartEdge = isStartEdge
+                        trimmedTo = frame
+                    },
+                    onToggleClipSelection = { _, _ -> }
+                )
+            }
+        }
+
+        // Pressing on the in point of the clip drags that edge, not the clip.
+        // (Low on the lane: the fade grips own the top strip of the clip.)
+        composeTestRule.onNodeWithTag("clip_${trimmedClip.id}")
+            .performTouchInput {
+                down(androidx.compose.ui.geometry.Offset(1f, height - 4f))
+                moveBy(androidx.compose.ui.geometry.Offset(-40f, 0f))
+                up()
+            }
+        composeTestRule.waitForIdle()
+
+        assertEquals(true, trimmedStartEdge)
+        assertTrue(
+            "Edge drag should trim the in point earlier (trimmed=$trimmedTo)",
+            (trimmedTo ?: Long.MAX_VALUE) < trimmedClip.timelineStartFrame
+        )
+        assertNull("An edge drag must not move the whole clip", movedTo)
+    }
+
+    @Test
+    fun functionalTest_spotModeDragAsksForATimeAndPlacesTheClip() {
+        val viewModel = newViewModel()
+        viewModel.installTestClip(0)
+        val clip = viewModel.session.value.tracks.first().clips.first()
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                TimelineView(
+                    session = viewModel.session.value,
+                    uiState = viewModel.uiState.value,
+                    settings = DawSettings(editMode = EditMode.SPOT),
+                    onSeekFraction = {},
+                    onSelectTrack = {},
+                    onSplitClipAtPlayhead = {},
+                    onTrimClipEnd = { _, _ -> },
+                    onDuplicateClip = { _, _ -> },
+                    onOpenClipBin = {},
+                    onSpotClipAtFrame = { trackIdx, clipId, frame, placeByEnd ->
+                        viewModel.spotClipAtFrame(trackIdx, clipId, frame, placeByEnd)
+                    }
+                )
+            }
+        }
+
+        // Dropping a clip in Spot mode asks where it should go.
+        composeTestRule.onNodeWithTag("clip_${clip.id}").performTouchInput {
+            down(center)
+            moveBy(androidx.compose.ui.geometry.Offset(60f, 0f))
+            up()
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("spot_time_field").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("spot_time_field").performTextReplacement("2:03.5")
+        composeTestRule.onNodeWithTag("spot_time_preview").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("spot_confirm_button").performClick()
+        composeTestRule.waitForIdle()
+
+        // 2:03.5 at 48 kHz, placed exactly: spot never snaps.
+        assertEquals(
+            5_928_000L,
+            viewModel.session.value.tracks.first().clips.first { it.id == clip.id }.timelineStartFrame
+        )
+        composeTestRule.onNodeWithTag("spot_time_field").assertDoesNotExist()
+    }
+
+    @Test
+    fun functionalTest_gridModeDragDoesNotAskForATime() {
+        val viewModel = newViewModel()
+        viewModel.installTestClip(0)
+        val clip = viewModel.session.value.tracks.first().clips.first()
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                TimelineView(
+                    session = viewModel.session.value,
+                    uiState = viewModel.uiState.value,
+                    settings = DawSettings(),
+                    onSeekFraction = {},
+                    onSelectTrack = {},
+                    onSplitClipAtPlayhead = {},
+                    onTrimClipEnd = { _, _ -> },
+                    onDuplicateClip = { _, _ -> },
+                    onOpenClipBin = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("clip_${clip.id}").performTouchInput {
+            down(center)
+            moveBy(androidx.compose.ui.geometry.Offset(60f, 0f))
+            up()
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("spot_time_field").assertDoesNotExist()
+    }
+
+    @Test
+    fun functionalTest_clipMoveLandsOnTheGridAndIsUndoable() {
+        val viewModel = newViewModel()
         viewModel.installTestClip(0)
         val beforeSession = viewModel.session.value
         val track = beforeSession.tracks.first()
         val clip = track.clips.first()
-        val target = clip.timelineStartFrame + 40_000L
-        val expected = com.example.audio.engine.SnapEngine.snapFrame(
-            targetFrame = target,
-            session = beforeSession,
-            isSnapEnabled = true,
-            resolution = DawSettings().gridResolution
+        // Grid edit mode is a hard snap: the drop lands on the nearest grid line
+        // even though the drag stopped far outside a magnetic snap window.
+        val beatFrames = SnapEngine.framesPerStep(
+            GridResolution.BEAT,
+            beforeSession.sampleRate,
+            beforeSession.tempoBpm
         )
+        val target = clip.timelineStartFrame + 40_000L
 
         viewModel.moveClipToFrame(track.index, clip.id, rawTargetFrame = target)
         val moved = viewModel.session.value.tracks.first().clips.first { it.id == clip.id }
         assertNotEquals(clip.timelineStartFrame, moved.timelineStartFrame)
-        assertEquals(expected, moved.timelineStartFrame)
+        assertEquals(beatFrames * 2, moved.timelineStartFrame)
+        assertEquals(0L, moved.timelineStartFrame % beatFrames)
 
         viewModel.undo()
         val restored = viewModel.session.value.tracks.first().clips.first { it.id == clip.id }
@@ -264,7 +435,7 @@ class DawUiFunctionalTest {
 
     @Test
     fun functionalTest_presentationModeHidesEngineTelemetry() {
-        val viewModel = DawViewModel(ApplicationProvider.getApplicationContext())
+        val viewModel = newViewModel()
 
         composeTestRule.setContent {
             MyApplicationTheme {
@@ -318,7 +489,7 @@ class DawUiFunctionalTest {
 
     @Test
     fun functionalTest_sessionHealthCardReportsAtRisk() {
-        val viewModel = DawViewModel(ApplicationProvider.getApplicationContext())
+        val viewModel = newViewModel()
         val riskyState = viewModel.uiState.value.copy(
             telemetry = AudioTelemetry(
                 callbackP95Ms = 9f,
@@ -353,7 +524,7 @@ class DawUiFunctionalTest {
 
     @Test
     fun functionalTest_tabNavigation() {
-        val viewModel = DawViewModel(ApplicationProvider.getApplicationContext())
+        val viewModel = newViewModel()
         viewModel.dismissOnboarding()
         viewModel.dismissWhatsNew()
 

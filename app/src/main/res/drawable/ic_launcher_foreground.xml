@@ -3,6 +3,6 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/pulse_daw_icon_1792868469898"
+        android:drawable="@drawable/launcher_foreground_source"
         android:gravity="center" />
 </layer-list>

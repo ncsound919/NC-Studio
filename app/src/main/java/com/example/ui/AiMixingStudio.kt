@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,12 +29,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.CompareArrows
+import androidx.compose.material.icons.automirrored.filled.CompareArrows
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -70,6 +71,8 @@ import com.example.audio.ai.MixAdvisor
 import com.example.audio.model.MixSuggestion
 import com.example.audio.model.ProjectSession
 import com.example.audio.model.TrackFeatures
+import com.example.audio.reference.ReferenceMatchReport
+import com.example.audio.reference.SpectrumBalanceAnalyzer
 import com.example.ui.theme.Radius
 import com.example.ui.theme.ClipRed
 import com.example.ui.theme.ElectricBlue
@@ -87,6 +90,7 @@ import com.example.ui.theme.StudioSurface
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.OnAccent
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -105,6 +109,10 @@ fun AiMixingStudio(
     onStartVoiceCommand: () -> Unit = {},
     onStopVoiceCommand: () -> Unit = {},
     onEngineerTextCommand: (String) -> Unit = onNaturalLanguagePrompt,
+    onToggleReferenceAudition: () -> Unit = {},
+    onRefreshReferenceMatch: () -> Unit = {},
+    onApplyReferenceMoves: () -> Unit = {},
+    onClearReference: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var promptText by remember { mutableStateOf("") }
@@ -167,13 +175,13 @@ fun AiMixingStudio(
                             Spacer(modifier = Modifier.width(8.dp))
                             Column {
                                 Text(
-                                    text = "TALK TO YOUR ENGINEER",
+                                    text = stringResource(R.string.ai_talk_to_engineer),
                                     color = ElectricLime,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.ExtraBold
                                 )
                                 Text(
-                                    text = "On-device speech → local model → applied, undoable mix",
+                                    text = stringResource(R.string.ai_voice_subtitle),
                                     color = TextMuted,
                                     fontSize = 10.sp
                                 )
@@ -189,7 +197,7 @@ fun AiMixingStudio(
                                 Text(
                                     text = voice.source.uppercase(),
                                     color = NeonCyan,
-                                    fontSize = 9.sp,
+                                    fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     fontFamily = FontFamily.Monospace
                                 )
@@ -214,14 +222,14 @@ fun AiMixingStudio(
                             if (voice.isProcessing) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(26.dp),
-                                    color = Color.Black,
+                                    color = OnAccent,
                                     strokeWidth = 2.5.dp
                                 )
                             } else {
                                 Icon(
                                     imageVector = if (voice.isListening) Icons.Default.Stop else Icons.Default.Mic,
                                     contentDescription = if (voice.isListening) "Stop listening" else "Start voice command",
-                                    tint = Color.Black,
+                                    tint = OnAccent,
                                     modifier = Modifier.size(28.dp)
                                 )
                             }
@@ -273,7 +281,7 @@ fun AiMixingStudio(
                             onValueChange = { engineerText = it },
                             placeholder = {
                                 Text(
-                                    text = "Or type: set up the lead vocal and start recording",
+                                    text = stringResource(R.string.ai_type_hint),
                                     fontSize = 10.sp,
                                     color = TextMuted
                                 )
@@ -301,9 +309,9 @@ fun AiMixingStudio(
                                 .testTag("engineer_text_send_button")
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Send,
+                                imageVector = Icons.AutoMirrored.Filled.Send,
                                 contentDescription = "Send request to engineer",
-                                tint = Color.Black
+                                tint = OnAccent
                             )
                         }
                     }
@@ -408,13 +416,13 @@ fun AiMixingStudio(
                             Icon(
                                 imageVector = Icons.Default.CheckCircle,
                                 contentDescription = null,
-                                tint = Color.Black,
+                                tint = OnAccent,
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = "Apply All (${suggestions.size})",
-                                color = Color.Black,
+                                color = OnAccent,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp
                             )
@@ -431,15 +439,15 @@ fun AiMixingStudio(
                                 .testTag("ab_compare_button")
                         ) {
                             Icon(
-                                imageVector = Icons.Default.CompareArrows,
+                                imageVector = Icons.AutoMirrored.Filled.CompareArrows,
                                 contentDescription = null,
-                                tint = Color.Black,
+                                tint = OnAccent,
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = "Mode: ${uiState.abMode} (${if (uiState.abMode == "B") "AI Mix" else "Original"})",
-                                color = Color.Black,
+                                color = OnAccent,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 12.sp
                             )
@@ -492,7 +500,7 @@ fun AiMixingStudio(
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = "${String.format("%.2f", avgLatencyMs)} ms",
+                                text = "${String.format(java.util.Locale.US, "%.2f", avgLatencyMs)} ms",
                                 color = ElectricLime,
                                 fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace,
@@ -597,7 +605,7 @@ fun AiMixingStudio(
                         Column {
                             Text(text = stringResource(R.string.ui_status), color = TextMuted, fontSize = 10.sp)
                             Text(
-                                text = if (detectorState.isScanning) "Scanning..." else if (detectorState.detectedModels.isNotEmpty()) "Ready (${detectorState.detectedModels.size} Models Found)" else "Fallback Mode",
+                                text = if (detectorState.isScanning) "Scanning..." else if (detectorState.detectedModels.isNotEmpty()) "Ready (${detectorState.detectedModels.size} models found)" else "No server found",
                                 color = if (detectorState.detectedModels.isNotEmpty()) ElectricLime else StudioAmber,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold
@@ -607,7 +615,7 @@ fun AiMixingStudio(
                         Column(horizontalAlignment = Alignment.End) {
                             Text(text = stringResource(R.string.ui_active_server), color = TextMuted, fontSize = 10.sp)
                             Text(
-                                text = detectorState.activeModel?.let { "${it.provider.displayName} @ ${it.baseUrl.replace("http://", "")}" } ?: "http://10.0.2.2:11434",
+                                text = detectorState.activeModel?.let { "${it.provider.displayName} @ ${it.baseUrl.replace("http://", "")}" } ?: "Not connected",
                                 color = TextPrimary,
                                 fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace,
@@ -702,7 +710,7 @@ fun AiMixingStudio(
 
                     // Direct Querying to Small Model
                     Text(
-                        text = "QUERY ACTIVE SMALL MODEL (${detectorState.activeModel?.name ?: "llama3.2:1b"})",
+                        text = "QUERY ACTIVE SMALL MODEL (${detectorState.activeModel?.name ?: "no model selected"})",
                         color = ElectricLime,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
@@ -733,6 +741,7 @@ fun AiMixingStudio(
                                     onSendQueryToLocalModel?.invoke(localModelPromptText)
                                 }
                             },
+                            enabled = detectorState.activeModel != null,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(Radius.md))
                                 .background(ElectricLime)
@@ -741,14 +750,14 @@ fun AiMixingStudio(
                             if (detectorState.isInferenceRunning) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(16.dp),
-                                    color = Color.Black,
+                                    color = OnAccent,
                                     strokeWidth = 2.dp
                                 )
                             } else {
                                 Icon(
-                                    imageVector = Icons.Default.Send,
+                                    imageVector = Icons.AutoMirrored.Filled.Send,
                                     contentDescription = "Send",
-                                    tint = Color.Black
+                                    tint = OnAccent
                                 )
                             }
                         }
@@ -839,9 +848,9 @@ fun AiMixingStudio(
                                 .testTag("submit_ai_prompt_button")
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Send,
+                                imageVector = Icons.AutoMirrored.Filled.Send,
                                 contentDescription = "Submit",
-                                tint = Color.Black
+                                tint = OnAccent
                             )
                         }
                     }
@@ -1026,19 +1035,19 @@ fun AiMixingStudio(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "Peak: ${String.format("%.1f", feat.peakDb)} dBFS",
+                            text = "Peak: ${String.format(java.util.Locale.US, "%.1f", feat.peakDb)} dBFS",
                             color = if (feat.peakDb > -2.0f) ClipRed else TextSecondary,
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace
                         )
                         Text(
-                            text = "RMS: ${String.format("%.1f", feat.rmsDb)} dBFS",
+                            text = "RMS: ${String.format(java.util.Locale.US, "%.1f", feat.rmsDb)} dBFS",
                             color = TextSecondary,
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace
                         )
                         Text(
-                            text = "Crest: ${String.format("%.1f", feat.crestFactorDb)} dB",
+                            text = "Crest: ${String.format(java.util.Locale.US, "%.1f", feat.crestFactorDb)} dB",
                             color = StudioAmber,
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace
@@ -1056,17 +1065,17 @@ fun AiMixingStudio(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "Neural Target: LUFS Offset ${String.format("%+.1f", nr.targetLufsOffsetDb)} dB",
+                                text = "Neural Target: LUFS Offset ${String.format(java.util.Locale.US, "%+.1f", nr.targetLufsOffsetDb)} dB",
                                 color = TextMuted,
                                 fontSize = 10.sp
                             )
                             Text(
-                                text = "Comp: ${String.format("%.1f", nr.suggestedCompRatio)}:1",
+                                text = "Comp: ${String.format(java.util.Locale.US, "%.1f", nr.suggestedCompRatio)}:1",
                                 color = TextMuted,
                                 fontSize = 10.sp
                             )
                             Text(
-                                text = "Punch: ${String.format("%.2f", nr.transientPunchScore)}",
+                                text = "Punch: ${String.format(java.util.Locale.US, "%.2f", nr.transientPunchScore)}",
                                 color = ElectricLime,
                                 fontSize = 10.sp
                             )
@@ -1097,6 +1106,18 @@ fun AiMixingStudio(
                     }
                 }
             }
+        }
+
+        // REFERENCE A/B SECTION: a user-supplied commercial mix, measured and
+        // auditioned against this session's mix.
+        item {
+            ReferenceAbCard(
+                uiState = uiState,
+                onToggleAudition = onToggleReferenceAudition,
+                onRefreshMatch = onRefreshReferenceMatch,
+                onApplyMoves = onApplyReferenceMoves,
+                onClearReference = onClearReference
+            )
         }
 
         // VERIFIED SUGGESTIONS SECTION

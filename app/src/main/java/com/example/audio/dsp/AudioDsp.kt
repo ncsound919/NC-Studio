@@ -580,43 +580,25 @@ object FadeMath {
 // ClipCompositor
 // ============================================================
 object ClipCompositor {
-    fun compositeClipsToTrackBuffer(sourceBuffer: FloatArray, clips: List<AudioClip>, totalTrackFrames: Long): FloatArray {
-        val totalLength = totalTrackFrames.toInt() * 2
-        val output = FloatArray(totalLength)
-        for (clip in clips) {
-            val clipStartFrame = clip.timelineStartFrame
-            val clipLenFrames = clip.lengthFrames
-            val gain = clip.gainLinear
-            for (f in 0L until clipLenFrames) {
-                val targetFrame = clipStartFrame + f
-                if (targetFrame < 0L || targetFrame >= totalTrackFrames) continue
-                val sourceFrame = clip.sourceStartFrame + f
-                val srcIdx = (sourceFrame * 2).toInt()
-                var sampleL = 0f; var sampleR = 0f
-                if (srcIdx + 1 < sourceBuffer.size) { sampleL = sourceBuffer[srcIdx]; sampleR = sourceBuffer[srcIdx + 1] }
-                var fadeMult = 1f
-                if (clip.fadeInFrames > 0L && f < clip.fadeInFrames)
-                    fadeMult *= FadeMath.calculateFadeFactor(f, clip.fadeInFrames, clip.fadeInCurve, isFadeIn = true)
-                val remainingFrames = clipLenFrames - f
-                if (clip.fadeOutFrames > 0L && remainingFrames <= clip.fadeOutFrames) {
-                    val frameInFadeOut = clip.fadeOutFrames - remainingFrames
-                    fadeMult *= FadeMath.calculateFadeFactor(frameInFadeOut, clip.fadeOutFrames, clip.fadeOutCurve, isFadeIn = false)
-                }
-                val outIdx = (targetFrame * 2).toInt()
-                output[outIdx] += sampleL * gain * fadeMult
-                output[outIdx + 1] += sampleR * gain * fadeMult
-            }
-        }
-        return output
-    }
+    fun compositeClipsFromSources(sources: Map<String, FloatArray>, clips: List<AudioClip>, totalTrackFrames: Long): FloatArray =
+        composite(clips, totalTrackFrames) { sources[it.sourcePath] }
 
-    fun compositeClipsFromSources(sources: Map<String, FloatArray>, clips: List<AudioClip>, totalTrackFrames: Long): FloatArray {
-        val totalLength = totalTrackFrames.toInt().coerceAtLeast(0) * 2
+    /**
+     * The single mixing loop for clip playback. A clip whose source is missing
+     * is silence, and a mono tail is mirrored so a truncated file cannot leave
+     * the right channel silent.
+     */
+    private inline fun composite(
+        clips: List<AudioClip>,
+        totalTrackFrames: Long,
+        sourceFor: (AudioClip) -> FloatArray?,
+    ): FloatArray {
+        val totalFrames = totalTrackFrames.coerceAtLeast(0L)
+        val totalLength = totalFrames.toInt() * 2
         val output = FloatArray(totalLength)
         if (totalLength == 0) return output
-        val totalFrames = totalLength / 2
         for (clip in clips) {
-            val sourceBuffer = sources[clip.sourcePath] ?: continue
+            val sourceBuffer = sourceFor(clip) ?: continue
             val clipStartFrame = clip.timelineStartFrame
             val clipLenFrames = clip.lengthFrames
             val gain = clip.gainLinear
@@ -625,9 +607,15 @@ object ClipCompositor {
                 if (targetFrame < 0L || targetFrame >= totalFrames) continue
                 val sourceFrame = clip.sourceStartFrame + f
                 val srcIdx = (sourceFrame * 2).toInt()
-                var sampleL = 0f; var sampleR = 0f
-                if (srcIdx + 1 < sourceBuffer.size) { sampleL = sourceBuffer[srcIdx]; sampleR = sourceBuffer[srcIdx + 1] }
-                else if (srcIdx < sourceBuffer.size) { sampleL = sourceBuffer[srcIdx]; sampleR = sampleL }
+                var sampleL = 0f
+                var sampleR = 0f
+                if (srcIdx + 1 < sourceBuffer.size) {
+                    sampleL = sourceBuffer[srcIdx]
+                    sampleR = sourceBuffer[srcIdx + 1]
+                } else if (srcIdx < sourceBuffer.size) {
+                    sampleL = sourceBuffer[srcIdx]
+                    sampleR = sampleL
+                }
                 var fadeMult = 1f
                 if (clip.fadeInFrames > 0L && f < clip.fadeInFrames)
                     fadeMult *= FadeMath.calculateFadeFactor(f, clip.fadeInFrames, clip.fadeInCurve, isFadeIn = true)

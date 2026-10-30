@@ -60,24 +60,27 @@ import com.example.ui.theme.StudioSurface
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.OnAccent
 
 const val STUDIO_VERSION = "1.3.0"
 const val RELEASE_NOTES_VERSION = "1.3.0"
 const val ONBOARDING_PREF = "onboarding_complete"
 const val RELEASE_NOTES_PREF = "whats_new_seen_version"
+const val TIMELINE_TOOL_PREF = "timeline_tool"
+const val EDIT_MODE_PREF = "edit_mode"
 
 private data class OnboardingStep(
     val icon: ImageVector,
     val accent: Color,
-    val title: String,
-    val body: String
+    val titleRes: Int,
+    val bodyRes: Int
 )
 
 private val onboardingSteps = listOf(
-    OnboardingStep(Icons.Default.Mic, NeonCyan, "Record", "Arm a track, hit record, and punch in only where you need a take."),
-    OnboardingStep(Icons.Default.CloudUpload, ElectricLime, "Import", "Bring in WAV, MP3, FLAC, or M4A stems and place them on any track."),
-    OnboardingStep(Icons.Default.AutoAwesome, StudioPurple, "Mix", "Balance, pan, EQ, and compress. AI suggestions stay deterministic and bounded."),
-    OnboardingStep(Icons.Default.Download, StudioAmber, "Export", "Render a master or individual stems, then share or save to your chosen folder.")
+    OnboardingStep(Icons.Default.Mic, NeonCyan, R.string.onboarding_record_title, R.string.onboarding_record_body),
+    OnboardingStep(Icons.Default.CloudUpload, ElectricLime, R.string.onboarding_import_title, R.string.onboarding_import_body),
+    OnboardingStep(Icons.Default.AutoAwesome, StudioPurple, R.string.onboarding_mix_title, R.string.onboarding_mix_body),
+    OnboardingStep(Icons.Default.Download, StudioAmber, R.string.onboarding_export_title, R.string.onboarding_export_body)
 )
 
 @Composable
@@ -109,10 +112,10 @@ fun StudioOnboardingDialog(onDismiss: () -> Unit) {
                 modifier = Modifier.size(28.dp)
             )
             Spacer(modifier = Modifier.height(8.dp))
-            Text(current.title, color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
+            Text(stringResource(current.titleRes), color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = current.body,
+                text = stringResource(current.bodyRes),
                 color = TextSecondary,
                 fontSize = 13.sp,
                 textAlign = TextAlign.Center
@@ -142,11 +145,11 @@ fun StudioOnboardingDialog(onDismiss: () -> Unit) {
                     .testTag("onboarding_primary_button"),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = current.accent,
-                    contentColor = Color.Black
+                    contentColor = OnAccent
                 )
             ) {
                 Text(
-                    text = if (step == onboardingSteps.lastIndex) "Start making music" else "Next",
+                    text = stringResource(if (step == onboardingSteps.lastIndex) R.string.onboarding_start else R.string.onboarding_next),
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -160,14 +163,17 @@ fun StudioOnboardingDialog(onDismiss: () -> Unit) {
     }
 }
 
-private data class ReleaseNote(val title: String, val body: String)
+private data class ReleaseNote(val titleRes: Int, val bodyRes: Int)
 
 private val releaseNotes = listOf(
-    ReleaseNote("Drag clips directly", "Long-press a clip to move it on the timeline. The new overview strip shows the whole session and your visible window."),
-    ReleaseNote("Choose where exports go", "Pick any folder with the system picker. Pulse remembers it and writes masters and stems there."),
-    ReleaseNote("Know when the engine is struggling", "Settings now summarizes callback headroom, underruns, and UI frame pacing in one health card."),
-    ReleaseNote("Fewer hidden gestures", "Dense timeline icons explain themselves on long-press, with light haptics on snap, drag, and transport actions."),
-    ReleaseNote("A real first run", "New installs get a four-step tour; release notes appear once per version.")
+    ReleaseNote(R.string.release_rack_title, R.string.release_rack_body),
+    ReleaseNote(R.string.release_ncbeat_title, R.string.release_ncbeat_body),
+    ReleaseNote(R.string.release_reference_title, R.string.release_reference_body),
+    ReleaseNote(R.string.release_project_title, R.string.release_project_body),
+    ReleaseNote(R.string.release_timeline_title, R.string.release_timeline_body),
+    ReleaseNote(R.string.release_session_title, R.string.release_session_body),
+    ReleaseNote(R.string.release_export_title, R.string.release_export_body),
+    ReleaseNote(R.string.release_health_title, R.string.release_health_body)
 )
 
 @Composable
@@ -186,7 +192,7 @@ fun StudioWhatsNewDialog(onDismiss: () -> Unit) {
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(stringResource(R.string.ui_what_s_new), color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
-                    Text("NC Studio $STUDIO_VERSION", color = TextMuted, fontSize = 11.sp)
+                    Text(stringResource(R.string.studio_version_label, STUDIO_VERSION), color = TextMuted, fontSize = 11.sp)
                 }
             }
             Spacer(modifier = Modifier.height(16.dp))
@@ -206,8 +212,8 @@ fun StudioWhatsNewDialog(onDismiss: () -> Unit) {
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
-                            Text(note.title, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                            Text(note.body, color = TextSecondary, fontSize = 12.sp)
+                            Text(stringResource(note.titleRes), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text(stringResource(note.bodyRes), color = TextSecondary, fontSize = 12.sp)
                         }
                     }
                 }

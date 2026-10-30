@@ -50,7 +50,7 @@ object WaveformCache {
         size: Int = source.size
     ): Array<FloatArray> {
         val usableBins = bins.coerceIn(16, MAX_BINS)
-        val envelopes = Array(usableBins) { FloatArray(2) { 0f } }
+        val envelopes = Array(usableBins) { FloatArray(2) }
         if (lengthFrames <= 0 || source.isEmpty()) return envelopes
 
         val framesPerBin = (lengthFrames / usableBins).coerceAtLeast(1)

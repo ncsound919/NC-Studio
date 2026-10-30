@@ -60,8 +60,8 @@ class ClipAdjustAndChorusTest {
             trackIndex = 0
         )
 
-        val output = ClipCompositor.compositeClipsToTrackBuffer(
-            sourceBuffer = sourceBuffer,
+        val output = ClipCompositor.compositeClipsFromSources(
+            sources = mapOf(clip.sourcePath to sourceBuffer),
             clips = listOf(clip),
             totalTrackFrames = 1000L
         )

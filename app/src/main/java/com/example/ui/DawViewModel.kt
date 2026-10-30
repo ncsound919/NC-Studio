@@ -1,9 +1,19 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.net.Uri
+import android.os.Build
 import android.webkit.MimeTypeMap
+import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -31,9 +41,19 @@ import com.example.audio.engine.OfflineRenderer
 import com.example.audio.engine.UsbAudioInterfaceManager
 import com.example.audio.engine.WaveformCache
 import com.example.audio.engine.WavAudioIO
+import com.example.audio.history.NcbeatException
+import com.example.audio.history.NcbeatImporter
 import com.example.audio.history.ProjectPersistence
 import com.example.audio.history.SessionCommand
 import com.example.audio.history.UndoManager
+import com.example.audio.reference.ReferenceMatchReport
+import com.example.audio.reference.ReferenceMatcher
+import com.example.audio.reference.ReferenceMonitor
+import com.example.audio.reference.ReferenceMove
+import com.example.audio.reference.ReferenceProfile
+import com.example.audio.reference.ReferenceProfiler
+import com.example.audio.reference.ReferenceTrackConfig
+import com.example.audio.service.AudioEngineService
 import com.example.audio.model.AiMixProfile
 import com.example.audio.model.AudioClip
 import com.example.audio.model.AudioTelemetry
@@ -42,9 +62,14 @@ import com.example.audio.model.ChannelLimiterConfig
 import com.example.audio.model.CompressorConfig
 import com.example.audio.model.DawSettings
 import com.example.audio.model.DuckingDelayConfig
+import com.example.audio.model.EditMode
+import com.example.audio.model.EditSelection
 import com.example.audio.model.EqBand
 import com.example.audio.model.EqConfig
+import com.example.audio.model.FadeCurve
 import com.example.audio.model.FilterType
+import com.example.audio.model.GridResolution
+import com.example.audio.engine.SnapEngine
 import com.example.audio.model.MasterLimiterConfig
 import com.example.audio.model.MeterBallistics
 import com.example.audio.model.MixSuggestion
@@ -53,6 +78,9 @@ import com.example.audio.model.ResonanceSmootherConfig
 import com.example.audio.model.ReverbConfig
 import com.example.audio.model.SaturationConfig
 import com.example.audio.model.StemCategory
+import com.example.audio.model.StripSilenceMode
+import com.example.audio.model.TimelineTool
+import com.overlay.audio.sample.SampleEdit
 import com.example.audio.model.TrackData
 import com.example.audio.model.TrackFeatures
 import com.example.audio.model.UsbAudioDeviceInfo
@@ -66,6 +94,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -74,6 +105,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
@@ -81,6 +113,24 @@ import kotlin.math.min
 enum class StatusKind { INFO, SUCCESS, ERROR }
 
 data class StatusAction(val label: String, val forMessage: String? = null)
+
+enum class ProjectDialogMode { OPEN, SAVE_AS }
+
+data class ProjectFileInfo(
+    val file: File,
+    val name: String,
+    val modifiedAt: Long,
+)
+
+data class ProjectUiState(
+    val currentName: String = "Untitled Project",
+    val currentPath: String? = null,
+    val savedProjects: List<ProjectFileInfo> = emptyList(),
+    val showDialog: Boolean = false,
+    val dialogMode: ProjectDialogMode = ProjectDialogMode.OPEN,
+    val lastSavedAt: Long = 0L,
+    val isSaving: Boolean = false,
+)
 
 data class EngineUiState(
     val isPlaying: Boolean = false,
@@ -91,8 +141,8 @@ data class EngineUiState(
     val playheadFrame: Long = 0L,
     val totalFrames: Long = 48000L * 16L,
     val timeFormatted: String = "00:00.00",
-    val trackPeaks: FloatArray = FloatArray(16) { 0f },
-    val trackGainReductions: FloatArray = FloatArray(16) { 0f },
+    val trackPeaks: FloatArray = FloatArray(16),
+    val trackGainReductions: FloatArray = FloatArray(16),
     val masterPeakL: Float = 0f,
     val masterPeakR: Float = 0f,
     val momentaryLufs: Float = -60f,
@@ -100,9 +150,18 @@ data class EngineUiState(
     val telemetry: AudioTelemetry = AudioTelemetry(),
     val selectedTrackIndex: Int = 0,
     val selectedClipIds: Set<String> = emptySet(),
+    val editSelection: EditSelection? = null,
     val isAbComparing: Boolean = false,
     val hasReferenceTrack: Boolean = false,
     val abMode: String = "A", // "A" = Original, "B" = AI Suggested Mix
+    // Reference A/B: a user-supplied commercial mix, measured and auditioned
+    // against this session's mix (level matched).
+    val isReferenceAuditioning: Boolean = false,
+    val isReferenceWorking: Boolean = false,
+    val referenceName: String = "",
+    val referenceProfile: ReferenceProfile? = null,
+    val mixProfile: ReferenceProfile? = null,
+    val referenceMatch: ReferenceMatchReport? = null,
     val isAnalyzingAi: Boolean = false,
     val localModelDetectorState: com.example.audio.ai.LocalModelDetectorState = com.example.audio.ai.LocalModelDetectorState(),
     val showDspTestDialog: Boolean = false,
@@ -138,6 +197,26 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     private val persistence = ProjectPersistence(application)
     private val undoManager = UndoManager(50)
 
+    // Audio focus and headset-disconnect handling. Owned here because this class
+    // owns the transport; the foreground service only publishes the notification.
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var resumeOnFocusGain = false
+
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        handleAudioFocusChange(change)
+    }
+
+    private val becomingNoisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
+                pausePlayback()
+            }
+        }
+    }
+
+    private val audioManager: AudioManager?
+        get() = getApplication<Application>().getSystemService(AudioManager::class.java)
+
     val usbManager = UsbAudioInterfaceManager(application).apply {
         onDeviceSelected = { dev ->
             playbackEngine.setPreferredOutputDevice(dev)
@@ -145,9 +224,6 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     }
     val usbDevices: StateFlow<List<UsbAudioDeviceInfo>> = usbManager.usbDevices
     val activeUsbDevice: StateFlow<UsbAudioDeviceInfo?> = usbManager.activeUsbDevice
-
-    // A/B reference track (loaded from a real song for comparison/matching)
-    private var referenceTrackSamples: FloatArray? = null
 
     // Track playlists the engine plays — rebuilt whenever clips or pre-render
     // processing (AutoPitch) change. Internal so instrumented-style unit tests
@@ -185,6 +261,78 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(EngineUiState())
     val uiState: StateFlow<EngineUiState> = _uiState.asStateFlow()
 
+    private val aiStudio: AiStudioController by lazy {
+        AiStudioController(
+            scope = viewModelScope,
+            currentSettings = { _settings.value },
+            updateSettings = { transform -> _settings.update(transform) },
+            uiState = _uiState,
+        )
+    }
+
+    private val projectController: ProjectController by lazy {
+        ProjectController(
+            scope = viewModelScope,
+            persistence = persistence,
+            prefs = uiPrefs,
+            currentSession = { _session.value },
+            updateSession = { _session.value = it },
+            newBlankSession = { createInitialSession() },
+            applySession = { session, persistAsLast ->
+                applyLoadedProject(session, persistAsLast = persistAsLast)
+            },
+            stopTransport = { stop() },
+            clearHistory = {
+                undoManager.clear()
+                originalSessionSnapshot = null
+            },
+            onStatus = { message, kind -> setStatus(message, kind) },
+        )
+    }
+
+    private val referenceController: ReferenceController by lazy {
+        ReferenceController(
+            context = getApplication(),
+            scope = viewModelScope,
+            sampleRate = sampleRate,
+            uiState = _uiState,
+            session = _session,
+            undoManager = undoManager,
+            playbackEngine = playbackEngine,
+            trackAudioBuffers = trackAudioBuffers,
+            requestJournalWrite = { requestJournalWrite(it) },
+            onStatus = { message, kind, action -> setStatus(message, kind, action) },
+        )
+    }
+
+    private val exportController: ExportController by lazy {
+        ExportController(
+            context = getApplication(),
+            scope = viewModelScope,
+            uiState = _uiState,
+            currentSession = { _session.value },
+            trackBuffers = { trackAudioBuffers },
+            prefs = uiPrefs,
+        )
+    }
+
+    private val timelineEdits: TimelineEditController by lazy {
+        TimelineEditController(
+            sampleRate = sampleRate,
+            session = _session,
+            uiState = _uiState,
+            settings = _settings,
+            undoManager = undoManager,
+            prefs = uiPrefs,
+            requestJournalWrite = { requestJournalWrite(it) },
+            scheduleRebuildTrack = { scheduleRebuildTrack(it) },
+            updateTrackChorus = { idx, cfg -> updateTrackChorus(idx, cfg) },
+            publishStatus = { message, kind, action -> setStatus(message, kind, action) },
+        )
+    }
+
+    val projectState: StateFlow<ProjectUiState> get() = projectController.state
+
     // Speech input and spoken confirmations for the engineer workflow.
     // Assigned at the top of init() so callbacks can safely refer to this field.
     private lateinit var voiceEngineer: VoiceMixEngineer
@@ -192,8 +340,6 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     private val uiPrefs by lazy {
         getApplication<Application>().getSharedPreferences("pulse_ui_prefs", 0)
     }
-    private var exportTreeUri: Uri? = null
-
     private val _features = MutableStateFlow<List<TrackFeatures>>(emptyList())
     val features: StateFlow<List<TrackFeatures>> = _features.asStateFlow()
 
@@ -231,7 +377,28 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                 voiceEngineer.speak(message)
             }
         }
-        exportTreeUri = uiPrefs.getString("export_tree_uri", null)?.let { Uri.parse(it) }
+        // Pause playback when headphones are unplugged, like every other player.
+        ContextCompat.registerReceiver(
+            application,
+            becomingNoisyReceiver,
+            IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        // Reopen the timeline the way the engineer left it.
+        val savedTool = uiPrefs.getString(TIMELINE_TOOL_PREF, null)
+        val savedMode = uiPrefs.getString(EDIT_MODE_PREF, null)
+        if (savedTool != null || savedMode != null) {
+            _settings.update { current ->
+                current.copy(
+                    timelineTool = savedTool
+                        ?.let { name -> TimelineTool.values().firstOrNull { it.name == name } }
+                        ?: current.timelineTool,
+                    editMode = savedMode
+                        ?.let { name -> EditMode.values().firstOrNull { it.name == name } }
+                        ?: current.editMode
+                )
+            }
+        }
         val onboardingComplete = uiPrefs.getBoolean(ONBOARDING_PREF, false)
         _uiState.update {
             it.copy(
@@ -253,6 +420,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             }
             playbackEngine.start()
             startMeterAndPlayheadPolling()
+            projectController.startAutoSave(_settings) { sessionReady.isCompleted }
             if (_settings.value.autoDetectLocalModelsOnStartup) {
                 scanForLocalModels()
             }
@@ -260,42 +428,51 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun loadOrInitializeSession() = withContext(Dispatchers.IO) {
-        val restored = if (persistence.hasCrashRecoveryJournal()) {
-            persistence.restoreFromCrashRecoveryJournal()
-        } else null
+        // Loading happens off the editor thread, so the engineer can already be
+        // working: a template applied, a clip moved or a parameter touched
+        // while the journal is read is newer than the restore in flight. Those
+        // edits are the truth, and publishing the snapshot over them would
+        // silently throw the work away.
+        val sessionAtLoad = _session.value
+        val restored = when {
+            persistence.hasCrashRecoveryJournal() -> persistence.restoreFromCrashRecoveryJournal()
+            else -> persistence.loadLastSession()
+        }
+        if (_session.value !== sessionAtLoad) return@withContext
 
-        val currentProj = restored ?: _session.value
+        applyLoadedProject(restored ?: sessionAtLoad, guard = sessionAtLoad)
+        projectController.markLoaded(_session.value)
+    }
 
-        if (restored != null) {
-            // Session restore: re-hydrate every clip's source audio from disk.
-            // Imports and takes are persisted as canonical 48 kHz stereo WAVs,
-            // so files load at session rate without resampling.
-            for (track in restored.tracks) {
-                val pool = trackSourcePools[track.index]
-                pool.clear()
-                for (path in track.clips.map { it.sourcePath }.distinct()) {
-                    if (path == "built_in") continue
-                    val f = File(path)
-                    if (f.exists()) {
-                        val wav = WavAudioIO.readWavFile(f)
-                        if (wav != null && wav.channels == 2 && wav.sampleRate == 48000) {
-                            pool[path] = wav.samples
-                        }
+    /**
+     * Re-hydrates every source and publishes [project] as the live session.
+     * [guard] makes a startup restore abandon its write if the engineer edited
+     * while the journal was being read.
+     */
+    private suspend fun applyLoadedProject(
+        project: ProjectSession,
+        guard: ProjectSession? = null,
+        persistAsLast: Boolean = false,
+    ) = withContext(Dispatchers.IO) {
+        for (track in project.tracks) {
+            val pool = trackSourcePools[track.index]
+            pool.clear()
+            for (path in track.clips.map { it.sourcePath }.distinct()) {
+                if (path == "built_in") continue
+                val f = File(path)
+                if (f.exists()) {
+                    val wav = WavAudioIO.readWavFile(f)
+                    if (wav != null && wav.channels == 2 && wav.sampleRate == 48000) {
+                        pool[path] = wav.samples
                     }
                 }
-            }
-        } else {
-            // First launch opens a clean, empty session. The old synthetic demo
-            // stems are intentionally not generated or shipped.
-            for (i in 0 until 16) {
-                trackSourcePools[i].clear()
             }
         }
 
         // Migration: previous builds baked synthetic "built_in" demo clips into
         // restored projects. Strip those clips instead of resurrecting stock music.
-        val cleanedProj = currentProj.copy(
-            tracks = currentProj.tracks.map { track ->
+        val cleanedProj = project.copy(
+            tracks = project.tracks.map { track ->
                 val cleaned = track.copy(clips = track.clips.filterNot { it.sourcePath == "built_in" })
                 val eq = cleaned.eqConfig
                 if (eq.band1.type == FilterType.HIGH_PASS) {
@@ -311,7 +488,9 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             }
         )
 
+        if (guard != null && _session.value !== guard) return@withContext
         _session.value = cleanedProj
+        playbackEngine.setSessionLength(cleanedProj.totalLengthFrames)
         playbackEngine.syncFromProject(cleanedProj)
 
         // Render the composited track playlists and push to the engine
@@ -319,22 +498,48 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             rebuildTrackAudioLocked(i)
         }
 
+        // Reference track: reload the user's imported copy for A/B audition.
+        restoreReferenceLocked(cleanedProj)
+
         // Run initial AI analysis
         refreshAudioAnalysis()
+
+        if (persistAsLast) {
+            persistence.saveLastSession(cleanedProj)
+            projectController.markAutoSaved(System.currentTimeMillis())
+        }
     }
 
-    /**
-     * Re-composites a track's clip playlist into its playable buffer and
-     * hands it to the engine. This is the path that makes every non-destructive
-     * edit (trim, move, split, fades, gain, takes) audibly real.
-     */
+    // Project files and auto-save are owned by ProjectController.
+    fun showProjectDialog(mode: ProjectDialogMode) = projectController.showDialog(mode)
+
+    fun dismissProjectDialog() = projectController.dismissDialog()
+
+    fun saveCurrentProject() = projectController.saveCurrent()
+
+    fun saveProjectAs(name: String) = projectController.saveAs(name)
+
+    fun openProject(file: File) = projectController.open(file)
+
+    fun newProject() = projectController.newProject()
+
     private suspend fun rebuildTrackAudioLocked(trackIndex: Int) {
         val session = _session.value
         val track = session.tracks.getOrNull(trackIndex) ?: return
         val pool = trackSourcePools[trackIndex]
 
+        // An empty track is silent, so it must not allocate a song-length
+        // buffer. Sizing to the track's own content also stops a 16-second
+        // default session from reserving four minutes per lane.
+        if (track.clips.isEmpty()) {
+            trackAudioBuffers[trackIndex] = FloatArray(0)
+            playbackEngine.setTrackAudio(trackIndex, FloatArray(0))
+            WaveformCache.refreshClips(track.clips, pool)
+            return
+        }
+
         val maxClipEnd = track.clips.maxOfOrNull { it.timelineStartFrame + it.lengthFrames } ?: 0L
-        val totalFrames = max(session.totalLengthFrames, maxClipEnd)
+        val totalFrames = maxClipEnd.coerceAtLeast(0L)
 
         val composited = ClipCompositor.compositeClipsFromSources(pool, track.clips, totalFrames)
         // AutoPitch is a whole-buffer transform (it needs pitch detection over a
@@ -352,6 +557,11 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         WaveformCache.refreshClips(track.clips, pool)
     }
 
+    /** Test-only wait for the startup restore to finish. */
+    internal suspend fun awaitSessionReady() {
+        sessionReady.await()
+    }
+
     /**
      * Installs a deterministic clip fixture for tests. The app no longer opens
      * with stock demo music, so clip-editing tests opt in to their own take.
@@ -362,7 +572,10 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         lengthFrames: Long = 48000L * 16L,
         withAudio: Boolean = false
     ) {
-        if (!sessionReady.isCompleted) runBlocking { sessionReady.await() }
+        if (!sessionReady.isCompleted) runBlocking { sessionReady.await() } // audit-ignore CONC-002: test-only helper
+        // A persisted snapshot from an earlier test can be empty; the fixture still needs
+        // a track, so fall back to the shipped 16-track session.
+        if (_session.value.tracks.isEmpty()) _session.value = createInitialSession()
         val track = _session.value.tracks.getOrNull(trackIndex) ?: return
         val sourcePath = "test_fixture_$trackIndex"
         val clip = AudioClip(
@@ -386,10 +599,9 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         }
         _session.value = updatedSession
         val pool = trackSourcePools[trackIndex]
-        val totalFrames = max(
-            updatedSession.totalLengthFrames,
-            updatedTrack.clips.maxOfOrNull { it.timelineStartFrame + it.lengthFrames } ?: 0L
-        )
+        val totalFrames = updatedTrack.clips.maxOfOrNull {
+            it.timelineStartFrame + it.lengthFrames
+        } ?: 0L
         val composited = ClipCompositor.compositeClipsFromSources(pool, updatedTrack.clips, totalFrames)
         trackAudioBuffers[trackIndex] = composited
         playbackEngine.setTrackAudio(trackIndex, composited)
@@ -413,24 +625,41 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.Default) {
             while (isActive) {
                 val head = playbackEngine.getPlayheadPosition()
+                val enginePlaying = playbackEngine.isEnginePlaying()
+                val livePeaks = playbackEngine.trackPeakLevels
+                val liveGrs = playbackEngine.trackGainReductions
+                val current = _uiState.value
+
+                // Transport stopped and nothing moved since the last frame: skip
+                // cloning the meters and writing state, so an idle studio is not
+                // recomposing 30 times a second for identical values.
+                val idle = enginePlaying == current.isPlaying &&
+                    head == current.playheadFrame &&
+                    livePeaks.contentEquals(current.trackPeaks) &&
+                    liveGrs.contentEquals(current.trackGainReductions)
+                if (idle) {
+                    delay(100)
+                    continue
+                }
+
                 val total = _session.value.totalLengthFrames
                 val sec = head / sampleRate.toFloat()
                 val minutes = (sec / 60).toInt()
                 val seconds = (sec % 60).toInt()
                 val hundredths = ((sec % 1.0) * 100).toInt()
-                val timeStr = String.format("%02d:%02d.%02d", minutes, seconds, hundredths)
+                val timeStr = String.format(Locale.US, "%02d:%02d.%02d", minutes, seconds, hundredths)
 
-                val peaks = playbackEngine.trackPeakLevels.clone()
-                val grs = playbackEngine.trackGainReductions.clone()
+                val peaks = livePeaks.clone()
+                val grs = liveGrs.clone()
                 val pL = playbackEngine.masterPeakL
                 val pR = playbackEngine.masterPeakR
                 val lufs = playbackEngine.lufsMeter.integratedLufs
                 val momLufs = playbackEngine.lufsMeter.momentaryLufs
                 val tel = playbackEngine.latestTelemetry
 
-                _uiState.update { current ->
-                    current.copy(
-                        isPlaying = playbackEngine.isEnginePlaying(),
+                _uiState.update { state ->
+                    state.copy(
+                        isPlaying = enginePlaying,
                         playheadFrame = head,
                         totalFrames = total,
                         timeFormatted = timeStr,
@@ -451,17 +680,94 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     // Transport Actions
     fun togglePlayPause() {
         if (_uiState.value.isPlaying) {
-            playbackEngine.commandQueue.enqueue(AudioEngineCommand.Pause)
-            _uiState.update { it.copy(isPlaying = false) }
+            pausePlayback()
         } else {
-            playbackEngine.commandQueue.enqueue(AudioEngineCommand.Play)
-            _uiState.update { it.copy(isPlaying = true) }
+            startPlayback()
         }
     }
 
+    /**
+     * Starts the transport: takes audio focus and promotes the foreground
+     * service so playback survives leaving the app.
+     */
+    private fun startPlayback() {
+        acquireAudioFocus()
+        // A render thread that died with its output device (USB unplugged, route
+        // lost) must come back before a Play command can be heard again.
+        if (!playbackEngine.isEngineRunning()) playbackEngine.start()
+        playbackEngine.commandQueue.enqueue(AudioEngineCommand.Play)
+        _uiState.update { it.copy(isPlaying = true) }
+        AudioEngineService.startPlayback(getApplication(), _session.value.projectName)
+    }
+
+    /**
+     * Pauses the transport and drops focus plus the playback notification.
+     * [resumable] marks an interruption (phone call, another player) that should
+     * resume playback once focus comes back.
+     */
+    private fun pausePlayback(resumable: Boolean = false) {
+        if (!_uiState.value.isPlaying) return
+        resumeOnFocusGain = resumable
+        playbackEngine.commandQueue.enqueue(AudioEngineCommand.Pause)
+        _uiState.update { it.copy(isPlaying = false) }
+        releaseAudioFocus()
+        AudioEngineService.stopPlayback(getApplication())
+    }
+
     fun stop() {
+        resumeOnFocusGain = false
         playbackEngine.commandQueue.enqueue(AudioEngineCommand.Stop)
         _uiState.update { it.copy(isPlaying = false, playheadFrame = 0L) }
+        releaseAudioFocus()
+        AudioEngineService.stopPlayback(getApplication())
+    }
+
+    private fun acquireAudioFocus() {
+        val manager = audioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val request = audioFocusRequest ?: AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                .setOnAudioFocusChangeListener(audioFocusListener)
+                .build()
+                .also { audioFocusRequest = it }
+            manager.requestAudioFocus(request)
+        } else {
+            @Suppress("DEPRECATION")
+            manager.requestAudioFocus(
+                audioFocusListener,
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN
+            )
+        }
+    }
+
+    private fun releaseAudioFocus() {
+        val manager = audioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { manager.abandonAudioFocusRequest(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            manager.abandonAudioFocus(audioFocusListener)
+        }
+    }
+
+    private fun handleAudioFocusChange(change: Int) {
+        when (change) {
+            AudioManager.AUDIOFOCUS_LOSS -> pausePlayback()
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> pausePlayback(resumable = true)
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                if (resumeOnFocusGain) {
+                    resumeOnFocusGain = false
+                    startPlayback()
+                }
+            }
+        }
     }
 
     fun seekToFraction(fraction: Float) {
@@ -645,6 +951,73 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         playbackEngine.commandQueue.enqueue(AudioEngineCommand.SetVocalRider(trackIndex, config))
     }
 
+    // ---- Studio plugin rack & reference mix templates ----
+
+    fun updateTrackPluginChain(trackIndex: Int, chain: List<com.overlay.audio.plugins.PluginSlot>) {
+        val before = _session.value.tracks.getOrNull(trackIndex) ?: return
+        val after = before.copy(pluginChain = chain)
+        pushTrackParamChange(before, after)
+        playbackEngine.commandQueue.enqueue(
+            AudioEngineCommand.SetTrackPluginChain(trackIndex, com.overlay.audio.plugins.PluginChain(chain))
+        )
+    }
+
+    fun setTrackOutputBus(trackIndex: Int, busId: String) {
+        val before = _session.value.tracks.getOrNull(trackIndex) ?: return
+        val after = before.copy(outputBusId = busId)
+        pushTrackParamChange(before, after)
+        playbackEngine.commandQueue.enqueue(AudioEngineCommand.SetTrackOutputBus(trackIndex, busId))
+    }
+
+    /** Per-module gain reduction for the rack meters. */
+    fun trackSlotGainReductions(trackIndex: Int): List<Float> =
+        playbackEngine.trackSlotGainReductions(trackIndex).toList()
+
+    /**
+     * Applies a reference template to the whole session: role chains onto the
+     * tracks whose names match the role, group bus routing, and the mix bus
+     * chain from the reference mix.
+     */
+    fun applyMixTemplate(templateId: String) {
+        val template = com.example.audio.plugins.MixReferenceTemplateLibrary.byId(templateId) ?: return
+        val before = _session.value
+        val applied = com.example.audio.plugins.TemplateApplier.applyToSession(before, template)
+        val after = applied.copy(revision = before.revision + 1)
+        if (after == before) {
+            setStatus(
+                message = "\"${template.name}\" matched no tracks in this session. Rename or import tracks to match a role like Lead Vocal, Kick or Bass.",
+                kind = StatusKind.ERROR
+            )
+            return
+        }
+        undoManager.pushAction(
+            SessionCommand.ReplaceSession("Apply mix template: ${template.name}", before, after)
+        )
+        _session.value = after
+        playbackEngine.syncFromProject(_session.value)
+        val matched = com.example.audio.plugins.TemplateApplier.matchedTrackCount(before, template)
+        setStatus(
+            message = "${template.name} applied: $matched tracks chained, buses routed, mix bus set. Reference: ${template.referenceTrack}.",
+            kind = StatusKind.SUCCESS,
+            action = StatusAction("Undo")
+        )
+    }
+
+    /** Applies one role chain of a template to a single track. */
+    fun applyTemplateRoleToTrack(trackIndex: Int, role: com.example.audio.plugins.ChainRole, templateId: String) {
+        val template = com.example.audio.plugins.MixReferenceTemplateLibrary.byId(templateId) ?: return
+        val before = _session.value.tracks.getOrNull(trackIndex) ?: return
+        val after = com.example.audio.plugins.TemplateApplier.applyRoleToTrack(before, role, template)
+        if (after == before) return
+        pushTrackParamChange(before, after)
+        playbackEngine.syncFromProject(_session.value)
+        setStatus(
+            message = "Applied ${role.displayName} chain from ${template.name} to ${before.name}.",
+            kind = StatusKind.SUCCESS,
+            action = StatusAction("Undo")
+        )
+    }
+
     fun setMasterGain(gainDb: Float) {
         _session.update { it.copy(masterGainDb = gainDb) }
         playbackEngine.commandQueue.enqueue(AudioEngineCommand.SetMasterGain(gainDb))
@@ -679,6 +1052,18 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         requestJournalWrite(newSession)
     }
 
+    /**
+     * Commits a parameter edit that is still inside its coalescing window.
+     * Undo calls this first: the user asking to undo means "take that last edit
+     * back", not "it never happened", so a chain edit, preset or slider move
+     * made a moment ago must be on the undo stack before it is undone.
+     */
+    private fun flushPendingParamEdit() {
+        paramCommitJob?.cancel()
+        paramCommitJob = null
+        commitPendingParamEdit()
+    }
+
     private fun commitPendingParamEdit() {
         val pending = pendingParamEdit ?: return
         pendingParamEdit = null
@@ -695,6 +1080,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Debounced crash-journal write: one write per gesture instead of per tick. */
     private fun requestJournalWrite(session: ProjectSession) {
+        if (!_settings.value.enableCrashRecovery) return
         journalJob?.cancel()
         journalJob = viewModelScope.launch(Dispatchers.IO) {
             delay(600)
@@ -702,307 +1088,268 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Clip Editing (Nondestructive)
-    fun splitClipAtPlayhead(trackIndex: Int) {
-        val playhead = _uiState.value.playheadFrame
-        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
-        val clipToSplit = track.clips.find { c ->
-            playhead in c.timelineStartFrame until (c.timelineStartFrame + c.lengthFrames)
-        } ?: return
+    // Timeline editing lives in TimelineEditController; these delegates keep
+    // the ViewModel's public API stable for the UI and tests.
 
-        val offsetInClip = playhead - clipToSplit.timelineStartFrame
-        if (offsetInClip <= 2048 || offsetInClip >= clipToSplit.lengthFrames - 2048) return
+    fun splitClipAtPlayhead(trackIndex: Int) = timelineEdits.splitClipAtPlayhead(trackIndex)
 
-        val clip1 = clipToSplit.copy(
-            id = UUID.randomUUID().toString(),
-            name = "${clipToSplit.name} (Part 1)",
-            lengthFrames = offsetInClip
-        )
-        val clip2 = clipToSplit.copy(
-            id = UUID.randomUUID().toString(),
-            name = "${clipToSplit.name} (Part 2)",
-            sourceStartFrame = clipToSplit.sourceStartFrame + offsetInClip,
-            timelineStartFrame = playhead,
-            lengthFrames = clipToSplit.lengthFrames - offsetInClip
-        )
+    fun beginClipGesture(trackIndex: Int, description: String) =
+        timelineEdits.beginClipGesture(trackIndex, description)
 
-        val beforeClips = track.clips
-        val afterClips = track.clips.filter { it.id != clipToSplit.id } + listOf(clip1, clip2)
+    fun endClipGesture() = timelineEdits.endClipGesture()
 
-        undoManager.pushAction(
-            SessionCommand.EditClips(
-                "Split ${clipToSplit.name} at Playhead",
-                trackIndex,
-                beforeClips,
-                afterClips
+    fun spotClipAtFrame(
+        trackIndex: Int,
+        clipId: String,
+        frame: Long,
+        placeByEnd: Boolean = false,
+    ): Boolean = timelineEdits.spotClipAtFrame(trackIndex, clipId, frame, placeByEnd)
+
+    fun setTimelineTool(tool: TimelineTool) = timelineEdits.setTimelineTool(tool)
+
+    fun setEditMode(mode: EditMode) = timelineEdits.setEditMode(mode)
+
+    fun setEditSelection(trackIndex: Int, startFrame: Long, endFrame: Long) =
+        timelineEdits.setEditSelection(trackIndex, startFrame, endFrame)
+
+    fun clearEditSelection() = timelineEdits.clearEditSelection()
+
+    fun commitEditSelection() = timelineEdits.commitEditSelection()
+
+    fun healSelectedClip(): Boolean = timelineEdits.healSelectedClip()
+
+    fun separateAtPlayhead(): Int = timelineEdits.separateAtPlayhead()
+
+    fun separateAtSelection(): Int = timelineEdits.separateAtSelection()
+
+    fun separateClipsAtFrame(frame: Long, trackIndex: Int): Int =
+        timelineEdits.separateClipsAtFrame(frame, trackIndex)
+
+    fun healSeparation(trackIndex: Int, clipId: String): Boolean =
+        timelineEdits.healSeparation(trackIndex, clipId)
+
+    fun deleteSelectedClips(): Int = timelineEdits.deleteSelectedClips()
+
+    fun nudgeSelection(forward: Boolean, byBar: Boolean = false): Int =
+        timelineEdits.nudgeSelection(forward, byBar)
+
+    fun crossfadeSelectedClips(): Boolean = timelineEdits.crossfadeSelectedClips()
+
+    fun trimClipEnd(trackIndex: Int, clipId: String, trimFrames: Long) =
+        timelineEdits.trimClipEnd(trackIndex, clipId, trimFrames)
+
+    fun trimClipEndToFrame(
+        trackIndex: Int,
+        clipId: String,
+        rawEndFrame: Long,
+        snapToleranceFrames: Long = TimelineEditController.DEFAULT_SNAP_TOLERANCE_FRAMES,
+    ) = timelineEdits.trimClipEndToFrame(trackIndex, clipId, rawEndFrame, snapToleranceFrames)
+
+    fun trimClipStartToFrame(
+        trackIndex: Int,
+        clipId: String,
+        rawStartFrame: Long,
+        snapToleranceFrames: Long = TimelineEditController.DEFAULT_SNAP_TOLERANCE_FRAMES,
+    ) = timelineEdits.trimClipStartToFrame(trackIndex, clipId, rawStartFrame, snapToleranceFrames)
+
+    fun duplicateClip(trackIndex: Int, clipId: String) = timelineEdits.duplicateClip(trackIndex, clipId)
+
+    fun renameClip(trackIndex: Int, clipId: String, newName: String) =
+        timelineEdits.renameClip(trackIndex, clipId, newName)
+
+    fun setClipGain(trackIndex: Int, clipId: String, gainDb: Float) =
+        timelineEdits.setClipGain(trackIndex, clipId, gainDb)
+
+    fun setClipFadeIn(
+        trackIndex: Int,
+        clipId: String,
+        fadeInMs: Float,
+        curve: FadeCurve = FadeCurve.EQUAL_POWER,
+    ) = timelineEdits.setClipFadeIn(trackIndex, clipId, fadeInMs, curve)
+
+    fun setClipFadeOut(
+        trackIndex: Int,
+        clipId: String,
+        fadeOutMs: Float,
+        curve: FadeCurve = FadeCurve.EQUAL_POWER,
+    ) = timelineEdits.setClipFadeOut(trackIndex, clipId, fadeOutMs, curve)
+
+    /**
+     * Pro Tools-style Strip Silence on the timeline. Detects silent spans with
+     * the shared `nc.sample-edit.v1` analyser and rewrites the clip layout:
+     * TRIM_EDGES keeps one clip with its head and tail trimmed, SPLIT_REGIONS
+     * keeps one clip per loud region and leaves the silence as gaps.
+     *
+     * Whole-clip analysis happens on the IO dispatcher; the edit itself is one
+     * undo entry and one audible rebuild.
+     */
+    fun stripSilenceSelectedClips(
+        settings: SampleEdit.StripSettings = SampleEdit.StripSettings(),
+        mode: StripSilenceMode = StripSilenceMode.SPLIT_REGIONS,
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val session = _session.value
+            val trackIndex = _uiState.value.selectedTrackIndex
+            val track = session.tracks.getOrNull(trackIndex) ?: return@launch
+            if (track.clips.isEmpty()) {
+                setStatus("Strip silence: track ${trackIndex + 1} has no clips.", StatusKind.INFO)
+                return@launch
+            }
+            val selectedIds = _uiState.value.selectedClipIds
+            val targets = if (selectedIds.isEmpty()) {
+                track.clips
+            } else {
+                track.clips.filter { it.id in selectedIds }
+            }
+            val pool = trackSourcePools.getOrNull(trackIndex)
+            val rebuilt = ArrayList<AudioClip>(track.clips.size)
+            val editedIds = LinkedHashSet<String>()
+            var removedFrames = 0L
+            var analysed = 0
+            var producedClips = 0
+
+            for (clip in track.clips.sortedBy { it.timelineStartFrame }) {
+                if (targets.none { it.id == clip.id }) {
+                    rebuilt += clip
+                    continue
+                }
+                val samples = pool?.get(clip.sourcePath) ?: runCatching {
+                    val wav = WavAudioIO.readWavFile(File(clip.sourcePath))
+                    if (wav != null && wav.channels == 2 && wav.sampleRate == session.sampleRate) {
+                        pool?.put(clip.sourcePath, wav.samples)
+                        wav.samples
+                    } else null
+                }.getOrNull()
+                if (samples == null || samples.isEmpty()) {
+                    rebuilt += clip
+                    editedIds += clip.id
+                    continue
+                }
+                val sourceFrames = samples.size / 2
+                val clipStart = clip.sourceStartFrame.coerceIn(0L, sourceFrames.toLong()).toInt()
+                val clipEnd = (clip.sourceStartFrame + clip.lengthFrames)
+                    .coerceIn(clipStart.toLong(), sourceFrames.toLong()).toInt()
+                if (clipEnd <= clipStart) {
+                    rebuilt += clip
+                    editedIds += clip.id
+                    continue
+                }
+                analysed++
+                val spans = SampleEdit.keepSpans(
+                    samples = samples,
+                    channels = 2,
+                    sampleRate = session.sampleRate,
+                    settings = settings,
+                    startFrame = clipStart,
+                    endFrameExclusive = clipEnd,
+                )
+                if (spans.isEmpty()) {
+                    // Every frame was below the threshold: the clip is silence.
+                    removedFrames += clip.lengthFrames
+                    continue
+                }
+                if (mode == StripSilenceMode.TRIM_EDGES) {
+                    val first = spans.first()
+                    val last = spans.last()
+                    val newStart = first.startFrame.toLong()
+                    val newLength = (last.endFrameExclusive - first.startFrame).toLong()
+                    val delta = newStart - clip.sourceStartFrame
+                    if (delta == 0L && newLength == clip.lengthFrames) {
+                        rebuilt += clip
+                        editedIds += clip.id
+                    } else {
+                        removedFrames += (clip.lengthFrames - newLength).coerceAtLeast(0L)
+                        val trimmed = clip.copy(
+                            sourceStartFrame = newStart,
+                            lengthFrames = newLength,
+                            timelineStartFrame = (clip.timelineStartFrame + delta).coerceAtLeast(0L),
+                            fadeInFrames = clip.fadeInFrames.coerceAtMost(newLength),
+                            fadeOutFrames = clip.fadeOutFrames.coerceAtMost(newLength),
+                        )
+                        rebuilt += trimmed
+                        editedIds += trimmed.id
+                        producedClips++
+                    }
+                } else {
+                    for (span in spans) {
+                        val length = span.frames.toLong()
+                        val delta = span.startFrame.toLong() - clip.sourceStartFrame
+                        val wholeClip = span.startFrame == clipStart && span.endFrameExclusive == clipEnd
+                        val piece = clip.copy(
+                            id = if (wholeClip) clip.id else UUID.randomUUID().toString(),
+                            sourceStartFrame = span.startFrame.toLong(),
+                            lengthFrames = length,
+                            timelineStartFrame = (clip.timelineStartFrame + delta).coerceAtLeast(0L),
+                            fadeInFrames = clip.fadeInFrames.coerceAtMost(length),
+                            fadeOutFrames = clip.fadeOutFrames.coerceAtMost(length),
+                        )
+                        rebuilt += piece
+                        editedIds += piece.id
+                        producedClips++
+                        removedFrames += (clip.lengthFrames - length).coerceAtLeast(0L)
+                    }
+                }
+            }
+
+            if (analysed == 0) {
+                setStatus("Strip silence: no clip audio available to analyse.", StatusKind.INFO)
+                return@launch
+            }
+            val before = track.clips
+            val after = rebuilt.sortedBy { it.timelineStartFrame }
+            if (before == after) {
+                setStatus("Strip silence: nothing below ${settings.thresholdDb.toInt()} dB was found.", StatusKind.INFO)
+                return@launch
+            }
+            timelineEdits.applyClipBatch(
+                trackIndex = trackIndex,
+                description = "Strip silence ($analysed clips, ${mode.displayName})",
+                clips = after,
             )
-        )
-
-        val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
-        _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        requestJournalWrite(_session.value)
-        scheduleRebuildTrack(trackIndex)
-    }
-
-    fun trimClipEnd(trackIndex: Int, clipId: String, trimFrames: Long) {
-        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
-        val clip = track.clips.find { it.id == clipId } ?: return
-        val newLength = max(4800L, clip.lengthFrames - trimFrames)
-        val updated = clip.copy(lengthFrames = newLength)
-
-        val beforeClips = track.clips
-        val afterClips = track.clips.map { if (it.id == clipId) updated else it }
-
-        undoManager.pushAction(SessionCommand.EditClips("Trim ${clip.name}", trackIndex, beforeClips, afterClips))
-        val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
-        _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        requestJournalWrite(_session.value)
-        scheduleRebuildTrack(trackIndex)
-    }
-
-    fun duplicateClip(trackIndex: Int, clipId: String) {
-        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
-        val clip = track.clips.find { it.id == clipId } ?: return
-        val duplicated = clip.copy(
-            id = UUID.randomUUID().toString(),
-            name = "${clip.name} (Copy)",
-            timelineStartFrame = clip.timelineStartFrame + clip.lengthFrames
-        )
-
-        val beforeClips = track.clips
-        val afterClips = track.clips + duplicated
-
-        undoManager.pushAction(SessionCommand.EditClips("Duplicate ${clip.name}", trackIndex, beforeClips, afterClips))
-        val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
-        _session.update { it.copy(tracks = newTracks, totalLengthFrames = max(_session.value.totalLengthFrames, duplicated.timelineStartFrame + duplicated.lengthFrames), revision = it.revision + 1) }
-        requestJournalWrite(_session.value)
-        scheduleRebuildTrack(trackIndex)
-    }
-
-    fun renameClip(trackIndex: Int, clipId: String, newName: String) {
-        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
-        val clip = track.clips.find { it.id == clipId } ?: return
-        val updated = clip.copy(name = newName)
-
-        val beforeClips = track.clips
-        val afterClips = track.clips.map { if (it.id == clipId) updated else it }
-
-        undoManager.pushAction(SessionCommand.EditClips("Rename ${clip.name} to $newName", trackIndex, beforeClips, afterClips))
-        val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
-        _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        requestJournalWrite(_session.value)
-    }
-
-    fun setClipGain(trackIndex: Int, clipId: String, gainDb: Float) {
-        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
-        val clip = track.clips.find { it.id == clipId } ?: return
-        val updated = clip.withGainDb(gainDb)
-
-        val beforeClips = track.clips
-        val afterClips = track.clips.map { if (it.id == clipId) updated else it }
-
-        undoManager.pushAction(SessionCommand.EditClips("Gain ${clip.name} (%+.1f dB)".format(gainDb), trackIndex, beforeClips, afterClips))
-        val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
-        _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        requestJournalWrite(_session.value)
-        scheduleRebuildTrack(trackIndex)
-    }
-
-    fun setClipFadeIn(trackIndex: Int, clipId: String, fadeInMs: Float, curve: com.example.audio.model.FadeCurve = com.example.audio.model.FadeCurve.EQUAL_POWER) {
-        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
-        val clip = track.clips.find { it.id == clipId } ?: return
-        val fadeInFrames = (fadeInMs * 0.001f * sampleRate).toLong().coerceAtLeast(0L)
-        val updated = clip.copy(fadeInFrames = fadeInFrames, fadeInCurve = curve)
-
-        val beforeClips = track.clips
-        val afterClips = track.clips.map { if (it.id == clipId) updated else it }
-
-        undoManager.pushAction(SessionCommand.EditClips("Fade In ${clip.name}", trackIndex, beforeClips, afterClips))
-        val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
-        _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        requestJournalWrite(_session.value)
-        scheduleRebuildTrack(trackIndex)
-    }
-
-    fun setClipFadeOut(trackIndex: Int, clipId: String, fadeOutMs: Float, curve: com.example.audio.model.FadeCurve = com.example.audio.model.FadeCurve.EQUAL_POWER) {
-        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
-        val clip = track.clips.find { it.id == clipId } ?: return
-        val fadeOutFrames = (fadeOutMs * 0.001f * sampleRate).toLong().coerceAtLeast(0L)
-        val updated = clip.copy(fadeOutFrames = fadeOutFrames, fadeOutCurve = curve)
-
-        val beforeClips = track.clips
-        val afterClips = track.clips.map { if (it.id == clipId) updated else it }
-
-        undoManager.pushAction(SessionCommand.EditClips("Fade Out ${clip.name}", trackIndex, beforeClips, afterClips))
-        val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
-        _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        requestJournalWrite(_session.value)
-        scheduleRebuildTrack(trackIndex)
-    }
-
-    /**
-     * Pastes the selected clip at the next chorus section (e.g. 4 bars ahead).
-     */
-    fun pasteClipAsChorusSection(trackIndex: Int, clipId: String, barsAhead: Int = 4) {
-        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
-        val clip = track.clips.find { it.id == clipId } ?: return
-        // Real bar length from session tempo (120 BPM @ 48 kHz = 96 000 frames/bar)
-        val beatFrames = (sampleRate * 60f / _session.value.tempoBpm).toLong().coerceAtLeast(1L)
-        val barFrames = beatFrames * 4
-        val targetStart = clip.timelineStartFrame + (barsAhead * barFrames)
-
-        val pasted = clip.copy(
-            id = UUID.randomUUID().toString(),
-            name = "${clip.name} (Chorus +${barsAhead}B)",
-            timelineStartFrame = targetStart
-        )
-
-        val beforeClips = track.clips
-        val afterClips = track.clips + pasted
-
-        undoManager.pushAction(SessionCommand.EditClips("Chorus Paste ${clip.name}", trackIndex, beforeClips, afterClips))
-        val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
-        val maxFrames = max(_session.value.totalLengthFrames, targetStart + clip.lengthFrames)
-        _session.update { it.copy(tracks = newTracks, totalLengthFrames = maxFrames, revision = it.revision + 1) }
-        requestJournalWrite(_session.value)
-        scheduleRebuildTrack(trackIndex)
-        _uiState.update { it.copy(statusMessage = "Chorus Paste: \"${clip.name}\" placed at Bar +$barsAhead!") }
-    }
-
-    /**
-     * Pastes a doubled chorus layer onto a target track with stereo chorus adaptation.
-     */
-    fun pasteClipAsDoubledChorus(sourceTrackIndex: Int, clipId: String, targetTrackIndex: Int) {
-        val srcTrack = _session.value.tracks.getOrNull(sourceTrackIndex) ?: return
-        val targetTrack = _session.value.tracks.getOrNull(targetTrackIndex) ?: srcTrack
-        val clip = srcTrack.clips.find { it.id == clipId } ?: return
-
-        // 12ms micro timing offset (576 frames @ 48kHz)
-        val doubledStart = clip.timelineStartFrame + 576L
-        val doubledClip = clip.copy(
-            id = UUID.randomUUID().toString(),
-            name = "${clip.name} (Chorus Double)",
-            timelineStartFrame = doubledStart,
-            trackIndex = targetTrack.index,
-            gainLinear = clip.gainLinear * 0.85f // subtle attenuation for double
-        )
-
-        val beforeClips = targetTrack.clips
-        val afterClips = targetTrack.clips + doubledClip
-
-        // Enable stereo chorus plugin on target track
-        val newChorusConfig = targetTrack.chorusConfig.copy(
-            enabled = true,
-            rateHz = 1.4f,
-            depthMs = 4.2f,
-            stereoSpread = 0.90f,
-            mix = 0.45f
-        )
-        updateTrackChorus(targetTrack.index, newChorusConfig)
-
-        undoManager.pushAction(SessionCommand.EditClips("Chorus Doubler Layer", targetTrack.index, beforeClips, afterClips))
-        val newTracks = _session.value.tracks.map { if (it.index == targetTrack.index) it.copy(clips = afterClips) else it }
-        _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
-        requestJournalWrite(_session.value)
-        scheduleRebuildTrack(targetTrackIndex)
-        _uiState.update { it.copy(statusMessage = "Created Chorus Doubler Layer on ${targetTrack.name}!") }
-    }
-
-    /**
-     * Fills 4-bar chorus section with crossfaded repeats of the clip.
-     */
-    fun adaptClipToChorusLoop(trackIndex: Int, clipId: String, repeatCount: Int = 3) {
-        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
-        val clip = track.clips.find { it.id == clipId } ?: return
-
-        val fadeFrames = 480L // 10ms crossfade
-        val newClips = mutableListOf<AudioClip>()
-        var currentStart = clip.timelineStartFrame
-
-        for (r in 0..repeatCount) {
-            val repClip = clip.copy(
-                id = if (r == 0) clip.id else UUID.randomUUID().toString(),
-                name = if (r == 0) clip.name else "${clip.name} (Rpt $r)",
-                timelineStartFrame = currentStart,
-                fadeInFrames = if (r > 0) fadeFrames else clip.fadeInFrames,
-                fadeOutFrames = if (r < repeatCount) fadeFrames else clip.fadeOutFrames
+            _uiState.update {
+                it.copy(selectedClipIds = if (selectedIds.isEmpty()) emptySet() else editedIds)
+            }
+            val removedSeconds = removedFrames.toFloat() / session.sampleRate.coerceAtLeast(1)
+            setStatus(
+                "Strip silence: ${analysed} clip(s) analysed, $producedClips rewritten, " +
+                    "${String.format(Locale.US, "%.2f", removedSeconds)} s of silence removed.",
+                StatusKind.SUCCESS,
+                StatusAction("Undo"),
             )
-            newClips.add(repClip)
-            currentStart += (clip.lengthFrames - fadeFrames)
         }
-
-        val beforeClips = track.clips
-        val afterClips = track.clips.filter { it.id != clipId } + newClips
-
-        undoManager.pushAction(SessionCommand.EditClips("Adapt Chorus Loop", trackIndex, beforeClips, afterClips))
-        val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
-        val maxFrames = max(_session.value.totalLengthFrames, currentStart + clip.lengthFrames)
-        _session.update { it.copy(tracks = newTracks, totalLengthFrames = maxFrames, revision = it.revision + 1) }
-        requestJournalWrite(_session.value)
-        scheduleRebuildTrack(trackIndex)
-        _uiState.update { it.copy(statusMessage = "Adapted 4-bar chorus loop with equal-power crossfades!") }
     }
 
-    fun showClipBin(show: Boolean) {
-        _uiState.update { it.copy(showClipBin = show) }
-    }
+    fun pasteClipAsChorusSection(trackIndex: Int, clipId: String, barsAhead: Int = 4) =
+        timelineEdits.pasteClipAsChorusSection(trackIndex, clipId, barsAhead)
 
-    fun moveClipToFrame(trackIndex: Int, clipId: String, rawTargetFrame: Long) {
-        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
-        val clip = track.clips.find { it.id == clipId } ?: return
-        val currentSettings = _settings.value
+    fun pasteClipAsDoubledChorus(sourceTrackIndex: Int, clipId: String, targetTrackIndex: Int) =
+        timelineEdits.pasteClipAsDoubledChorus(sourceTrackIndex, clipId, targetTrackIndex)
 
-        val snappedFrame = com.example.audio.engine.SnapEngine.snapFrame(
-            targetFrame = rawTargetFrame,
-            session = _session.value,
-            isSnapEnabled = currentSettings.isMagneticSnapEnabled,
-            resolution = currentSettings.gridResolution
-        ).coerceAtLeast(0L)
-        if (snappedFrame == clip.timelineStartFrame) return
+    fun adaptClipToChorusLoop(trackIndex: Int, clipId: String, repeatCount: Int = 3) =
+        timelineEdits.adaptClipToChorusLoop(trackIndex, clipId, repeatCount)
 
-        val updatedClip = clip.copy(timelineStartFrame = snappedFrame)
-        val beforeClips = track.clips
-        val afterClips = track.clips.map { if (it.id == clipId) updatedClip else it }
+    fun showClipBin(show: Boolean) = timelineEdits.showClipBin(show)
 
-        undoManager.pushAction(SessionCommand.EditClips("Move ${clip.name} to frame $snappedFrame", trackIndex, beforeClips, afterClips))
-        val newTracks = _session.value.tracks.map { if (it.index == trackIndex) it.copy(clips = afterClips) else it }
-        _session.update { it.copy(tracks = newTracks, totalLengthFrames = max(_session.value.totalLengthFrames, snappedFrame + updatedClip.lengthFrames), revision = it.revision + 1) }
-        requestJournalWrite(_session.value)
-        scheduleRebuildTrack(trackIndex)
-    }
+    fun moveClipToFrame(
+        trackIndex: Int,
+        clipId: String,
+        rawTargetFrame: Long,
+        snapToleranceFrames: Long = TimelineEditController.DEFAULT_SNAP_TOLERANCE_FRAMES,
+    ) = timelineEdits.moveClipToFrame(trackIndex, clipId, rawTargetFrame, snapToleranceFrames)
 
-    fun toggleMagneticSnap() {
-        _settings.update { it.copy(isMagneticSnapEnabled = !it.isMagneticSnapEnabled) }
-    }
+    fun toggleMagneticSnap() = timelineEdits.toggleMagneticSnap()
 
-    fun cycleGridResolution() {
-        val current = _settings.value.gridResolution
-        val all = com.example.audio.model.GridResolution.values()
-        val nextIdx = (current.ordinal + 1) % all.size
-        _settings.update { it.copy(gridResolution = all[nextIdx]) }
-    }
+    fun cycleGridResolution() = timelineEdits.cycleGridResolution()
 
-    fun nudgeSelectedClip(trackIndex: Int, clipId: String, forward: Boolean) {
-        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
-        val clip = track.clips.find { it.id == clipId } ?: return
-        val step = if (_settings.value.gridResolution.frames > 0L) {
-            _settings.value.gridResolution.frames
-        } else {
-            4800L // 1 beat default
-        }
-        val target = if (forward) {
-            clip.timelineStartFrame + step
-        } else {
-            max(0L, clip.timelineStartFrame - step)
-        }
-        moveClipToFrame(trackIndex, clipId, target)
-    }
+    fun nudgeSelectedClip(trackIndex: Int, clipId: String, forward: Boolean) =
+        timelineEdits.nudgeSelectedClip(trackIndex, clipId, forward)
 
     // Undo / Redo
     fun canUndo(): Boolean = undoManager.canUndo()
     fun canRedo(): Boolean = undoManager.canRedo()
 
     fun undo() {
+        flushPendingParamEdit()
         val result = undoManager.undo(_session.value) ?: return
         val (restoredSession, command) = result
         _session.value = restoredSession
@@ -1013,6 +1360,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun redo() {
+        flushPendingParamEdit()
         val result = undoManager.redo(_session.value) ?: return
         val (restoredSession, command) = result
         _session.value = restoredSession
@@ -1053,10 +1401,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             // Capture transport truth at punch-in for accurate alignment
             currentRecordingStartFrame = _uiState.value.playheadFrame
             // Also start playback if not already playing so user hears backing tracks
-            if (!_uiState.value.isPlaying) {
-                playbackEngine.commandQueue.enqueue(AudioEngineCommand.Play)
-                _uiState.update { it.copy(isPlaying = true) }
-            }
+            if (!_uiState.value.isPlaying) startPlayback()
             _uiState.update { it.copy(isRecording = true, statusMessage = "Recording to Track ${armedTrack.index + 1} (${armedTrack.name})...") }
         } else {
             _uiState.update { it.copy(statusMessage = "Microphone error. Check permission.", statusKind = StatusKind.ERROR) }
@@ -1118,7 +1463,18 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
             requestJournalWrite(_session.value)
             scheduleRebuildTrack(armedTrack.index)
-            _uiState.update { it.copy(statusMessage = "Take recorded (${String.format("%.2f", framesRecorded.toFloat() / sampleRate)}s) with ${String.format("%.1f", _session.value.latencyOffsetMs)}ms latency compensation.") }
+            _uiState.update { it.copy(statusMessage = "Take recorded (${String.format(java.util.Locale.US, "%.2f", framesRecorded.toFloat() / sampleRate)}s) with ${String.format(java.util.Locale.US, "%.1f", _session.value.latencyOffsetMs)}ms latency compensation.") }
+        } else {
+            // Too short to be a usable take: discard it and say why, instead of
+            // stopping silently and leaving a stub file in the takes folder.
+            lastRecordingFile?.delete()
+            lastRecordingFile = null
+            _uiState.update {
+                it.copy(
+                    statusMessage = "Take discarded: recordings under 0.05 s cannot be used.",
+                    statusKind = StatusKind.ERROR
+                )
+            }
         }
     }
 
@@ -1146,66 +1502,56 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(isInputMonitoringEnabled = next, statusMessage = if (next) "Input monitoring ON" else "Input monitoring OFF") }
     }
 
-    // A/B reference track: load a real song for comparison and auto-match
-    fun loadReferenceTrack(uri: Uri) {
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(statusMessage = "Loading reference track...") }
-            val result = AudioFileImporter.importAudioUri(getApplication(), uri, targetTrackIndex = -1, targetTimelineStartFrame = 0L)
-            if (result != null) {
-                // Store reference samples in a dedicated slot (track index 16 is virtual)
-                // We reuse trackAudioBuffers[0]? No � store in a separate field.
-                referenceTrackSamples = result.samples
-                _uiState.update {
-                    it.copy(
-                        hasReferenceTrack = true,
-                        statusMessage = "Reference loaded: ${result.originalFileName}. Press A/B to compare."
-                    )
-                }
-            } else {
-                _uiState.update { it.copy(statusMessage = "Could not decode reference track.", statusKind = StatusKind.ERROR) }
-            }
-        }
-    }
+    // Reference A/B lives in ReferenceController; these delegates keep the
+    // public ViewModel API stable for the UI and tests.
 
-    fun toggleAbComparison() {
-        if (referenceTrackSamples == null) {
-            _uiState.update { it.copy(statusMessage = "Load a reference track first (Load Ref).", statusKind = StatusKind.ERROR) }
-            return
-        }
-        val next = !_uiState.value.isAbComparing
-        _uiState.update { it.copy(isAbComparing = next, statusMessage = if (next) "A/B comparison ON" else "A/B comparison OFF") }
-    }
+    fun loadReferenceTrack(uri: Uri) = referenceController.loadReferenceTrack(uri)
 
-    fun matchToReference() {
-        val ref = referenceTrackSamples
-        if (ref == null) {
-            _uiState.update { it.copy(statusMessage = "Load a reference track first (Load Ref).", statusKind = StatusKind.ERROR) }
-            return
-        }
+    internal fun installReference(
+        samples: FloatArray,
+        name: String,
+        filePath: String,
+        offsetFrames: Long = 0L,
+    ) {
         viewModelScope.launch(Dispatchers.Default) {
-            // Measure reference loudness (RMS)
-            var refSum = 0.0
-            for (s in ref) refSum += s * s
-            val refRms = kotlin.math.sqrt(refSum / ref.size).toFloat().coerceAtLeast(1e-6f)
-            val refDb = 20f * kotlin.math.log10(refRms)
-
-            // Measure current mix loudness
-            val mixSize = trackAudioBuffers.sumOf { it.size }
-            val mix = FloatArray(mixSize)
-            var mixOff = 0
-            for (b in trackAudioBuffers) { System.arraycopy(b, 0, mix, mixOff, b.size); mixOff += b.size }
-            var mixSum = 0.0
-            for (s in mix) mixSum += s * s
-            val mixRms = kotlin.math.sqrt(mixSum / mix.size.coerceAtLeast(1)).toFloat().coerceAtLeast(1e-6f)
-            val mixDb = 20f * kotlin.math.log10(mixRms)
-
-            val gainDb = (refDb - mixDb).coerceIn(-12f, 12f)
-            val before = _session.value.masterGainDb
-            _session.update { it.copy(masterGainDb = (it.masterGainDb + gainDb).coerceIn(-24f, 24f)) }
-            playbackEngine.commandQueue.enqueue(AudioEngineCommand.SetMasterGain(_session.value.masterGainDb))
-            _uiState.update { it.copy(statusMessage = "Matched to reference: ${String.format("%.1f", gainDb)} dB gain applied.") }
+            referenceController.installReference(samples, name, filePath, offsetFrames)
         }
     }
+
+    internal suspend fun installReferenceNow(
+        samples: FloatArray,
+        name: String,
+        filePath: String,
+        offsetFrames: Long = 0L,
+    ) = referenceController.installReferenceNow(samples, name, filePath, offsetFrames)
+
+    fun clearReference() = referenceController.clearReference()
+
+    fun setReferenceOffset(offsetFrames: Long) = referenceController.setReferenceOffset(offsetFrames)
+
+    fun toggleAbComparison() = referenceController.toggleAbComparison()
+
+    fun setReferenceAudition(
+        enabled: Boolean,
+        matchGainDb: Float = referenceController.defaultMatchGain(),
+    ) = referenceController.setReferenceAudition(enabled, matchGainDb)
+
+    fun matchToReference() = referenceController.matchToReference()
+
+    internal suspend fun matchToReferenceNow() = referenceController.matchToReferenceNow()
+
+    fun refreshReferenceMatch() = referenceController.refreshReferenceMatch()
+
+    internal suspend fun refreshReferenceMatchNow() = referenceController.refreshReferenceMatchNow()
+
+    fun applyReferenceMoves() = referenceController.applyReferenceMoves()
+
+    internal suspend fun measureMixProfile() = referenceController.measureMixProfile()
+
+    internal suspend fun measureAndMatchReference() = referenceController.measureAndMatchReference()
+
+    private suspend fun restoreReferenceLocked(project: ProjectSession) =
+        referenceController.restoreReference(project)
 
     fun runLatencyCalibration() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -1271,7 +1617,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
             _session.update { it.copy(latencyOffsetMs = measuredOffset) }
             _settings.update { it.copy(latencyCompensationMs = measuredOffset) }
-            _uiState.update { it.copy(statusMessage = "Latency calibrated: ${String.format("%.1f", measuredOffset)} ms (loopback)") }
+            _uiState.update { it.copy(statusMessage = "Latency calibrated: ${String.format(java.util.Locale.US, "%.1f", measuredOffset)} ms (loopback)") }
         }
     }
 
@@ -1395,6 +1741,135 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         importError = "Import failed: ${t.message ?: "unknown error"}",
                         statusMessage = "Import failed: ${t.message ?: "unknown error"}",
+                        statusKind = StatusKind.ERROR
+                    )
+                }
+            } finally {
+                _uiState.update { it.copy(isImporting = false) }
+            }
+        }
+    }
+
+    /**
+     * Imports an NC Phone Beat `.ncbeat` package: tempo, per-track mix, stem clips and
+     * the embedded beat source land in the session natively (see NcbeatImporter).
+     * Stems are persisted as canonical 48 kHz stereo WAVs, mirroring importAudioFile.
+     */
+    fun importNcbeat(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            sessionReady.await()
+            _uiState.update {
+                it.copy(
+                    isImporting = true,
+                    importError = null,
+                    statusMessage = "Reading NC Phone Beat package..."
+                )
+            }
+            try {
+                val app = getApplication<Application>()
+                val pkg = app.contentResolver.openInputStream(uri)?.use { NcbeatImporter.read(it) }
+                    ?: throw NcbeatException("Could not open the selected file")
+                val plan = NcbeatImporter.importPlan(pkg)
+
+                // Persist + decode every stem into the session's canonical format.
+                val ncbeatDir = File(app.filesDir, "ncbeat").apply { mkdirs() }
+                val decoded = LinkedHashMap<String, Pair<String, FloatArray>>()
+                for ((entry, bytes) in pkg.stems) {
+                    val fileName = entry.substringAfterLast('/').replace(Regex("[^A-Za-z0-9._-]"), "_")
+                    val file = File(ncbeatDir, fileName)
+                    file.writeBytes(bytes)
+                    val wav = WavAudioIO.readWavFile(file)
+                        ?: throw NcbeatException("$entry is not a readable WAV file")
+                    if (wav.channels == 2 && wav.sampleRate == 48000) {
+                        decoded[entry] = file.absolutePath to wav.samples
+                    } else {
+                        val normalized = AudioResampler.normalizeToSessionStereo(
+                            samples = wav.samples,
+                            srcChannels = wav.channels,
+                            srcRate = wav.sampleRate,
+                            dstRate = 48000
+                        )
+                        WavAudioIO.writeWavFile(file, normalized, channels = 2, sampleRate = 48000, bitsPerSample = 16)
+                        decoded[entry] = file.absolutePath to normalized
+                    }
+                }
+
+                // Configure every beat track, then place the clip it owns (if any).
+                var newTracks = _session.value.tracks
+                var maxLen = _session.value.totalLengthFrames
+                var clippedTracks = 0
+
+                fun placeClip(trackIndex: Int, entry: String, name: String): Boolean {
+                    val (path, samples) = decoded[entry] ?: return false
+                    trackSourcePools[trackIndex][path] = samples
+                    val clip = AudioClip(
+                        id = java.util.UUID.randomUUID().toString(),
+                        name = name,
+                        sourcePath = path,
+                        sourceStartFrame = 0L,
+                        lengthFrames = samples.size / 2L,
+                        timelineStartFrame = 0L,
+                        trackIndex = trackIndex
+                    )
+                    maxLen = max(maxLen, clip.lengthFrames)
+                    // Same semantics as importAudioFile: the target track's clips are
+                    // replaced by the newly imported material.
+                    newTracks = newTracks.map { t ->
+                        if (t.index == trackIndex) t.copy(clips = listOf(clip)) else t
+                    }
+                    clippedTracks++
+                    return true
+                }
+
+                for (p in plan.tracks) {
+                    newTracks = newTracks.map { t ->
+                        if (t.index == p.sessionTrackIndex) t.copy(
+                            name = p.name,
+                            gainDb = p.gainDb,
+                            pan = p.pan,
+                            isMuted = p.muted,
+                            isSoloed = p.soloed,
+                            stemCategory = p.category
+                        ) else t
+                    }
+                    if (p.stemEntry != null) placeClip(p.sessionTrackIndex, p.stemEntry, p.clipName)
+                }
+                // No per-track stems: play the full-mix stem once instead.
+                plan.masterFallbackEntry?.let { entry ->
+                    if (clippedTracks == 0) placeClip(0, entry, plan.beatSource.patternName)
+                }
+
+                val before = _session.value
+                val newSession = before.copy(
+                    tracks = newTracks,
+                    tempoBpm = plan.tempoBpm,
+                    masterGainDb = plan.masterGainDb,
+                    totalLengthFrames = maxLen,
+                    beatSource = plan.beatSource,
+                    revision = before.revision + 1
+                )
+                _session.value = newSession
+                requestJournalWrite(newSession)
+                for (p in plan.tracks) {
+                    if (p.stemEntry != null) scheduleRebuildTrack(p.sessionTrackIndex)
+                }
+                if (clippedTracks > 0 && plan.tracks.none { it.stemEntry != null }) scheduleRebuildTrack(0)
+                playbackEngine.syncFromProject(newSession)
+                refreshAudioAnalysis()
+
+                val dropped = if (plan.droppedTracks > 0) " (${plan.droppedTracks} tracks dropped)" else ""
+                setStatus(
+                    "Imported NC Phone Beat \"${plan.beatSource.patternName}\" - " +
+                        "${plan.tracks.size} tracks at ${plan.tempoBpm.toInt()} BPM$dropped",
+                    StatusKind.SUCCESS
+                )
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+                val msg = (t as? NcbeatException)?.message ?: t.message ?: "unknown error"
+                _uiState.update {
+                    it.copy(
+                        importError = "Import failed: $msg",
+                        statusMessage = "NC Phone Beat import failed: $msg",
                         statusKind = StatusKind.ERROR
                     )
                 }
@@ -1551,7 +2026,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                     model = active,
                     prompt = transcript,
                     systemPrompt = MixEngineerBrain.systemPromptFor(_session.value)
-                )
+                ).text.orEmpty()
             } catch (_: Throwable) {
                 ""
             }
@@ -1661,149 +2136,24 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Auto Detection & Integration for Small Models (Ollama & Llama.cpp)
-    fun scanForLocalModels(customUrl: String? = null, dispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO) = viewModelScope.launch(dispatcher) {
-        _uiState.update { current ->
-            current.copy(
-                localModelDetectorState = current.localModelDetectorState.copy(
-                    isScanning = true,
-                    endpointsChecked = 0
-                )
-            )
-        }
-
-        val endpointsToTest = mutableListOf<LocalModelEndpoint>()
-        endpointsToTest.addAll(LocalModelDetector.DEFAULT_ENDPOINTS)
-
-        val custom = customUrl ?: _settings.value.customOllamaUrl
-        if (custom.isNotBlank() && endpointsToTest.none { it.baseUrl == custom }) {
-            endpointsToTest.add(
-                LocalModelEndpoint(
-                    provider = LocalModelProvider.OLLAMA,
-                    baseUrl = custom,
-                    displayName = "Custom Endpoint ($custom)"
-                )
-            )
-        }
-
-        val probedResults = mutableListOf<EndpointProbeResult>()
-        val allDetectedModels = mutableListOf<DiscoveredModelInfo>()
-
-        for ((idx, ep) in endpointsToTest.withIndex()) {
-            val res = LocalModelDetector.probeEndpoint(ep)
-            probedResults.add(res)
-            if (res.isOnline && res.models.isNotEmpty()) {
-                allDetectedModels.addAll(res.models)
-            }
-            _uiState.update { current ->
-                current.copy(
-                    localModelDetectorState = current.localModelDetectorState.copy(
-                        endpointsChecked = idx + 1,
-                        totalEndpointsToScan = endpointsToTest.size
-                    )
-                )
-            }
-        }
-
-        // Fallback simulated models when running offline or no server running
-        val finalModelsList = if (allDetectedModels.isEmpty()) {
-            LocalModelDetector.SIMULATED_FALLBACK_MODELS
-        } else {
-            allDetectedModels
-        }
-
-        val currentActive = _uiState.value.localModelDetectorState.activeModel
-            ?: finalModelsList.firstOrNull { it.name == _settings.value.activeLocalModelName }
-            ?: finalModelsList.firstOrNull()
-
-        val markedModels = finalModelsList.map { m ->
-            m.copy(isSelected = m.name == currentActive?.name)
-        }
-
-        _uiState.update { current ->
-            current.copy(
-                localModelDetectorState = current.localModelDetectorState.copy(
-                    isScanning = false,
-                    probedEndpoints = probedResults,
-                    detectedModels = markedModels,
-                    activeModel = currentActive,
-                    lastScanTimestamp = System.currentTimeMillis()
-                ),
-                statusMessage = "Scanned ${endpointsToTest.size} local model endpoints. Discovered ${finalModelsList.size} models."
-            )
-        }
+    // Local-model discovery and inference live in AiStudioController; these
+    // methods keep the existing call sites stable.
+    fun scanForLocalModels(
+        customUrl: String? = null,
+        dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    ) {
+        aiStudio.scan(customUrl, dispatcher)
     }
 
-    fun selectLocalModel(model: DiscoveredModelInfo) {
-        val updatedList = _uiState.value.localModelDetectorState.detectedModels.map { m ->
-            m.copy(isSelected = m.id == model.id || m.name == model.name)
-        }
-        val sel = updatedList.find { it.isSelected } ?: model.copy(isSelected = true)
+    fun selectLocalModel(model: DiscoveredModelInfo) = aiStudio.select(model)
 
-        _settings.update { s ->
-            s.copy(
-                activeLocalModelName = sel.name,
-                activeLocalModelProvider = sel.provider.displayName,
-                customOllamaUrl = sel.baseUrl
-            )
-        }
+    fun setCustomLocalEndpointUrl(url: String) = aiStudio.setCustomEndpointUrl(url)
 
-        _uiState.update { current ->
-            current.copy(
-                localModelDetectorState = current.localModelDetectorState.copy(
-                    detectedModels = updatedList,
-                    activeModel = sel
-                ),
-                statusMessage = "Selected local model: ${sel.name} (${sel.provider.displayName} @ ${sel.baseUrl})"
-            )
-        }
-    }
-
-    fun setCustomLocalEndpointUrl(url: String) {
-        _settings.update { it.copy(customOllamaUrl = url) }
-        _uiState.update { current ->
-            current.copy(
-                localModelDetectorState = current.localModelDetectorState.copy(
-                    customEndpointUrl = url
-                )
-            )
-        }
-        scanForLocalModels(url)
-    }
-
-    fun sendPromptToLocalModel(prompt: String, dispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO) = viewModelScope.launch(dispatcher) {
-        val active = _uiState.value.localModelDetectorState.activeModel
-            ?: DiscoveredModelInfo(
-                name = _settings.value.activeLocalModelName,
-                provider = LocalModelProvider.OLLAMA,
-                baseUrl = _settings.value.customOllamaUrl
-            )
-
-        _uiState.update { current ->
-            current.copy(
-                localModelDetectorState = current.localModelDetectorState.copy(
-                    isInferenceRunning = true,
-                    lastInferenceResponse = null
-                ),
-                statusMessage = "Sending query to ${active.name}..."
-            )
-        }
-
-        val resp = LocalModelDetector.generateWithLocalModel(
-            model = active,
-            prompt = prompt,
-            systemPrompt = "You are a professional audio mixing engineer and DAW tactical advisor."
-        )
-
-        _uiState.update { current ->
-            current.copy(
-                localModelDetectorState = current.localModelDetectorState.copy(
-                    isInferenceRunning = false,
-                    lastInferenceResponse = resp
-                ),
-                statusMessage = "Response received from ${active.name}"
-            )
-        }
+    fun sendPromptToLocalModel(
+        prompt: String,
+        dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    ) {
+        aiStudio.send(prompt, dispatcher)
     }
 
     // Offline Renderer & DSP Unit Tests
@@ -1818,63 +2168,21 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(showDspTestDialog = false) }
     }
 
-    fun setExportDestination(uri: Uri) {
-        try {
-            getApplication<Application>().contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-        } catch (_: SecurityException) {
-            // Some providers do not support persistable grants; the export still works for this session.
-        }
-        val name = DocumentFile.fromTreeUri(getApplication(), uri)?.name ?: "Chosen folder"
-        exportTreeUri = uri
-        uiPrefs.edit()
-            .putString("export_tree_uri", uri.toString())
-            .putString("export_tree_name", name)
-            .apply()
-        _uiState.update {
-            it.copy(
-                exportDestinationName = name,
-                statusMessage = "Export destination set to $name.",
-                statusKind = StatusKind.SUCCESS
-            )
-        }
-    }
+    // Export lives in ExportController; these delegates keep the UI API stable.
 
-    /** Publishes rendered app files into the user's chosen document tree. */
-    private fun publishExports(files: List<File>): String? {
-        val tree = exportTreeUri?.let { DocumentFile.fromTreeUri(getApplication(), it) } ?: return null
-        if (!tree.canWrite()) return null
-        var copied = 0
-        for (file in files) {
-            val mime = MimeTypeMap.getSingleton()
-                .getMimeTypeFromExtension(file.extension.lowercase())
-                ?: "audio/*"
-            val target = tree.createFile(mime, file.name) ?: continue
-            try {
-                getApplication<Application>().contentResolver
-                    .openOutputStream(target.uri)
-                    ?.use { out -> file.inputStream().use { input -> input.copyTo(out) } }
-                copied++
-            } catch (_: Exception) {
-                // Keep the app-local copy; the share sheet still works.
-            }
-        }
-        return if (copied > 0) tree.name else null
-    }
+    fun setExportDestination(uri: Uri) = exportController.setDestination(uri)
 
     fun reportUiFrameTiming(meanMs: Float, p95Ms: Float) {
         _uiState.update { it.copy(uiFrameMeanMs = meanMs, uiFrameP95Ms = p95Ms) }
     }
 
     fun dismissOnboarding() {
-        uiPrefs.edit().putBoolean(ONBOARDING_PREF, true).apply()
+        uiPrefs.edit { putBoolean(ONBOARDING_PREF, true) }
         _uiState.update { it.copy(showOnboarding = false) }
     }
 
     fun dismissWhatsNew() {
-        uiPrefs.edit().putString(RELEASE_NOTES_PREF, RELEASE_NOTES_VERSION).apply()
+        uiPrefs.edit { putString(RELEASE_NOTES_PREF, RELEASE_NOTES_VERSION) }
         _uiState.update { it.copy(showWhatsNew = false) }
     }
 
@@ -1884,7 +2192,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
     fun togglePresentationMode() {
         val next = !_uiState.value.presentationMode
-        uiPrefs.edit().putBoolean("presentation_mode", next).apply()
+        uiPrefs.edit { putBoolean("presentation_mode", next) }
         _uiState.update {
             it.copy(
                 presentationMode = next,
@@ -1894,17 +2202,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun showExportDialog(show: Boolean) {
-        _uiState.update {
-            it.copy(
-                showExportDialog = show,
-                exportProgress = 0f,
-                exportedFile = null,
-                exportedStemFiles = emptyList(),
-                exportError = null
-            )
-        }
-    }
+    fun showExportDialog(show: Boolean) = exportController.showDialog(show)
 
     fun applyTrackPreset(trackIndex: Int, preset: com.example.audio.model.TrackPreset) {
         val track = _session.value.tracks.getOrNull(trackIndex) ?: return
@@ -1948,164 +2246,12 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
     fun renderSessionToAudio(
         format: com.example.audio.engine.ExportFormat = com.example.audio.engine.ExportFormat.WAV_24BIT,
-        dispatcher: CoroutineDispatcher = Dispatchers.IO
-    ) {
-        viewModelScope.launch(dispatcher) {
-            try {
-                _uiState.update {
-                    it.copy(
-                        exportProgress = 0.05f,
-                        exportedFile = null,
-                        exportedStemFiles = emptyList(),
-                        exportError = null,
-                        statusMessage = "Rendering session to ${format.displayName}..."
-                    )
-                }
-                val exportDir = File(getApplication<Application>().filesDir, "exports").apply { mkdirs() }
-                val outFile = File(exportDir, "PulseStudio_${System.currentTimeMillis()}${format.extension}")
-                val onProgress: (Float) -> Unit = { p ->
-                    _uiState.update { it.copy(exportProgress = p) }
-                }
-
-                val renderedFile: File? = when (format) {
-                    com.example.audio.engine.ExportFormat.AAC_320KBPS ->
-                        com.example.audio.engine.OfflineRenderer.renderSessionToAac(
-                            project = _session.value,
-                            trackBuffers = trackAudioBuffers,
-                            outputFile = outFile,
-                            onProgress = onProgress
-                        )
-                    com.example.audio.engine.ExportFormat.MP3_320KBPS ->
-                        com.example.audio.engine.OfflineRenderer.renderSessionToMp3(
-                            project = _session.value,
-                            trackBuffers = trackAudioBuffers,
-                            outputFile = outFile,
-                            onProgress = onProgress
-                        )
-                    com.example.audio.engine.ExportFormat.FLAC_LOSSLESS ->
-                        com.example.audio.engine.OfflineRenderer.renderSessionToFlac(
-                            project = _session.value,
-                            trackBuffers = trackAudioBuffers,
-                            outputFile = outFile,
-                            onProgress = onProgress
-                        )
-                    else -> {
-                        val wrote = com.example.audio.engine.OfflineRenderer.renderSessionToWav(
-                            project = _session.value,
-                            trackBuffers = trackAudioBuffers,
-                            outputFile = outFile,
-                            onProgress = onProgress
-                        )
-                        if (wrote) outFile else null
-                    }
-                }
-
-                if (renderedFile != null && renderedFile.exists()) {
-                    val usedWavFallback = ".${renderedFile.extension}" != format.extension
-                    val publishedTo = publishExports(listOf(renderedFile))
-                    val destinationSuffix = publishedTo?.let { " • saved to $it" } ?: " • saved to app storage"
-                    _uiState.update {
-                        it.copy(
-                            exportProgress = 1.0f,
-                            exportedFile = renderedFile,
-                            exportError = null,
-                            statusMessage = if (usedWavFallback) {
-                                "Export complete: ${renderedFile.name} (${format.displayName} encoder unavailable; WAV fallback, ${renderedFile.length() / 1024} KB)$destinationSuffix"
-                            } else {
-                                "Export complete: ${renderedFile.name} (${renderedFile.length() / 1024} KB)$destinationSuffix"
-                            },
-                            statusKind = StatusKind.SUCCESS
-                        )
-                    }
-                } else {
-                    _uiState.update {
-                        it.copy(
-                            exportProgress = 0f,
-                            exportError = "Export failed. Check available storage and try again.",
-                            statusMessage = "Export failed. Check available storage and try again.",
-                            statusKind = StatusKind.ERROR
-                        )
-                    }
-                }
-            } catch (t: Throwable) {
-                if (t is kotlinx.coroutines.CancellationException) throw t
-                _uiState.update {
-                    it.copy(
-                        exportProgress = 0f,
-                        exportError = "Export failed: ${t.message ?: "unknown error"}",
-                        statusMessage = "Export failed: ${t.message ?: "unknown error"}",
-                        statusKind = StatusKind.ERROR
-                    )
-                }
-            }
-        }
-    }
+        dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    ) = exportController.renderSessionToAudio(format, dispatcher)
 
     fun renderStemsExport(
-        dispatcher: CoroutineDispatcher = Dispatchers.IO
-    ) {
-        viewModelScope.launch(dispatcher) {
-            try {
-                _uiState.update {
-                    it.copy(
-                        exportProgress = 0.05f,
-                        exportedFile = null,
-                        exportedStemFiles = emptyList(),
-                        exportError = null,
-                        statusMessage = "Rendering stems..."
-                    )
-                }
-                val exportDir = File(
-                    getApplication<Application>().filesDir,
-                    "exports/stems_${System.currentTimeMillis()}"
-                ).apply { mkdirs() }
-                val files = com.example.audio.engine.OfflineRenderer.renderStemsToWav(
-                    project = _session.value,
-                    trackBuffers = trackAudioBuffers,
-                    outputDir = exportDir,
-                    bitsPerSample = 24,
-                    onStemProgress = { completed, total, trackName ->
-                        _uiState.update {
-                            it.copy(
-                                exportProgress = 0.05f + 0.9f * completed / total.coerceAtLeast(1),
-                                statusMessage = "Rendering stem $completed/$total: $trackName"
-                            )
-                        }
-                    }
-                )
-                if (files.isNotEmpty()) publishExports(files)
-                _uiState.update {
-                    if (files.isEmpty()) {
-                        it.copy(
-                            exportProgress = 0f,
-                            exportError = "Stem export failed. Check available storage and try again.",
-                            statusMessage = "Stem export failed. Check available storage and try again.",
-                            statusKind = StatusKind.ERROR
-                        )
-                    } else {
-                        it.copy(
-                            exportProgress = 1.0f,
-                            exportedFile = files.firstOrNull(),
-                            exportedStemFiles = files,
-                            exportError = null,
-                            statusMessage = "Exported ${files.size} stems to ${it.exportDestinationName}",
-                            statusKind = StatusKind.SUCCESS
-                        )
-                    }
-                }
-            } catch (t: Throwable) {
-                if (t is kotlinx.coroutines.CancellationException) throw t
-                _uiState.update {
-                    it.copy(
-                        exportProgress = 0f,
-                        exportError = "Stem export failed: ${t.message ?: "unknown error"}",
-                        statusMessage = "Stem export failed: ${t.message ?: "unknown error"}",
-                        statusKind = StatusKind.ERROR
-                    )
-                }
-            }
-        }
-    }
+        dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    ) = exportController.renderStems(dispatcher)
 
     fun clearStatusMessage() {
         _uiState.update { it.copy(statusMessage = null, statusAction = null, statusKind = StatusKind.INFO) }
@@ -2221,8 +2367,23 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
     public override fun onCleared() {
         super.onCleared()
+        try {
+            getApplication<Application>().unregisterReceiver(becomingNoisyReceiver)
+        } catch (_: Exception) {
+        /* best-effort cleanup: failure is non-actionable on this path */ }
+        releaseAudioFocus()
+        AudioEngineService.stopPlayback(getApplication())
         voiceEngineer.shutdown()
-        playbackEngine.stop()
-        usbManager.release()
+        // onCleared runs on the main thread and stop() joins the render thread;
+        // joining here could block the UI long enough to ANR during teardown.
+        val engine = playbackEngine
+        val usb = usbManager
+        Thread({
+            runCatching { engine.stop() }
+            runCatching { usb.release() }
+        }, "NCStudio-ViewModelTeardown").apply {
+            isDaemon = true
+            start()
+        }
     }
 }

@@ -10,6 +10,8 @@ import com.example.audio.model.ResonanceSmootherConfig
 import com.example.audio.model.ReverbConfig
 import com.example.audio.model.SaturationConfig
 import com.example.audio.model.VocalRiderConfig
+import com.example.audio.model.BusData
+import com.overlay.audio.plugins.PluginChain
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
@@ -48,6 +50,37 @@ sealed interface AudioEngineCommand {
 
     data class SetCountIn(val bpm: Float, val volumeDb: Float) : AudioEngineCommand
     data class SetBufferSize(val frames: Int) : AudioEngineCommand
+
+    /** Ordered studio plugin chain for one track (empty list clears it). */
+    data class SetTrackPluginChain(val trackIndex: Int, val chain: PluginChain) : AudioEngineCommand
+
+    /** Which track keys this track's sidechain modules (kick -> bass, -1 = none). */
+    data class SetTrackSidechainSource(val trackIndex: Int, val sourceTrackIndex: Int) : AudioEngineCommand
+
+    /**
+     * Reference track for A/B auditioning: interleaved stereo at the engine
+     * sample rate, or null to clear. [offsetFrames] is the frame of the
+     * reference that lines up with the session's frame 0.
+     */
+    data class SetReferenceTrack(val samples: FloatArray?, val offsetFrames: Long = 0L) : AudioEngineCommand
+
+    /** Crossfades between the mix and the reference; [matchGainDb] levels the reference. */
+    data class SetReferenceAudition(val enabled: Boolean, val matchGainDb: Float) : AudioEngineCommand
+
+    /** Moves the alignment point of a loaded reference without reloading it. */
+    data class SetReferenceOffset(val offsetFrames: Long) : AudioEngineCommand
+
+    /** Which group bus this track feeds ("master" = straight to the mix bus). */
+    data class SetTrackOutputBus(val trackIndex: Int, val busId: String) : AudioEngineCommand
+
+    /** Ordered studio plugin chain for the mix bus (empty list restores the legacy limiter). */
+    data class SetMasterPluginChain(val chain: PluginChain) : AudioEngineCommand
+
+    /** Group bus definitions plus their chains, in one atomic update. */
+    data class SetBuses(
+        val buses: List<BusData>,
+        val busChains: Map<String, PluginChain>
+    ) : AudioEngineCommand
     data class BatchParameterSnapshot(
         val masterGainDb: Float,
         val tracksGainDb: FloatArray,

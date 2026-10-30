@@ -16,3 +16,10 @@
 local.properties
 .env
 debug.keystore
+
+# signing + local secrets (audit SEC-011)
+*.jks
+*.keystore
+keystore.properties
+.env.*
+!.env.example

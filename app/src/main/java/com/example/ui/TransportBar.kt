@@ -44,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.stateDescription
@@ -68,6 +69,8 @@ import com.example.ui.theme.StudioSurface
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.OnAccent
+import com.example.ui.theme.OverlayWhite
 
 @Composable
 fun TransportBar(
@@ -184,7 +187,7 @@ fun TransportBar(
                             contentDescription = stringResource(
                                 if (uiState.isPlaying) R.string.transport_pause else R.string.transport_play
                             ),
-                            tint = Color.Black
+                            tint = OnAccent
                         )
                     }
 
@@ -212,7 +215,7 @@ fun TransportBar(
                             contentDescription = stringResource(
                                 if (uiState.isRecording) R.string.transport_stop_recording else R.string.transport_record
                             ),
-                            tint = if (uiState.isRecording) Color.White else ClipRed
+                            tint = if (uiState.isRecording) OverlayWhite else ClipRed
                         )
                     }
                 }
@@ -310,8 +313,8 @@ fun TransportBar(
                     )
                     TransportToolButton(
                         label = stringResource(R.string.transport_ab),
-                        selected = uiState.isAbComparing,
-                        enabled = hasReferenceTrack || uiState.isAbComparing,
+                        selected = uiState.isReferenceAuditioning,
+                        enabled = hasReferenceTrack,
                         onClick = onToggleAb,
                         testTag = "ab_compare_button"
                     )
@@ -326,6 +329,28 @@ fun TransportBar(
                         onClick = onMatchToReference,
                         testTag = "match_reference_button"
                     )
+
+                    // Level-matched A/B readout: what the reference measures, what
+                    // the mix measures, and which side you are hearing right now.
+                    if (hasReferenceTrack) {
+                        val refLufs = uiState.referenceProfile?.integratedLufs
+                        val mixLufs = uiState.mixProfile?.integratedLufs
+                        val readout = buildString {
+                            append(if (uiState.isReferenceAuditioning) "B: ref" else "A: mix")
+                            mixLufs?.let { append(String.format(java.util.Locale.US, " %.1f", it)) }
+                            refLufs?.let { append(String.format(java.util.Locale.US, " / ref %.1f LUFS", it)) }
+                        }
+                        Text(
+                            text = readout,
+                            color = if (uiState.isReferenceAuditioning) NeonCyan else TextSecondary,
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .padding(horizontal = 6.dp)
+                                .testTag("reference_readout")
+                        )
+                    }
 
                     if (showDiagnostics) {
                         Row(
@@ -359,8 +384,9 @@ fun TransportBar(
                         if (uiState.telemetry.bufferUnderruns > 0) {
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = stringResource(
-                                    R.string.transport_glitch_hint,
+                                text = pluralStringResource(
+                                    R.plurals.transport_glitch_hint,
+                                    uiState.telemetry.bufferUnderruns,
                                     uiState.telemetry.bufferUnderruns
                                 ),
                                 color = StudioAmber,

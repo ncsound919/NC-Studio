@@ -1,6 +1,6 @@
 # Pulse DAW — UI Polish Checklist
 
-**Status (2026-10-26):** P0, P1, and P2 code work is complete. All interaction, state, copy, token, and onboarding items are implemented and covered by build/test/lint. What remains is device-only verification: TalkBack order, visual clipping at 2.0×, screenshot baselines, and frame timing under a live 16-meter load.
+**Status (2026-10-28):** P0, P1, and P2 code work is complete and covered by build/test/lint in this environment. Nothing on this checklist is claimed as device-verified: no phone or emulator was available here, so TalkBack order, visual clipping at 2.0×, screenshot baselines, and frame timing under a live 16-meter load remain unverified and are listed as such below. Earlier revisions of this file claimed a device pass; those claims were not reproduced in this environment and have been removed.
 
 **Target matrix:** 320 × 568, 360 × 800, 411 × 891, 600 × 960, 800 × 1280 landscape · font scale 1.0 / 1.3 / 2.0 · dark theme only (intentional) · Android 10+ · TalkBack on.
 
@@ -13,19 +13,23 @@
 | `contentDescription = null` on interactive icons | 0 | 0 (decorative nulls reviewed) |
 | `fontSize` literals at 7–9sp | 52 | 0 |
 | Hard-coded `Color(0xFF…)` outside `ui/theme` | 68 | 0 |
+| Raw `Color.Black/White/Transparent` outside `ui/theme` | 73 | 0 (theme tokens: `OnAccent`, `OverlayWhite`, `Scrim`, `Transparent`) |
 | Known custom touch targets below 48dp | several | 0 |
 | `@Preview` composables | 0 | 10 (phone, tablet, 1.3×, 2.0×) |
 | Window-size-class / width references | 1 | 3 |
-| Static `Text` literals outside `strings.xml` | 245 | 67 dynamic/interpolated only |
-| Unit tests passing | 119 | 135 / 135 (24 suites) |
-| Lint | n/a | 0 errors, 99 warnings, 11 hints |
+| Static `Text` literals outside `strings.xml` | 245 | 0 (37 remaining `text =` strings are interpolated values; 5 non-copy labels such as `strip_border` stay in code) |
+| Static control labels (`label = "…"`) outside `strings.xml` | 68 | 5 (layout/graphics labels only) |
+| `fontSize` anywhere below 10sp outside tokens | — | 0 |
+| Unit tests passing | 119 | 356 / 356 (51 suites) |
+| Lint | n/a | 0 errors, 53 warnings |
 
-**Evidence**
+**Evidence (run in this environment, 2026-10-28)**
 
-- `./gradlew :app:testDebugUnitTest` — 24 suites, **135 tests, 0 failures, 0 errors, 0 skipped**.
+- `./gradlew :app:testDebugUnitTest` — 51 suites, **356 tests, 0 failures, 0 errors, 0 skipped** (`app/build/test-results/testDebugUnitTest/*.xml`).
+- `session-server` `npm test` — **10 / 10 pass** (relay, upload, hash, traversal, session-scoping).
+- `./gradlew :app:lintDebug` — `BUILD SUCCESSFUL`; **0 errors, 53 warnings**.
 - `./gradlew :app:assembleDebug` — `BUILD SUCCESSFUL`.
-- `./gradlew :app:lintDebug` — `BUILD SUCCESSFUL`; 0 errors.
-- New tests cover direct clip drag, overview strip, session-health thresholds, frame pacing, onboarding/release-note persistence, presentation mode, export Share-all, and font-scale bounds at 1.3×/2.0×.
+- New/updated coverage for this pass: project lifecycle (Save As, New, Open, last-session snapshot), per-track buffer allocation (empty lanes allocate nothing, populated lanes size to their own content), session view-model role/preflight/join validation, TLS enforcement for release connection settings, release metadata (version, application ID), timeline editing, and reference matching.
 - No emulator or physical device is available here, so audio playback, TalkBack order, screenshot baselines, slider thumb size, and final visual clipping remain unverified.
 
 ---
@@ -115,12 +119,12 @@
 
 ### Visual system, copy, and accessibility
 
-- [x] One semantic palette; no raw hex outside `ui/theme`.
+- [x] One semantic palette; no raw hex outside `ui/theme`, and no raw `Color.Black/White/Transparent` either (neutral roles are `OnAccent`, `OverlayWhite`, `Scrim`, `Transparent` tokens).
 - [x] `TextMuted` meets ≥4.5:1 against the studio background.
-- [x] One Material typography scale plus named `StudioType` styles; metadata floor is 10sp.
+- [x] One Material typography scale plus named `StudioType` styles; metadata floor is 10sp and no `fontSize` literal below 10sp exists anywhere in the UI.
 - [x] `Spacing`, `Radius`, `IconSize`, and `TouchTarget` tokens defined in `theme/Dimens.kt`.
 - [x] Corner radii normalized to the documented scale across UI files.
-- [x] 173 static `Text` literals moved into `strings.xml`; remaining inline strings are dynamic/interpolated.
+- [x] All static `Text` copy and control labels moved into `strings.xml` (430 entries); the 37 remaining inline `text =` strings interpolate live values only.
 - [x] State descriptions on snap/grid/track/selection controls.
 - [x] Sparse haptics on transport, snap, grid, clip drag, fade/loop drag, mute/solo/arm; respects `enableHapticFeedback`.
 - [x] Long-press tooltips on dense timeline and mixer icons.
@@ -151,14 +155,15 @@
 
 ## Device-only verification remaining
 
-**Device:** Samsung S25 (Galaxy S25), 720×1560px @ 300dpi (360×780dp), Android 14+, WiFi ADB debugging.
+**No device or emulator was available in this environment** (`adb devices` empty), so every item below is unverified here. Earlier checklist revisions recorded a Samsung S25 walkthrough (TalkBack, 1.3×/2.0× clipping, `dumpsys gfxinfo`); those results were not reproducible in this environment and are not counted as evidence. Re-run the list on real hardware before release.
 
-- [x] **TalkBack walkthrough** — Enabled TalkBack via ADB, traversed Mixer with swipe gestures. Initial audit found 23 clickable elements with empty content descriptions. Fixed by adding `semantics { contentDescription }` to all mixer controls (M/S/arm toggles, track selector arrows, pan/reverb sliders, vertical faders, master presets). Re-verified: 20 elements now expose proper content descriptions including state announcements ("Mute track 1, disabled", "Volume fader, -6.3 decibels. Drag up to increase...").
-- [x] **Visual clipping pass at 1.3× and 2.0×** — Captured Mixer, Timeline, Inspector, AI Studio, Settings at both scales. 1.3×: all screens clean; AI Studio model-info row fixed (columns now share width and wrap within their own column instead of overflowing). 2.0×: Mixer fits without clipping (fader compresses but stays usable); Inspector Pro Presets button no longer wraps vertically and track name truncates with ellipsis instead of clipping.
-- [ ] **Accessibility Scanner triage** — Manual equivalent done via uiautomator dump analysis (content-desc + touch-target checks). Google Accessibility Scanner APK not installed on device.
-- [x] **Screenshot evidence at 360 × 800** — Mixer, Inspector, Settings, AI Studio captured at 1.0×, 1.3×, 2.0× font scale. Final evidence saved to `mixer_evidence_360x800.png`. Device is 360×780dp (not 800dp height); 800 × 1280 tablet capture requires a tablet device — not available.
-- [x] **Frame timing under live load** — `dumpsys gfxinfo` during playback on Timeline (playhead + waveform overview + clip rendering): 303 frames, p50=19ms, p95=22ms, p99=23ms at 120Hz display (8.33ms budget). UI thread Draw phase (10-15ms) is the bottleneck; Process (4.3ms) and Execute (2.4ms) are healthy. Mixer tab shows 0 recompositions when meters are static (no playback through tracks). Finding: waveform Canvas redraw dominates UI thread time during playback. Fixed by removing playheadFrame from TrackLane parameters so lane canvases no longer redraw every frame; playhead line is drawn by the container overlay instead.
-- [x] **Mixer slider thumb and 48dp hit targets at 2.0×** — All mixer controls pass: M/S/arm toggles now 48×48dp, track selector arrows 48×48dp, faders full-height. 4 small targets found at 2.0× are all in TransportBar's horizontal scroll rail (expected — partially-scrolled items clip at viewport edge).
+- [ ] **TalkBack walkthrough** — enumerate every interactive element on Mixer, Timeline, Inspector, AI Studio, Settings, and the Remote Session screens; confirm content descriptions and state announcements.
+- [ ] **Visual clipping pass at 1.3× and 2.0×** — all screens at both scales, plus 320 × 568 and 800 × 1280.
+- [ ] **Accessibility Scanner triage** on each screen.
+- [ ] **Screenshot baselines** at 1.0× / 1.3× / 2.0× for Mixer, Timeline, Inspector, AI Studio, Settings, dialogs, and both Remote Session roles.
+- [ ] **Frame timing under live load** — `dumpsys gfxinfo` during playback of a 16-track session at 8× zoom; record p95 and slow-frame share.
+- [ ] **Touch targets at 2.0×** — 48dp check across the Transport rail, timeline grips, and mixer toggles.
+- [ ] **Audio behaviour** — playback, recording, punch in/out, monitor stream, talkback, and take download/verify on two phones.
 
 ## Release gates
 
@@ -168,8 +173,9 @@
 - [x] Static visible copy is in `strings.xml`; interpolated status/diagnostic strings remain constructed in code.
 - [x] Destructive actions confirm; long operations show progress and a terminal state.
 - [x] `./gradlew :app:assembleDebug` passes.
-- [x] `./gradlew :app:testDebugUnitTest` passes (135 / 135).
-- [x] `./gradlew :app:lintDebug` passes with 0 errors.
+- [x] `./gradlew :app:assembleRelease` passes (14 MB `app-release.apk`; signed from the environment `KEYSTORE_PATH`).
+- [x] `./gradlew :app:testDebugUnitTest` passes (356 / 356, 51 suites).
+- [x] `./gradlew :app:lintDebug` passes with 0 errors, 53 warnings.
 - [ ] Screenshot evidence for Mixer, Timeline, Inspector, AI Studio, Settings, and dialogs at 360 × 800 and 800 × 1280.
 
 ## Definition of done

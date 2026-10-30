@@ -128,6 +128,24 @@ object AudioFileImporter {
         val channels: Int
     )
 
+    /**
+     * Growable float buffer. A decoded track is millions of samples, so the
+     * decoder must never collect them into a `MutableList<Float>`: boxed floats
+     * cost ~16 bytes each and turn a normal import into hundreds of megabytes
+     * of garbage.
+     */
+    private class FloatAccumulator(initialCapacity: Int = 1 shl 16) {
+        private var data = FloatArray(initialCapacity)
+        private var size = 0
+
+        fun add(value: Float) {
+            if (size == data.size) data = data.copyOf(data.size * 2)
+            data[size++] = value
+        }
+
+        fun toFloatArray(): FloatArray = data.copyOf(size)
+    }
+
     private fun decodeWithMediaCodec(context: Context, uri: Uri): DecodedAudio? {
         val extractor = MediaExtractor()
         try {
@@ -157,7 +175,7 @@ object AudioFileImporter {
             codec.start()
 
             val info = MediaCodec.BufferInfo()
-            val floatList = mutableListOf<Float>()
+            val decodedSamples = FloatAccumulator()
             var isEos = false
 
             val timeoutUs = 5000L
@@ -187,15 +205,9 @@ object AudioFileImporter {
                         val shortArray = ShortArray(shortBuf.remaining())
                         shortBuf.get(shortArray)
 
-                        if (channels == 1) {
-                            // Keep native mono layout; normalizeToSessionStereo handles upmix.
-                            for (s in shortArray) {
-                                floatList.add(s / 32768.0f)
-                            }
-                        } else {
-                            for (s in shortArray) {
-                                floatList.add(s / 32768.0f)
-                            }
+                        // Native mono stays mono; normalizeToSessionStereo upmixes.
+                        for (s in shortArray) {
+                            decodedSamples.add(s / 32768.0f)
                         }
                     }
                     codec.releaseOutputBuffer(outputIndex, false)
@@ -211,7 +223,7 @@ object AudioFileImporter {
             codec.release()
             extractor.release()
 
-            return DecodedAudio(floatList.toFloatArray(), sampleRate, channels)
+            return DecodedAudio(decodedSamples.toFloatArray(), sampleRate, channels)
         } catch (e: Exception) {
             extractor.release()
             return null

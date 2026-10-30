@@ -28,13 +28,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.NewReleases
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
@@ -53,7 +56,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,11 +73,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -86,7 +92,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.example.R
 import com.example.audio.model.DawSettings
+import com.example.audio.model.EditMode
 import com.example.audio.model.ProjectSession
+import com.example.audio.model.TimelineTool
 import com.example.ui.theme.Radius
 import com.example.ui.theme.ElectricLime
 import com.example.ui.theme.NeonCyan
@@ -99,6 +107,8 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import kotlinx.coroutines.delay
 import java.io.File
+import com.example.ui.theme.OnAccent
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -173,13 +183,14 @@ fun DawMainScreen(
     viewModel: DawViewModel,
     modifier: Modifier = Modifier
 ) {
-    val session by viewModel.session.collectAsState()
-    val settings by viewModel.settings.collectAsState()
-    val uiState by viewModel.uiState.collectAsState()
-    val features by viewModel.features.collectAsState()
-    val suggestions by viewModel.suggestions.collectAsState()
-    val usbDevices by viewModel.usbDevices.collectAsState()
-    val activeUsbDevice by viewModel.activeUsbDevice.collectAsState()
+    val session by viewModel.session.collectAsStateWithLifecycle()
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val projectState by viewModel.projectState.collectAsStateWithLifecycle()
+    val features by viewModel.features.collectAsStateWithLifecycle()
+    val suggestions by viewModel.suggestions.collectAsStateWithLifecycle()
+    val usbDevices by viewModel.usbDevices.collectAsStateWithLifecycle()
+    val activeUsbDevice by viewModel.activeUsbDevice.collectAsStateWithLifecycle()
 
     var activeTab by rememberSaveable(
         stateSaver = Saver<DawTab, String>(
@@ -188,6 +199,7 @@ fun DawMainScreen(
         )
     ) { mutableStateOf(DawTab.MIXER) }
     var showOverflow by remember { mutableStateOf(false) }
+    var showSharedLibrary by remember { mutableStateOf(false) }
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val isWide = screenWidthDp >= 700
     val isThreePane = screenWidthDp >= 840
@@ -205,6 +217,16 @@ fun DawMainScreen(
     ) { uri ->
         if (uri != null) {
             viewModel.importAudioFile(uri, uiState.selectedTrackIndex)
+            viewModel.showImportDialog(false)
+        }
+    }
+
+    // NC Phone Beat (.ncbeat) package picker
+    val ncbeatPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.importNcbeat(uri)
             viewModel.showImportDialog(false)
         }
     }
@@ -311,6 +333,39 @@ fun DawMainScreen(
                         viewModel.stop()
                         true
                     }
+                    // Pro Tools edit commands.
+                    Key.B -> {
+                        viewModel.separateAtPlayhead()
+                        true
+                    }
+                    Key.E -> if (event.isCtrlPressed || event.isMetaPressed) {
+                        viewModel.separateAtSelection()
+                        true
+                    } else false
+                    Key.H -> if (event.isCtrlPressed || event.isMetaPressed) {
+                        viewModel.healSelectedClip()
+                        true
+                    } else false
+                    Key.F -> if (event.isCtrlPressed || event.isMetaPressed) {
+                        viewModel.crossfadeSelectedClips()
+                        true
+                    } else false
+                    Key.Delete, Key.Backspace -> {
+                        viewModel.deleteSelectedClips()
+                        true
+                    }
+                    Key.DirectionLeft -> {
+                        viewModel.nudgeSelection(forward = false, byBar = event.isShiftPressed)
+                        true
+                    }
+                    Key.DirectionRight -> {
+                        viewModel.nudgeSelection(forward = true, byBar = event.isShiftPressed)
+                        true
+                    }
+                    Key.Escape -> {
+                        viewModel.clearEditSelection()
+                        true
+                    }
                     else -> false
                 }
             }
@@ -345,7 +400,7 @@ fun DawMainScreen(
                             Icon(
                                 imageVector = Icons.Default.GraphicEq,
                                 contentDescription = null,
-                                tint = Color.Black,
+                                tint = OnAccent,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -361,8 +416,9 @@ fun DawMainScreen(
                             )
                             if (!uiState.presentationMode) {
                                 Text(
-                                    text = stringResource(
-                                        R.string.top_bar_meta,
+                                    text = pluralStringResource(
+                                        R.plurals.top_bar_meta,
+                                        session.tracks.size,
                                         session.tracks.size,
                                         session.sampleRate / 1000
                                     ),
@@ -431,6 +487,46 @@ fun DawMainScreen(
                             expanded = showOverflow,
                             onDismissRequest = { showOverflow = false }
                         ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.project_new), color = TextPrimary) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Add, contentDescription = null, tint = TextSecondary)
+                                },
+                                onClick = {
+                                    showOverflow = false
+                                    viewModel.newProject()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.project_open), color = TextPrimary) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.FolderOpen, contentDescription = null, tint = TextSecondary)
+                                },
+                                onClick = {
+                                    showOverflow = false
+                                    viewModel.showProjectDialog(ProjectDialogMode.OPEN)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.project_save), color = TextPrimary) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Save, contentDescription = null, tint = TextSecondary)
+                                },
+                                onClick = {
+                                    showOverflow = false
+                                    viewModel.saveCurrentProject()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.project_save_as), color = TextPrimary) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Save, contentDescription = null, tint = TextSecondary)
+                                },
+                                onClick = {
+                                    showOverflow = false
+                                    viewModel.showProjectDialog(ProjectDialogMode.SAVE_AS)
+                                }
+                            )
                             if (!uiState.presentationMode) {
                                 DropdownMenuItem(
                                     text = { Text(stringResource(R.string.run_diagnostics), color = TextPrimary) },
@@ -636,7 +732,11 @@ fun DawMainScreen(
                                 onSendQueryToLocalModel = { prompt -> viewModel.sendPromptToLocalModel(prompt) },
                                 onStartVoiceCommand = { viewModel.startVoiceCommand() },
                                 onStopVoiceCommand = { viewModel.stopVoiceCommand() },
-                                onEngineerTextCommand = { request -> viewModel.runEngineerRequest(request) }
+                                onEngineerTextCommand = { request -> viewModel.runEngineerRequest(request) },
+                                onToggleReferenceAudition = { viewModel.toggleAbComparison() },
+                                onRefreshReferenceMatch = { viewModel.refreshReferenceMatch() },
+                                onApplyReferenceMoves = { viewModel.applyReferenceMoves() },
+                                onClearReference = { viewModel.clearReference() }
                             )
                         }
                         DawTab.SETTINGS -> {
@@ -686,9 +786,22 @@ fun DawMainScreen(
             onLaunchPicker = {
                 audioPickerLauncher.launch("audio/*")
             },
+            onLaunchNcbeat = { ncbeatPickerLauncher.launch(arrayOf("*/*")) },
+            onLaunchSharedLibrary = { showSharedLibrary = true },
             onDismiss = { viewModel.showImportDialog(false) },
             isImporting = uiState.isImporting,
             errorMessage = uiState.importError
+        )
+    }
+
+    if (showSharedLibrary) {
+        SharedLibraryDialog(
+            onPick = { uri ->
+                viewModel.importAudioFile(uri, uiState.selectedTrackIndex)
+                viewModel.showImportDialog(false)
+                showSharedLibrary = false
+            },
+            onDismiss = { showSharedLibrary = false },
         )
     }
 
@@ -729,92 +842,14 @@ fun DawMainScreen(
             onDismiss = { viewModel.showClipBin(false) }
         )
     }
-}
 
-@Composable
-private fun MixerPane(
-    viewModel: DawViewModel,
-    session: ProjectSession,
-    uiState: EngineUiState,
-    settings: DawSettings,
-    onSelectTrack: (Int) -> Unit
-) {
-    MixerView(
-        session = session,
-        uiState = uiState,
-        onSelectTrack = onSelectTrack,
-        onSetTrackGain = { idx, g -> viewModel.setTrackGain(idx, g) },
-        onSetTrackPan = { idx, p -> viewModel.setTrackPan(idx, p) },
-        onToggleMute = { idx -> viewModel.toggleTrackMute(idx) },
-        onToggleSolo = { idx -> viewModel.toggleTrackSolo(idx) },
-        onToggleArm = { idx -> viewModel.toggleTrackArm(idx) },
-        onSetReverbSend = { idx, s -> viewModel.setTrackReverbSend(idx, s) },
-        onSetMasterGain = { g -> viewModel.setMasterGain(g) },
-        onApplyMasterPreset = { preset -> viewModel.applyMasterPreset(preset) },
-        hapticsEnabled = settings.enableHapticFeedback
-    )
-}
-
-@Composable
-private fun TimelinePane(
-    viewModel: DawViewModel,
-    session: ProjectSession,
-    uiState: EngineUiState,
-    settings: DawSettings
-) {
-    TimelineView(
-        session = session,
-        uiState = uiState,
-        settings = settings,
-        onSeekFraction = { f -> viewModel.seekToFraction(f) },
-        onSelectTrack = { idx -> viewModel.selectTrack(idx) },
-        onSplitClipAtPlayhead = { idx -> viewModel.splitClipAtPlayhead(idx) },
-        onTrimClipEnd = { idx, id -> viewModel.trimClipEnd(idx, id, 48000L) },
-        onDuplicateClip = { idx, id -> viewModel.duplicateClip(idx, id) },
-        onOpenClipBin = { viewModel.showClipBin(true) },
-        onToggleMagneticSnap = { viewModel.toggleMagneticSnap() },
-        onCycleGridResolution = { viewModel.cycleGridResolution() },
-        onSetLoopRange = { start, end -> viewModel.setLoopRange(start, end) },
-        onSetPunchRange = { start, end -> viewModel.setPunchRange(start, end) },
-        onToggleClipSelection = { trackIdx, clipId -> viewModel.toggleClipSelection(trackIdx, clipId) },
-        onClearClipSelection = { viewModel.clearClipSelection() },
-        onNudgeClip = { trackIdx, clipId, fwd -> viewModel.nudgeSelectedClip(trackIdx, clipId, fwd) },
-        onSetClipGain = { trackIdx, clipId, gain -> viewModel.setClipGain(trackIdx, clipId, gain) },
-        onSetClipFadeIn = { trackIdx, clipId, ms, curve -> viewModel.setClipFadeIn(trackIdx, clipId, ms, curve) },
-        onSetClipFadeOut = { trackIdx, clipId, ms, curve -> viewModel.setClipFadeOut(trackIdx, clipId, ms, curve) },
-        onPasteChorusSection = { trackIdx, clipId, bars -> viewModel.pasteClipAsChorusSection(trackIdx, clipId, bars) },
-        onPasteChorusDouble = { trackIdx, clipId, targetTrack -> viewModel.pasteClipAsDoubledChorus(trackIdx, clipId, targetTrack) },
-        onAdaptChorusLoop = { trackIdx, clipId, rpts -> viewModel.adaptClipToChorusLoop(trackIdx, clipId, rpts) }
-    )
-}
-
-@Composable
-private fun InspectorPane(
-    viewModel: DawViewModel,
-    session: ProjectSession,
-    uiState: EngineUiState
-) {
-    val selTrack = session.tracks.getOrNull(uiState.selectedTrackIndex)
-        ?: session.tracks.firstOrNull()
-        ?: return
-    val gr = uiState.trackGainReductions.getOrElse(selTrack.index) { 0f }
-
-    TrackInspector(
-        track = selTrack,
-        gainReductionDb = gr,
-        onUpdateEq = { eq -> viewModel.updateTrackEq(selTrack.index, eq) },
-        onUpdateSaturation = { sat -> viewModel.updateTrackSaturation(selTrack.index, sat) },
-        onUpdateCompressor = { comp -> viewModel.updateTrackCompressor(selTrack.index, comp) },
-        onUpdateChorus = { cho -> viewModel.updateTrackChorus(selTrack.index, cho) },
-        onUpdateDelay = { delay -> viewModel.updateTrackDuckingDelay(selTrack.index, delay) },
-        onUpdateLimiter = { lim -> viewModel.updateTrackLimiter(selTrack.index, lim) },
-        onUpdateReverbSend = { send -> viewModel.setTrackReverbSend(selTrack.index, send) },
-        onUpdateAutoPitch = { cfg -> viewModel.updateTrackAutoPitch(selTrack.index, cfg) },
-        onUpdateNoiseReduction = { cfg -> viewModel.updateTrackNoiseReduction(selTrack.index, cfg) },
-        onUpdateVocalRider = { cfg -> viewModel.updateTrackVocalRider(selTrack.index, cfg) },
-        onUpdateResonanceSmoother = { cfg -> viewModel.updateTrackResonanceSmoother(selTrack.index, cfg) },
-        onApplyPreset = { preset -> viewModel.applyTrackPreset(selTrack.index, preset) },
-        masterReverb = session.masterReverb,
-        onUpdateMasterReverb = { rev -> viewModel.updateMasterReverb(rev) }
-    )
+    if (projectState.showDialog) {
+        ProjectDialog(
+            state = projectState,
+            onDismiss = { viewModel.dismissProjectDialog() },
+            onOpen = { file -> viewModel.openProject(file) },
+            onSaveAs = { name -> viewModel.saveProjectAs(name) },
+            onNewProject = { viewModel.newProject() },
+        )
+    }
 }

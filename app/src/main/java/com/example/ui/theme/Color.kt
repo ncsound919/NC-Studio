@@ -39,3 +39,10 @@ val RulerTick = Color(0xFF475569)
 val MasterStrip = Color(0xFF161B26)
 val SurfaceRaised = Color(0xFF1E293B)
 val SurfaceSunken = Color(0xFF090D14)
+
+// Neutral roles that screens must not declare themselves: text/icons on the
+// bright accent buttons, white overlay glyphs, and scrims.
+val OnAccent = Color.Black
+val OverlayWhite = Color.White
+val Scrim = Color.Black
+val Transparent = Color.Transparent

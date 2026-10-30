@@ -49,21 +49,20 @@ class UsbAudioInterfaceManager(private val context: Context) {
 
         for (dev in devices) {
             val type = dev.type
-            val isUsb = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                type == AudioDeviceInfo.TYPE_USB_DEVICE ||
-                        type == AudioDeviceInfo.TYPE_USB_HEADSET ||
-                        type == AudioDeviceInfo.TYPE_USB_ACCESSORY
-            } else false
+            // TYPE_USB_HEADSET only exists from API 26; minSdk is 24.
+            val isHeadset = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                type == AudioDeviceInfo.TYPE_USB_HEADSET
+            val isUsb = type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                isHeadset ||
+                type == AudioDeviceInfo.TYPE_USB_ACCESSORY
 
             if (isUsb) {
-                val name = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    dev.productName.toString()
-                } else "USB Audio Device"
+                val name = dev.productName.toString()
 
-                val typeLabel = when (type) {
-                    AudioDeviceInfo.TYPE_USB_DEVICE -> "USB Audio Interface"
-                    AudioDeviceInfo.TYPE_USB_HEADSET -> "USB-C Headset / DAC"
-                    AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB Host Accessory"
+                val typeLabel = when {
+                    type == AudioDeviceInfo.TYPE_USB_DEVICE -> "USB Audio Interface"
+                    isHeadset -> "USB-C Headset / DAC"
+                    type == AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB Host Accessory"
                     else -> "USB Audio"
                 }
 
@@ -97,16 +96,14 @@ class UsbAudioInterfaceManager(private val context: Context) {
         val dev = _usbDevices.value.find { it.id == deviceId }
         _activeUsbDevice.value = dev
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val rawDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            val matchingRaw = rawDevices.find { it.id == deviceId }
-            onDeviceSelected?.invoke(matchingRaw)
-        }
+        val rawDevices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val matchingRaw = rawDevices.find { it.id == deviceId }
+        onDeviceSelected?.invoke(matchingRaw)
     }
 
     fun release() {
         try {
             audioManager.unregisterAudioDeviceCallback(deviceCallback)
-        } catch (_: Exception) {}
+        } catch (_: Exception) {/* best-effort USB cleanup: the device may already be gone */ }
     }
 }

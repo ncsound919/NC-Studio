@@ -1,6 +1,6 @@
 {
-  "name": "Pulse DAW",
-  "description": "Multi-track audio workstation & AI mixing studio with 8-track DSP mixing engine, clip timeline, dynamic parameter smoothing, and intelligent mix assistant.",
+  "name": "NC Studio",
+  "description": "Multi-track audio workstation & AI mixing studio with 16-track DSP mixing engine, clip timeline, dynamic parameter smoothing, and intelligent mix assistant.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

@@ -29,8 +29,13 @@ import com.example.audio.model.ResonanceSmootherConfig
 import com.example.audio.model.ReverbConfig
 import com.example.audio.model.SaturationConfig
 import com.example.audio.model.VocalRiderConfig
+import com.overlay.audio.plugins.PluginChain
+import com.overlay.audio.plugins.TrackPluginRack
+import com.example.audio.reference.ReferenceMonitor
+import com.example.audio.model.BusData
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReferenceArray
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -47,6 +52,8 @@ class AudioTrackPlaybackEngine(
 
     companion object {
         const val MAX_TRACKS = 16
+        const val MAX_BUSES = 8
+        const val MAX_ENGINE_BUFFER_FRAMES = 4096
     }
 
     val commandQueue = AudioCommandQueue()
@@ -63,17 +70,26 @@ class AudioTrackPlaybackEngine(
     private val currentPlayheadFrame = AtomicLong(0L)
     private var renderThread: Thread? = null
 
-    // Track buffers: 16 tracks, each holds interleaved stereo samples (or mono)
+    // Track buffers: 16 tracks, each holds interleaved stereo samples (or mono).
+    // Samples and frame count are published together as one immutable object so
+    // the render thread can never pair a new buffer with a stale length.
+    private class TrackSource(val samples: FloatArray, val frames: Long)
+
     private val trackCount = MAX_TRACKS
-    private val trackBuffers = Array(trackCount) { FloatArray(0) }
-    private val trackFrameCounts = LongArray(trackCount) { 0L }
+    private val trackSources = AtomicReferenceArray<TrackSource?>(trackCount)
+    private val emptySamples = FloatArray(0)
+
+    // Buffer-size change requested from another thread. The render loop applies
+    // it itself, so nothing ever writes to an AudioTrack it has already released.
+    @Volatile
+    private var pendingBufferSizeFrames: Int = -1
 
     // DSP components per track
-    private val trackGainsDb = FloatArray(trackCount) { 0.0f }
-    private val trackPans = FloatArray(trackCount) { 0.0f }
-    private val trackMuted = BooleanArray(trackCount) { false }
-    private val trackSoloed = BooleanArray(trackCount) { false }
-    private val trackReverbSends = FloatArray(trackCount) { 0.0f }
+    private val trackGainsDb = FloatArray(trackCount)
+    private val trackPans = FloatArray(trackCount)
+    private val trackMuted = BooleanArray(trackCount)
+    private val trackSoloed = BooleanArray(trackCount)
+    private val trackReverbSends = FloatArray(trackCount)
 
     private val gainSmoothers = Array(trackCount) { ParameterSmoother(1.0f, sampleRate.toFloat(), 15f) }
     private val panSmoothersL = Array(trackCount) { ParameterSmoother(0.707f, sampleRate.toFloat(), 15f) }
@@ -90,6 +106,40 @@ class AudioTrackPlaybackEngine(
     private val trackResonanceSmoothers = Array(trackCount) { ResonanceSmootherProcessor(sampleRate.toFloat()) }
     private val trackVocalRiders = Array(trackCount) { VocalRiderProcessor(sampleRate.toFloat()) }
 
+    /**
+     * Studio plugin racks. When a track has an ordered chain, the rack replaces
+     * the fixed legacy strip for that track; when it is empty the legacy strip
+     * still runs, so old sessions and configs keep working unchanged.
+     */
+    private val trackRacks = Array(trackCount) { TrackPluginRack(sampleRate.toFloat()) }
+    private val trackSidechainSource = IntArray(trackCount) { -1 }
+    private val trackOutputBusIds = arrayOfNulls<String>(trackCount)
+    private val masterRack = TrackPluginRack(sampleRate.toFloat())
+
+    @Volatile
+    private var masterChainActive = false
+
+    /** A group bus: summed tracks, its own ordered chain, then the mix bus. */
+    private inner class BusState(val id: String, val name: String) {
+        var gainLinear = 1f
+        var muted = false
+        val rack = TrackPluginRack(sampleRate.toFloat())
+        val bufferL = FloatArray(MAX_ENGINE_BUFFER_FRAMES)
+        val bufferR = FloatArray(MAX_ENGINE_BUFFER_FRAMES)
+    }
+
+    private val busStates = ArrayList<BusState>(MAX_BUSES)
+    private val trackBusSlot = IntArray(trackCount) { -1 }
+    private val busProcessScratch = FloatArray(2)
+
+    private fun refreshBusMapping() {
+        for (t in 0 until trackCount) {
+            val busId = trackOutputBusIds[t]
+            trackBusSlot[t] = if (busId == null || busId == "master") -1
+            else busStates.indexOfFirst { it.id == busId }
+        }
+    }
+
     // Master bus DSP
     private var masterGainDb = 0.0f
     private val masterGainSmoother = ParameterSmoother(1.0f, sampleRate.toFloat(), 15f)
@@ -98,16 +148,30 @@ class AudioTrackPlaybackEngine(
     val lufsMeter = LufsMeter(sampleRate.toFloat())
 
     // Telemetry and meters
-    val trackPeakLevels = FloatArray(trackCount) { 0.0f }
-    val trackGainReductions = FloatArray(trackCount) { 0.0f }
+    val trackPeakLevels = FloatArray(trackCount)
+    val trackGainReductions = FloatArray(trackCount)
+    /** Gain reduction of each group bus rack, indexed by bus slot. */
+    val busGainReductions = FloatArray(MAX_BUSES)
+    /** Gain reduction of the active mix bus chain (0 when the legacy limiter runs). */
+    @Volatile
+    var masterGainReductionDb: Float = 0f
+    @Volatile
     var masterPeakL: Float = 0.0f
+
+    @Volatile
     var masterPeakR: Float = 0.0f
+
+    /**
+     * Reference A/B audition. Runs after the master stage and is driven entirely
+     * by commands, so nothing about it is touched when no reference is loaded.
+     */
+    private val referenceMonitor = ReferenceMonitor(sampleRate)
 
     // Loop settings
     private var loopEnabled = true
     private var loopStartFrame = 0L
     private var loopEndFrame = sampleRate.toLong() * 16L
-    private var totalSessionLengthFrames = sampleRate.toLong() * 16L
+    private val totalSessionLengthFrames = AtomicLong(sampleRate.toLong() * 16L)
 
     // Click track state (mirrors metronome config for UI visibility)
     var clickBpm: Float = 120f
@@ -120,26 +184,36 @@ class AudioTrackPlaybackEngine(
     // Performance telemetry
     private var underrunCount = 0
     private val callbackTimesMs = FloatArray(100)
+    private val telemetryScratch = FloatArray(100)
     private var callbackTimeIdx = 0
     var latestTelemetry = AudioTelemetry()
         private set
 
     fun setTrackAudio(trackIndex: Int, samples: FloatArray) {
         if (trackIndex in 0 until trackCount) {
-            trackBuffers[trackIndex] = samples
-            trackFrameCounts[trackIndex] = (samples.size / 2).toLong()
-            totalSessionLengthFrames = max(totalSessionLengthFrames, trackFrameCounts[trackIndex])
-            if (loopEndFrame <= 0) loopEndFrame = totalSessionLengthFrames
+            val frames = (samples.size / 2).toLong()
+            trackSources.set(trackIndex, TrackSource(samples, frames))
+            totalSessionLengthFrames.accumulateAndGet(frames, ::maxOf)
         }
+    }
+
+    /**
+     * Resets the playable length when a different project is opened. Track
+     * pushes still grow it to the longest clip, but a shorter project must not
+     * inherit the previous project's tail.
+     */
+    fun setSessionLength(frames: Long) {
+        totalSessionLengthFrames.set(frames.coerceAtLeast(0L))
     }
 
     fun start() {
         if (isRunning.get()) return
+        pendingBufferSizeFrames = -1
         isRunning.set(true)
 
         renderThread = Thread({
             runAudioLoop()
-        }, "PulseDaw-RenderThread").apply {
+        }, "NCStudio-RenderThread").apply {
             priority = Thread.MAX_PRIORITY
             start()
         }
@@ -150,12 +224,35 @@ class AudioTrackPlaybackEngine(
         isPlaying.set(false)
         try {
             renderThread?.join(500)
-        } catch (_: InterruptedException) {}
+        } catch (_: InterruptedException) {/* best-effort audio cleanup: the track is already unusable */ }
         renderThread = null
     }
 
+    /** Per-slot gain reduction for the rack UI (empty when no chain is loaded). */
+    fun trackSlotGainReductions(trackIndex: Int): FloatArray {
+        if (trackIndex !in 0 until trackCount) return FloatArray(0)
+        val rack = trackRacks[trackIndex]
+        if (rack.isEmpty) return FloatArray(0)
+        return FloatArray(rack.size) { i -> rack.slotGainReductions().getOrElse(i) { 0f } }
+    }
+
     fun isEnginePlaying(): Boolean = isPlaying.get()
+
+    /** True while the render thread is alive (false after [stop] or a render failure). */
+    fun isEngineRunning(): Boolean = isRunning.get()
+
     fun getPlayheadPosition(): Long = currentPlayheadFrame.get()
+
+    /**
+     * Opens and starts an AudioTrack for [bufferFrames]. Called on the render
+     * thread only, which owns the instance and is the only code that releases it.
+     */
+    private fun openAudioTrack(bufferFrames: Int): AudioTrack {
+        val track = buildAudioTrack(bufferFrames)
+        track.play()
+        activeAudioTrack = track
+        return track
+    }
 
     private fun buildAudioTrack(bufferFrames: Int): AudioTrack {
         val minBufferSize = AudioTrack.getMinBufferSize(
@@ -186,63 +283,24 @@ class AudioTrackPlaybackEngine(
         }
         val track = trackBuilder.build()
 
-        if (preferredDevice != null &&
-            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M
-        ) {
-            track.preferredDevice = preferredDevice
-        }
+        preferredDevice?.let { track.preferredDevice = it }
         return track
     }
 
     private fun runAudioLoop() {
-        val bufferSizeFrames = configuredBufferSizeFrames.coerceIn(64, 4096)
-        val audioTrackBufferSize = max(
-            AudioTrack.getMinBufferSize(
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_STEREO,
-                AudioFormat.ENCODING_PCM_16BIT
-            ),
-            bufferSizeFrames * 2 * 2 * 4
-        )
-
+        var bufferSizeFrames = configuredBufferSizeFrames.coerceIn(64, 4096)
         var audioTrack: AudioTrack? = null
         try {
-            val trackBuilder = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(sampleRate)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
-                        .build()
-                )
-                .setBufferSizeInBytes(audioTrackBufferSize)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                trackBuilder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-            }
-            audioTrack = trackBuilder.build()
+            audioTrack = openAudioTrack(bufferSizeFrames)
 
-            audioTrack.play()
-            activeAudioTrack = audioTrack
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                preferredDevice?.let { audioTrack.preferredDevice = it }
-            }
-
-            // Pre-allocated scratch buffers to guarantee zero GC in callback
-            val mixBufferL = FloatArray(bufferSizeFrames)
-            val mixBufferR = FloatArray(bufferSizeFrames)
-            val reverbSendBufferL = FloatArray(bufferSizeFrames)
-            val reverbSendBufferR = FloatArray(bufferSizeFrames)
-            val pcmOutputBytes = ShortArray(bufferSizeFrames * 2)
+            // Pre-allocated scratch buffers to guarantee zero GC in callback.
+            // Only re-allocated when the block size changes.
+            var mixBufferL = FloatArray(bufferSizeFrames)
+            var mixBufferR = FloatArray(bufferSizeFrames)
+            var reverbSendBufferL = FloatArray(bufferSizeFrames)
+            var reverbSendBufferR = FloatArray(bufferSizeFrames)
+            var pcmOutputBytes = ShortArray(bufferSizeFrames * 2)
             val stageOut = FloatArray(2) // reusable stereo stage buffer
-
-            var lastRenderTimeNs = System.nanoTime()
 
             while (isRunning.get()) {
                 val cycleStartNs = System.nanoTime()
@@ -250,8 +308,35 @@ class AudioTrackPlaybackEngine(
                 // 1. Drain typed commands from queue
                 drainCommands()
 
+                // 1b. Apply a pending buffer-size change here, on the only thread
+                // that writes to the AudioTrack, so playback never writes into a
+                // released instance.
+                val requestedFrames = pendingBufferSizeFrames
+                if (requestedFrames > 0 && requestedFrames != bufferSizeFrames) {
+                    pendingBufferSizeFrames = -1
+                    val rebuilt = try {
+                        openAudioTrack(requestedFrames)
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (rebuilt != null) {
+                        try {
+                            audioTrack?.release()
+                        } catch (_: Exception) {
+                            // Old instance is unusable either way; keep the new one.
+                        }
+                        audioTrack = rebuilt
+                        bufferSizeFrames = requestedFrames
+                        mixBufferL = FloatArray(bufferSizeFrames)
+                        mixBufferR = FloatArray(bufferSizeFrames)
+                        reverbSendBufferL = FloatArray(bufferSizeFrames)
+                        reverbSendBufferR = FloatArray(bufferSizeFrames)
+                        pcmOutputBytes = ShortArray(bufferSizeFrames * 2)
+                    }
+                }
+
                 // Check for underruns
-                val currentUnderruns = audioTrack.underrunCount
+                val currentUnderruns = audioTrack?.underrunCount ?: 0
                 if (currentUnderruns > underrunCount) {
                     underrunCount = currentUnderruns
                 }
@@ -259,7 +344,7 @@ class AudioTrackPlaybackEngine(
                 if (!isPlaying.get()) {
                     // Output silence smoothly
                     pcmOutputBytes.fill(0)
-                    audioTrack.write(pcmOutputBytes, 0, pcmOutputBytes.size, AudioTrack.WRITE_BLOCKING)
+                    audioTrack?.write(pcmOutputBytes, 0, pcmOutputBytes.size, AudioTrack.WRITE_BLOCKING)
                     Thread.sleep(8)
                     continue
                 }
@@ -269,6 +354,10 @@ class AudioTrackPlaybackEngine(
                 mixBufferR.fill(0f)
                 reverbSendBufferL.fill(0f)
                 reverbSendBufferR.fill(0f)
+                for (bus in busStates) {
+                    java.util.Arrays.fill(bus.bufferL, 0, bufferSizeFrames, 0f)
+                    java.util.Arrays.fill(bus.bufferR, 0, bufferSizeFrames, 0f)
+                }
 
                 val playhead = currentPlayheadFrame.get()
                 var anySolo = false
@@ -281,8 +370,9 @@ class AudioTrackPlaybackEngine(
 
                 // 3. Render 16 tracks
                 for (t in 0 until trackCount) {
-                    val trackSamples = trackBuffers[t]
-                    val trackFrames = trackFrameCounts[t]
+                    val source = trackSources.get(t)
+                    val trackSamples = source?.samples ?: emptySamples
+                    val trackFrames = source?.frames ?: 0L
                     val isMuted = trackMuted[t]
                     val isSoloed = trackSoloed[t]
                     val shouldPlay = if (anySolo) isSoloed else !isMuted
@@ -300,6 +390,10 @@ class AudioTrackPlaybackEngine(
                     val noiseReduction = trackNoiseReductions[t]
                     val resonanceSmoother = trackResonanceSmoothers[t]
                     val vocalRider = trackVocalRiders[t]
+                    val rack = if (trackRacks[t].isEmpty) null else trackRacks[t]
+                    val busSlot = trackBusSlot[t]
+                    val bus = if (busSlot in 0 until busStates.size) busStates[busSlot] else null
+                    val keyTrack = trackSidechainSource[t]
 
                     var trackPeak = 0.0f
 
@@ -321,32 +415,35 @@ class AudioTrackPlaybackEngine(
                             }
                         }
 
-                        // 1. 4-Band Parametric EQ
-                        eq.processSampleInto(rawL, rawR, stageOut)
-
-                        // 2. Noise reduction / gate
-                        noiseReduction.processSampleInto(stageOut[0], stageOut[1], stageOut)
-
-                        // 3. Dynamic resonance suppression (de-harsh / de-ess band)
-                        resonanceSmoother.processSampleInto(stageOut[0], stageOut[1], stageOut)
-
-                        // 4. Tape / Tube Saturation
-                        saturator.processSampleInto(stageOut[0], stageOut[1], stageOut)
-
-                        // 5. Stereo Dynamic Compressor
-                        comp.processSampleInto(stageOut[0], stageOut[1], stageOut)
-
-                        // 6. Vocal rider / automatic leveler
-                        vocalRider.processSampleInto(stageOut[0], stageOut[1], stageOut)
-
-                        // 7. Stereo Chorus / Vocal Doubler
-                        chorus.processSampleInto(stageOut[0], stageOut[1], stageOut)
-
-                        // 8. Stereo Ducking Delay
-                        delay.processSampleInto(stageOut[0], stageOut[1], stageOut)
-
-                        // 9. Channel Brickwall Limiter
-                        limiter.processSampleInto(stageOut[0], stageOut[1], stageOut)
+                        if (rack != null) {
+                            // Studio insert chain: modules run in their saved order,
+                            // which is what makes the chain sound like the reference.
+                            if (keyTrack in 0 until trackCount) {
+                                val keySource = trackSources.get(keyTrack)
+                                if (keySource != null && framePos < keySource.frames) {
+                                    val keyIdx = (framePos * 2).toInt()
+                                    if (keyIdx + 1 < keySource.samples.size) {
+                                        rack.setKey(keySource.samples[keyIdx], keySource.samples[keyIdx + 1])
+                                    } else {
+                                        rack.setKey(0f, 0f)
+                                    }
+                                } else {
+                                    rack.setKey(0f, 0f)
+                                }
+                            }
+                            rack.processInto(rawL, rawR, stageOut)
+                        } else {
+                            // Legacy fixed channel strip (sessions with no chain).
+                            eq.processSampleInto(rawL, rawR, stageOut)
+                            noiseReduction.processSampleInto(stageOut[0], stageOut[1], stageOut)
+                            resonanceSmoother.processSampleInto(stageOut[0], stageOut[1], stageOut)
+                            saturator.processSampleInto(stageOut[0], stageOut[1], stageOut)
+                            comp.processSampleInto(stageOut[0], stageOut[1], stageOut)
+                            vocalRider.processSampleInto(stageOut[0], stageOut[1], stageOut)
+                            chorus.processSampleInto(stageOut[0], stageOut[1], stageOut)
+                            delay.processSampleInto(stageOut[0], stageOut[1], stageOut)
+                            limiter.processSampleInto(stageOut[0], stageOut[1], stageOut)
+                        }
 
                         val processedL = stageOut[0] * gain * panL
                         val processedR = stageOut[1] * gain * panR
@@ -355,8 +452,13 @@ class AudioTrackPlaybackEngine(
                         if (samplePeak > trackPeak) trackPeak = samplePeak
 
                         if (shouldPlay) {
-                            mixBufferL[i] += processedL
-                            mixBufferR[i] += processedR
+                            if (bus != null) {
+                                bus.bufferL[i] += processedL
+                                bus.bufferR[i] += processedR
+                            } else {
+                                mixBufferL[i] += processedL
+                                mixBufferR[i] += processedR
+                            }
 
                             // Mute/Solo rule: sends are cut if track is muted or not soloed
                             reverbSendBufferL[i] += processedL * sendLvl
@@ -365,12 +467,32 @@ class AudioTrackPlaybackEngine(
                     }
 
                     trackPeakLevels[t] = trackPeak
-                    trackGainReductions[t] = comp.currentGainReductionDb
+                    trackGainReductions[t] = rack?.gainReductionDb ?: comp.currentGainReductionDb
+                }
+
+                // 3b. Group buses: run each bus chain, then sum it into the mix.
+                for (busSlot in busStates.indices) {
+                    val bus = busStates[busSlot]
+                    if (bus.muted) continue
+                    val busGain = bus.gainLinear
+                    for (i in 0 until bufferSizeFrames) {
+                        bus.rack.processInto(bus.bufferL[i], bus.bufferR[i], busProcessScratch)
+                        mixBufferL[i] += busProcessScratch[0] * busGain
+                        mixBufferR[i] += busProcessScratch[1] * busGain
+                    }
+                    busGainReductions[busSlot] = bus.rack.gainReductionDb
                 }
 
                 // 4. Process Master Reverb Send & Return (+ sample-locked metronome click)
+                // With a mix bus chain active, the chain owns the bus processing
+                // (reverb included), so the legacy send return steps aside.
                 for (i in 0 until bufferSizeFrames) {
-                    masterReverb.processSampleInto(reverbSendBufferL[i], reverbSendBufferR[i], stageOut)
+                    if (masterChainActive) {
+                        stageOut[0] = 0f
+                        stageOut[1] = 0f
+                    } else {
+                        masterReverb.processSampleInto(reverbSendBufferL[i], reverbSendBufferR[i], stageOut)
+                    }
                     var finalL = mixBufferL[i] + stageOut[0]
                     var finalR = mixBufferR[i] + stageOut[1]
 
@@ -384,18 +506,41 @@ class AudioTrackPlaybackEngine(
                     mixBufferR[i] = finalR
                 }
 
-                // 5. Apply Master Fader & Master Limiter & LUFS metering
-                var localMasterPeakL = 0.0f
-                var localMasterPeakR = 0.0f
-
+                // 5. Apply Master Fader & Master Limiter
                 for (i in 0 until bufferSizeFrames) {
                     val masterGain = masterGainSmoother.next()
                     val preLimitL = mixBufferL[i] * masterGain
                     val preLimitR = mixBufferR[i] * masterGain
 
-                    masterLimiter.processSampleInto(preLimitL, preLimitR, stageOut)
-                    val postLimitL = stageOut[0]
-                    val postLimitR = stageOut[1]
+                    if (masterChainActive) {
+                        masterRack.processInto(preLimitL, preLimitR, stageOut)
+                    } else {
+                        masterLimiter.processSampleInto(preLimitL, preLimitR, stageOut)
+                    }
+                    mixBufferL[i] = stageOut[0]
+                    mixBufferR[i] = stageOut[1]
+                }
+
+                // 5b. Reference A/B audition. The reference bypasses the master
+                // chain (a commercial master has already been mastered); the mix
+                // is crossfaded out as the reference fades in, level matched.
+                referenceMonitor.process(
+                    mixBufferL,
+                    mixBufferR,
+                    bufferSizeFrames,
+                    playhead,
+                    loopEnabled,
+                    loopStartFrame,
+                    loopEndFrame
+                )
+
+                // 5c. Metering and PCM conversion, on what actually reaches the output
+                var localMasterPeakL = 0.0f
+                var localMasterPeakR = 0.0f
+
+                for (i in 0 until bufferSizeFrames) {
+                    val postLimitL = mixBufferL[i]
+                    val postLimitR = mixBufferR[i]
 
                     lufsMeter.addSample(postLimitL, postLimitR)
 
@@ -414,15 +559,18 @@ class AudioTrackPlaybackEngine(
 
                 masterPeakL = localMasterPeakL
                 masterPeakR = localMasterPeakR
+                masterGainReductionDb = if (masterChainActive) masterRack.gainReductionDb else 0f
 
                 // 6. Write to AudioTrack
-                audioTrack.write(pcmOutputBytes, 0, pcmOutputBytes.size, AudioTrack.WRITE_BLOCKING)
+                val out = audioTrack ?: break
+                out.write(pcmOutputBytes, 0, pcmOutputBytes.size, AudioTrack.WRITE_BLOCKING)
 
                 // 7. Update playhead & loop
+                val sessionFrames = totalSessionLengthFrames.get()
                 var nextPlayhead = playhead + bufferSizeFrames
                 if (loopEnabled && loopEndFrame > loopStartFrame && nextPlayhead >= loopEndFrame) {
                     nextPlayhead = loopStartFrame
-                } else if (!loopEnabled && totalSessionLengthFrames > 0 && nextPlayhead >= totalSessionLengthFrames) {
+                } else if (!loopEnabled && sessionFrames > 0 && nextPlayhead >= sessionFrames) {
                     nextPlayhead = 0L
                     isPlaying.set(false)
                 }
@@ -439,10 +587,21 @@ class AudioTrackPlaybackEngine(
                 }
             }
 
-            audioTrack.stop()
-            audioTrack.release()
-        } catch (e: Exception) {
-            audioTrack?.release()
+        } catch (_: Exception) {
+            // A dead output device must not leave the engine wedged: the finally
+            // block clears isRunning so a later start() can rebuild the output.
+        } finally {
+            try {
+                audioTrack?.stop()
+            } catch (_: Exception) {
+            /* best-effort audio cleanup: the track is already unusable */ }
+            try {
+                audioTrack?.release()
+            } catch (_: Exception) {
+            /* best-effort audio cleanup: the track is already unusable */ }
+            activeAudioTrack = null
+            isRunning.set(false)
+            isPlaying.set(false)
         }
     }
 
@@ -533,10 +692,55 @@ class AudioTrackPlaybackEngine(
                     val t = cmd.trackIndex
                     if (t in 0 until trackCount) trackVocalRiders[t].configure(cmd.config)
                 }
+                is AudioEngineCommand.SetTrackPluginChain -> {
+                    val t = cmd.trackIndex
+                    if (t in 0 until trackCount) {
+                        trackRacks[t].setTempoBpm(clickBpm)
+                        trackRacks[t].setChain(cmd.chain)
+                    }
+                }
+                is AudioEngineCommand.SetTrackSidechainSource -> {
+                    val t = cmd.trackIndex
+                    if (t in 0 until trackCount) trackSidechainSource[t] = cmd.sourceTrackIndex
+                }
+                is AudioEngineCommand.SetTrackOutputBus -> {
+                    val t = cmd.trackIndex
+                    if (t in 0 until trackCount) {
+                        trackOutputBusIds[t] = cmd.busId
+                        refreshBusMapping()
+                    }
+                }
+                is AudioEngineCommand.SetMasterPluginChain -> {
+                    masterRack.setTempoBpm(clickBpm)
+                    masterRack.setChain(cmd.chain)
+                    masterChainActive = cmd.chain.isActive
+                }
+                is AudioEngineCommand.SetBuses -> {
+                    busStates.clear()
+                    for (bus in cmd.buses.take(MAX_BUSES)) {
+                        val state = BusState(bus.id, bus.name)
+                        state.gainLinear = if (bus.gainDb <= -60f) 0f else 10.0.pow(bus.gainDb / 20.0).toFloat()
+                        state.muted = bus.isMuted
+                        state.rack.setTempoBpm(clickBpm)
+                        cmd.busChains[bus.id]?.let { state.rack.setChain(it) }
+                        busStates.add(state)
+                    }
+                    refreshBusMapping()
+                }
                 is AudioEngineCommand.SetMasterGain -> {
                     masterGainDb = cmd.gainDb
                     val linear = if (cmd.gainDb <= -60f) 0f else 10.0.pow(cmd.gainDb / 20.0).toFloat()
                     masterGainSmoother.setTarget(linear)
+                }
+                is AudioEngineCommand.SetReferenceTrack -> {
+                    referenceMonitor.setReference(cmd.samples, cmd.offsetFrames)
+                }
+                is AudioEngineCommand.SetReferenceAudition -> {
+                    referenceMonitor.setMatchGainDb(cmd.matchGainDb)
+                    referenceMonitor.setAudition(cmd.enabled)
+                }
+                is AudioEngineCommand.SetReferenceOffset -> {
+                    referenceMonitor.setOffset(cmd.offsetFrames)
                 }
                 is AudioEngineCommand.SetMasterLimiter -> masterLimiter.configure(cmd.config)
                 is AudioEngineCommand.SetMasterReverb -> masterReverb.configure(cmd.config)
@@ -545,6 +749,10 @@ class AudioTrackPlaybackEngine(
                     clickBpm = cmd.bpm
                     clickEnabled = cmd.enabled
                     clickVolumeDb = cmd.volumeDb
+                    // Grid-locked modules (delays) follow the session tempo.
+                    for (rack in trackRacks) rack.setTempoBpm(cmd.bpm)
+                    masterRack.setTempoBpm(cmd.bpm)
+                    for (bus in busStates) bus.rack.setTempoBpm(cmd.bpm)
                 }
                 is AudioEngineCommand.SetCountIn -> {
                     // Count-in uses the same click voice; transport-level scheduling
@@ -555,18 +763,8 @@ class AudioTrackPlaybackEngine(
                 is AudioEngineCommand.SetBufferSize -> {
                     if (cmd.frames in 64..4096 && cmd.frames != configuredBufferSizeFrames) {
                         configuredBufferSizeFrames = cmd.frames
-                        // Rebuild AudioTrack on the render thread with the new size
-                        try {
-                            (activeAudioTrack)?.let { current ->
-                                current.pause()
-                                current.flush()
-                                current.release()
-                            }
-                            activeAudioTrack = buildAudioTrack(configuredBufferSizeFrames)
-                            activeAudioTrack?.play()
-                        } catch (_: Exception) {
-                            // Keep running with old buffer size on hardware failure
-                        }
+                        // Applied by the render loop, which owns the AudioTrack.
+                        pendingBufferSizeFrames = cmd.frames
                     }
                 }
                 is AudioEngineCommand.SetLoopRange -> {
@@ -597,11 +795,16 @@ class AudioTrackPlaybackEngine(
     }
 
     private fun updateTelemetry(bufferSizeFrames: Int) {
-        val sorted = callbackTimesMs.clone().apply { sort() }
-        val p50 = sorted[(sorted.size * 0.50).toInt()]
-        val p95 = sorted[(sorted.size * 0.95).toInt()]
-        val p99 = sorted[(sorted.size * 0.99).toInt()]
-        val mean = sorted.average().toFloat()
+        // Runs on the render thread, so it reuses one scratch array and sums by
+        // hand instead of allocating a copy and boxing an iterator.
+        System.arraycopy(callbackTimesMs, 0, telemetryScratch, 0, callbackTimesMs.size)
+        telemetryScratch.sort()
+        val p50 = telemetryScratch[(telemetryScratch.size * 0.50).toInt()]
+        val p95 = telemetryScratch[(telemetryScratch.size * 0.95).toInt()]
+        val p99 = telemetryScratch[(telemetryScratch.size * 0.99).toInt()]
+        var sum = 0f
+        for (v in telemetryScratch) sum += v
+        val mean = sum / telemetryScratch.size
 
         val bufferDurationMs = (bufferSizeFrames.toFloat() / sampleRate) * 1000f
         val cpuLoad = (mean / bufferDurationMs * 100f).coerceIn(0f, 100f)
@@ -645,16 +848,29 @@ class AudioTrackPlaybackEngine(
             commandQueue.enqueue(AudioEngineCommand.SetNoiseReduction(track.index, track.noiseReductionConfig))
             commandQueue.enqueue(AudioEngineCommand.SetResonanceSmoother(track.index, track.resonanceSmootherConfig))
             commandQueue.enqueue(AudioEngineCommand.SetVocalRider(track.index, track.vocalRiderConfig))
+            commandQueue.enqueue(AudioEngineCommand.SetTrackPluginChain(track.index, PluginChain(track.pluginChain)))
+            commandQueue.enqueue(AudioEngineCommand.SetTrackSidechainSource(track.index, track.sidechainSourceIndex))
+            commandQueue.enqueue(AudioEngineCommand.SetTrackOutputBus(track.index, track.outputBusId))
         }
+        commandQueue.enqueue(
+            AudioEngineCommand.SetBuses(
+                project.buses,
+                project.buses.associate { it.id to PluginChain(it.pluginChain) }
+            )
+        )
+        commandQueue.enqueue(AudioEngineCommand.SetMasterPluginChain(PluginChain(project.masterPluginChain)))
     }
 
+    // Written by the UI/USB thread and read by the render thread (and vice versa
+    // when the render thread opens a new AudioTrack), so publish them safely.
+    @Volatile
     private var preferredDevice: AudioDeviceInfo? = null
+
+    @Volatile
     private var activeAudioTrack: AudioTrack? = null
 
     fun setPreferredOutputDevice(deviceInfo: AudioDeviceInfo?) {
         preferredDevice = deviceInfo
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-            activeAudioTrack?.preferredDevice = deviceInfo
-        }
+        activeAudioTrack?.preferredDevice = deviceInfo
     }
 }

@@ -21,7 +21,7 @@ data class LocalNeuralInferenceResult(
     val transientPunchScore: Float,
     val inferenceLatencyMs: Float,
     val activationsLayer1: FloatArray,
-    val modelName: String = "PulseNeural-v1-Small (8-bit Quantized 16x32x7 MLP)",
+    val modelName: String = "NCNeural-v1-Small (8-bit Quantized 16x32x7 MLP)",
     val isLocalOffline: Boolean = true
 )
 

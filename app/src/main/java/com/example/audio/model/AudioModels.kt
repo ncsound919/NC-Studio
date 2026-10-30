@@ -286,6 +286,12 @@ data class TrackData(
     val vocalRiderConfig: VocalRiderConfig = VocalRiderConfig(),
     val autoPitchConfig: AutoPitchConfig = AutoPitchConfig(),
     val noiseReductionConfig: NoiseReductionConfig = NoiseReductionConfig(),
+    /**
+     * Ordered studio plugin chain. When it holds at least one enabled module it
+     * replaces the fixed legacy channel strip above, so templates can build real
+     * signal chains (Neve -> 1176 -> LA-2A -> de-ess -> air) instead of flags.
+     */
+    val pluginChain: List<com.overlay.audio.plugins.PluginSlot> = emptyList(),
     val clips: List<AudioClip> = emptyList(),
     val automationLanes: List<AutomationLane> = emptyList(),
     // Group / bus routing
@@ -317,7 +323,9 @@ data class BusData(
     val isMuted: Boolean = false,
     val isSoloed: Boolean = false,
     val reverbSendLevel: Float = 0.0f,
-    val outputBusId: String = "master"
+    val outputBusId: String = "master",
+    /** Ordered group processing (drum bus glue, vocal bus, mix bus...). */
+    val pluginChain: List<com.overlay.audio.plugins.PluginSlot> = emptyList()
 ) {
     val gainLinear: Float
         get() = if (gainDb <= -60f) 0f else Math.pow(10.0, (gainDb / 20.0)).toFloat()
@@ -383,11 +391,26 @@ data class MixSuggestion(
 )
 
 /**
+ * Embedded NC Phone Beat source package (ncbeat.v1) kept with the session so NC Studio
+ * can show where the material came from and hand it back to NC Phone Beat later.
+ * Optional: sessions written before it existed must still load.
+ */
+data class BeatSource(
+    val schema: String = "ncbeat.v1",
+    val appVersion: String = "",
+    val patternName: String = "",
+    val tempoBpm: Float = 120f,
+    val patternJson: String = "",
+    val mixerJson: String = "",
+    val exportedAt: String = ""
+)
+
+/**
  * Complete versioned project session schema.
  */
 data class ProjectSession(
     val version: Int = 1,
-    val projectName: String = "Pulse Studio Project",
+    val projectName: String = "NC Studio Project",
     val revision: Long = 1L,
     val sampleRate: Int = 48000,
     val tempoBpm: Float = 120f,
@@ -399,11 +422,20 @@ data class ProjectSession(
     val latencyOffsetMs: Float = 32.5f,
     val masterLimiter: MasterLimiterConfig = MasterLimiterConfig(),
     val masterReverb: ReverbConfig = ReverbConfig(),
+    /** Ordered mix bus chain: tape -> EQ -> bus comp -> limiter, in that order. */
+    val masterPluginChain: List<com.overlay.audio.plugins.PluginSlot> = emptyList(),
     val tracks: List<TrackData> = emptyList(),
     val buses: List<BusData> = emptyList(),
     val groups: List<BusData> = emptyList(),
     val auxBuses: List<BusData> = emptyList(),
-    val sendReturns: List<BusData> = emptyList()
+    val sendReturns: List<BusData> = emptyList(),
+    val beatSource: BeatSource? = null,
+    /**
+     * User-supplied A/B reference track (a commercial mix to compare against),
+     * with its measured profile. Optional: sessions written before it existed
+     * must still load, and it is never bundled with the app.
+     */
+    val reference: com.example.audio.reference.ReferenceTrackConfig? = null
 ) {
     val masterGainLinear: Float
         get() = if (masterGainDb <= -60f) 0f else Math.pow(10.0, (masterGainDb / 20.0)).toFloat()
@@ -441,8 +473,44 @@ enum class UsbRoutingMode(val displayName: String, val description: String) {
  * Pro Tools style timeline edit mode.
  */
 enum class EditMode(val displayName: String, val description: String) {
-    SLIP("Slip Mode", "Clips move and trim freely with sample-level precision"),
-    GRID("Grid Mode", "Clips snap strictly to bar and beat grid intervals")
+    SLIP("Slip", "Clips land exactly where you drag them, sample-accurate"),
+    GRID("Grid", "Clips snap to the bar, beat or 1/16 grid"),
+    SHUFFLE("Shuffle", "Clips snap to their neighbours and later clips close the gap"),
+    SPOT("Spot", "Clips only land where you drop them, then report the time")
+}
+
+/**
+ * Timeline tool, mirroring a Pro Tools toolbar: the tool decides what a drag on
+ * a clip means before the gesture starts.
+ */
+enum class TimelineTool(val displayName: String, val description: String) {
+    SELECTOR("Selector", "Tap to select a clip; drag to make a time selection"),
+    GRABBER("Grabber", "Drag clips straight away, with snapping"),
+    TRIM("Trim", "Drag near a clip edge to trim start or end"),
+    SMART("Smart", "Edge zones trim, the body drags, taps select")
+}
+
+/**
+ * How a Strip Silence pass rewrites the selected clips. Both modes use the
+ * shared `nc.sample-edit.v1` silence detector; only the clip layout differs.
+ */
+enum class StripSilenceMode(val displayName: String, val description: String) {
+    TRIM_EDGES("Trim edges", "Trim only the silent head and tail; keep one clip"),
+    SPLIT_REGIONS("Split out silence", "Keep one clip per loud region and leave gaps between them")
+}
+
+/**
+ * A Pro Tools style edit (time) selection: the range operations act on.
+ */
+data class EditSelection(
+    val trackIndex: Int,
+    val startFrame: Long,
+    val endFrame: Long
+) {
+    val lengthFrames: Long
+        get() = (endFrame - startFrame).coerceAtLeast(0L)
+
+    fun containsFrame(frame: Long): Boolean = frame in startFrame until endFrame
 }
 
 /**
@@ -531,7 +599,10 @@ data class DawSettings(
     val activeLocalModelProvider: String = "Ollama REST",
     val aiMaxEqBoostDb: Float = 6.0f,
     val highResolutionWaveforms: Boolean = true,
-    val editMode: com.example.audio.model.EditMode = com.example.audio.model.EditMode.GRID,
+    val editMode: EditMode = EditMode.GRID,
     val isMagneticSnapEnabled: Boolean = true,
-    val gridResolution: com.example.audio.model.GridResolution = com.example.audio.model.GridResolution.BEAT
+    val gridResolution: GridResolution = GridResolution.BEAT,
+    val timelineTool: TimelineTool = TimelineTool.SMART,
+    /** Fade length applied when adjacent clips are joined by a crossfade. */
+    val crossfadeMs: Float = 10f
 )

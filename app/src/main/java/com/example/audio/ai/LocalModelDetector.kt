@@ -54,6 +54,18 @@ data class LocalModelDetectorState(
     val isInferenceRunning: Boolean = false
 )
 
+/**
+ * Outcome of a local-model request. A failure is an error, never prose that
+ * looks like mix advice: the app must not attribute fabricated guidance to a
+ * model that never answered.
+ */
+data class LocalModelReply(
+    val text: String? = null,
+    val error: String? = null,
+) {
+    val isSuccess: Boolean get() = text != null
+}
+
 object LocalModelDetector {
 
     // Standard local server endpoints to probe
@@ -62,43 +74,6 @@ object LocalModelDetector {
         LocalModelEndpoint(LocalModelProvider.OLLAMA, "http://127.0.0.1:11434", "Ollama (Localhost 127.0.0.1:11434)"),
         LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://10.0.2.2:8080", "Llama.cpp (Emulator Host 10.0.2.2:8080)"),
         LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://127.0.0.1:8080", "Llama.cpp (Localhost 127.0.0.1:8080)")
-    )
-
-    // Fallback/Simulated models for offline testing or when no live server is reachable
-    val SIMULATED_FALLBACK_MODELS = listOf(
-        DiscoveredModelInfo(
-            name = "llama3.2:1b",
-            provider = LocalModelProvider.OLLAMA,
-            baseUrl = "http://10.0.2.2:11434",
-            parameterSize = "1.3B",
-            family = "llama",
-            sizeBytes = 1300000000L,
-            isSelected = true
-        ),
-        DiscoveredModelInfo(
-            name = "qwen2.5:0.5b",
-            provider = LocalModelProvider.OLLAMA,
-            baseUrl = "http://10.0.2.2:11434",
-            parameterSize = "0.5B",
-            family = "qwen2",
-            sizeBytes = 520000000L
-        ),
-        DiscoveredModelInfo(
-            name = "phi3:mini",
-            provider = LocalModelProvider.LLAMA_CPP,
-            baseUrl = "http://10.0.2.2:8080",
-            parameterSize = "3.8B",
-            family = "phi3",
-            sizeBytes = 2200000000L
-        ),
-        DiscoveredModelInfo(
-            name = "mistral:7b-instruct",
-            provider = LocalModelProvider.OLLAMA,
-            baseUrl = "http://10.0.2.2:11434",
-            parameterSize = "7.2B",
-            family = "llama",
-            sizeBytes = 4100000000L
-        )
     )
 
     fun parseOllamaTagsResponse(jsonString: String, baseUrl: String): List<DiscoveredModelInfo> {
@@ -228,7 +203,7 @@ object LocalModelDetector {
         model: DiscoveredModelInfo,
         prompt: String,
         systemPrompt: String = "You are a tactical audio engineer AI assistant."
-    ): String {
+    ): LocalModelReply {
         return try {
             if (model.provider == LocalModelProvider.OLLAMA) {
                 val url = URL("${model.baseUrl}/api/generate")
@@ -254,10 +229,10 @@ object LocalModelDetector {
                     val responseJson = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
                     conn.disconnect()
                     val jsonObj = JSONObject(responseJson)
-                    jsonObj.optString("response", "No response content from model.")
+                    LocalModelReply(text = jsonObj.optString("response", ""))
                 } else {
                     conn.disconnect()
-                    "Local Ollama Server returned HTTP $code"
+                    LocalModelReply(error = "Ollama returned HTTP $code")
                 }
             } else {
                 // Llama.cpp / OpenAI Chat Completions
@@ -297,29 +272,14 @@ object LocalModelDetector {
                     val choices = jsonObj.optJSONArray("choices")
                     val firstChoice = choices?.optJSONObject(0)
                     val message = firstChoice?.optJSONObject("message")
-                    message?.optString("content", "No chat response content.") ?: "Empty Llama response."
+                    LocalModelReply(text = message?.optString("content", "") ?: "")
                 } else {
                     conn.disconnect()
-                    "Llama.cpp Server returned HTTP $code"
+                    LocalModelReply(error = "Llama.cpp returned HTTP $code")
                 }
             }
         } catch (e: Exception) {
-            // Fallback response for offline or simulated mode
-            generateTacticalFallbackResponse(model, prompt)
-        }
-    }
-
-    private fun generateTacticalFallbackResponse(model: DiscoveredModelInfo, prompt: String): String {
-        val p = prompt.lowercase()
-        return when {
-            p.contains("vocal") || p.contains("bright") ->
-                "[Model ${model.name} via ${model.provider.displayName}]: For cleaner vocal clarity, apply a high-shelf boost (+2.0 dB @ 8 kHz) and cut masking frequencies around 300 Hz on competing guitars."
-            p.contains("bass") || p.contains("kick") || p.contains("sub") ->
-                "[Model ${model.name} via ${model.provider.displayName}]: Sidechain compress the 808 sub-bass triggered by the kick drum, and cut 80 Hz on non-bass stems to prevent phase cancellation."
-            p.contains("drum") || p.contains("snare") ->
-                "[Model ${model.name} via ${model.provider.displayName}]: Engage 4:1 compression on the snare/drum bus with 15ms attack time to keep transient punch while controlling peak crest factor."
-            else ->
-                "[Model ${model.name} via ${model.provider.displayName}]: Analyzed session parameters. Recommended action: Normalize gain staging to -18 dBFS RMS and activate master limiter at -0.3 dB ceiling."
+            LocalModelReply(error = "No response from ${model.name}: ${e.message ?: "connection failed"}")
         }
     }
 }

@@ -79,16 +79,18 @@ class AudioRecorder(private val sampleRate: Int = 48000) {
                 try {
                     audioRecord.stop()
                     audioRecord.release()
-                } catch (_: Exception) {}
-            }, "PulseDaw-AudioRecordThread").apply {
+                } catch (_: Exception) {/* best-effort audio cleanup: the resource is already unusable */ }
+            }, "NCStudio-AudioRecordThread").apply {
                 priority = Thread.MAX_PRIORITY
                 start()
             }
 
             // 2. Thread: writes from ring buffer to WAV file
+            val channels =
+                if (channelConfig == AudioFormat.CHANNEL_IN_STEREO) 2 else 1
             writerThread = Thread({
-                writeWavStream(outputFile)
-            }, "PulseDaw-WavWriterThread").apply {
+                writeWavStream(outputFile, channels)
+            }, "NCStudio-WavWriterThread").apply {
                 priority = Thread.NORM_PRIORITY
                 start()
             }
@@ -108,14 +110,14 @@ class AudioRecorder(private val sampleRate: Int = 48000) {
         try {
             recordThread?.join(500)
             writerThread?.join(1000)
-        } catch (_: InterruptedException) {}
+        } catch (_: InterruptedException) {/* best-effort audio cleanup: the resource is already unusable */ }
 
         recordThread = null
         writerThread = null
         return totalRecordedFrames
     }
 
-    private fun writeWavStream(file: File) {
+    private fun writeWavStream(file: File, channels: Int) {
         val tempPcmFile = File(file.parentFile, file.name + ".tmp")
         val drainBuffer = FloatArray(2048)
         val shortBuffer = ShortArray(2048)
@@ -145,17 +147,29 @@ class AudioRecorder(private val sampleRate: Int = 48000) {
 
         // Finalize standard WAV header with proper file length
         if (tempPcmFile.exists() && recordedFramesCount > 0) {
-            finalizeWavFile(tempPcmFile, file, recordedFramesCount, sampleRate)
+            finalizeWavFile(tempPcmFile, file, recordedFramesCount, sampleRate, channels)
             tempPcmFile.delete()
+        } else {
+            // Nothing usable was captured: never leave a stub WAV or temp file behind.
+            tempPcmFile.delete()
+            file.delete()
         }
     }
 
-    private fun finalizeWavFile(pcmFile: File, wavFile: File, frames: Long, sampleRate: Int) {
-        val channels = 1
+    private fun finalizeWavFile(
+        pcmFile: File,
+        wavFile: File,
+        sampleCount: Long,
+        sampleRate: Int,
+        channels: Int,
+    ) {
         val bitsPerSample = 16
         val bytesPerSample = bitsPerSample / 8
-        val dataSize = frames * channels * bytesPerSample
-        val totalFileSize = 36 + dataSize
+        // RIFF stores 32-bit sizes. Cap at what the header can express instead of
+        // silently wrapping a long take into a corrupt negative size.
+        val maxDataSize = Int.MAX_VALUE.toLong() - 36L
+        val dataSize = (sampleCount * bytesPerSample).coerceAtMost(maxDataSize)
+        val totalFileSize = 36L + dataSize
 
         FileOutputStream(wavFile).use { fos ->
             val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
@@ -178,9 +192,12 @@ class AudioRecorder(private val sampleRate: Int = 48000) {
 
             pcmFile.inputStream().use { fis ->
                 val buffer = ByteArray(4096)
-                var bytesRead: Int
-                while (fis.read(buffer).also { bytesRead = it } != -1) {
+                var remaining = dataSize
+                while (remaining > 0) {
+                    val bytesRead = fis.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                    if (bytesRead <= 0) break
                     fos.write(buffer, 0, bytesRead)
+                    remaining -= bytesRead
                 }
             }
         }

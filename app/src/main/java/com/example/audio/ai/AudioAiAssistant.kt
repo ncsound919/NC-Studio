@@ -254,9 +254,9 @@ object MixAdvisor {
                         trackName = track.name,
                         category = "Gain Staging",
                         parameter = "Fader Gain",
-                        currentValue = "${String.format("%.1f", track.gainDb)} dB",
-                        proposedValue = "${String.format("%.1f", proposedGain)} dB",
-                        reason = "Channel peak is ${String.format("%.1f", feat.peakDb)} dBFS. Lowering fader to preserve -6 dB headroom avoids mix bus saturation.",
+                        currentValue = "${String.format(java.util.Locale.US, "%.1f", track.gainDb)} dB",
+                        proposedValue = "${String.format(java.util.Locale.US, "%.1f", proposedGain)} dB",
+                        reason = "Channel peak is ${String.format(java.util.Locale.US, "%.1f", feat.peakDb)} dBFS. Lowering fader to preserve -6 dB headroom avoids mix bus saturation.",
                         confidence = 0.92f,
                         targetRevision = rev
                     )
@@ -269,9 +269,9 @@ object MixAdvisor {
                         trackName = track.name,
                         category = "Gain Staging",
                         parameter = "Fader Gain",
-                        currentValue = "${String.format("%.1f", track.gainDb)} dB",
-                        proposedValue = "${String.format("%.1f", proposedGain)} dB",
-                        reason = "Channel is unusually quiet (${String.format("%.1f", feat.rmsDb)} dBFS RMS). Boost fader to sit in the mix pocket.",
+                        currentValue = "${String.format(java.util.Locale.US, "%.1f", track.gainDb)} dB",
+                        proposedValue = "${String.format(java.util.Locale.US, "%.1f", proposedGain)} dB",
+                        reason = "Channel is unusually quiet (${String.format(java.util.Locale.US, "%.1f", feat.rmsDb)} dBFS RMS). Boost fader to sit in the mix pocket.",
                         confidence = 0.85f,
                         targetRevision = rev
                     )
@@ -289,7 +289,7 @@ object MixAdvisor {
                             parameter = "High-Pass Filter 90 Hz",
                             currentValue = "Off",
                             proposedValue = "HPF @ 90Hz Enabled",
-                            reason = "Detected low-frequency rumble (${String.format("%.1f", feat.subEnergy * 100)}% sub energy) on ${feat.classifiedStem.displayName}. HPF tightens the bass pocket.",
+                            reason = "Detected low-frequency rumble (${String.format(java.util.Locale.US, "%.1f", feat.subEnergy * 100)}% sub energy) on ${feat.classifiedStem.displayName}. HPF tightens the bass pocket.",
                             confidence = 0.94f,
                             targetRevision = rev
                         )
@@ -307,7 +307,7 @@ object MixAdvisor {
                         parameter = "Compressor 4:1",
                         currentValue = "Bypassed",
                         proposedValue = "Enabled (Thresh -18dB, 4:1, 15ms)",
-                        reason = "High dynamic spikes (${String.format("%.1f", feat.crestFactorDb)} dB crest factor). Gentle compression glues transients.",
+                        reason = "High dynamic spikes (${String.format(java.util.Locale.US, "%.1f", feat.crestFactorDb)} dB crest factor). Gentle compression glues transients.",
                         confidence = 0.88f,
                         targetRevision = rev
                     )
