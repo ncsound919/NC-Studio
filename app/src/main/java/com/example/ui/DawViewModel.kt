@@ -1413,6 +1413,18 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         val framesRecorded = audioRecorder.stopRecording()
         _uiState.update { it.copy(isRecording = false) }
 
+        if (framesRecorded < 0L) {
+            // The writer is still finalising the WAV. Do not delete or re-read
+            // the file while it is open — that discards a valid take.
+            _uiState.update {
+                it.copy(
+                    statusMessage = "Take is still being written to disk. It will appear in the takes folder when complete.",
+                    statusKind = StatusKind.ERROR
+                )
+            }
+            return
+        }
+
         val armedTrack = _session.value.tracks.find { it.isArmedForRecording } ?: return
         if (framesRecorded > 2000L) {
             // Apply latency calibration offset so overdubs align perfectly

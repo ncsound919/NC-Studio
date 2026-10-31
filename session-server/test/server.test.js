@@ -152,6 +152,40 @@ test('websocket rejects a token that does not match the session', async (t) => {
   assert.match(String(error.message), /401/);
 });
 
+test('websocket accepts the bearer token from the Authorization header', async (t) => {
+  const { baseUrl, wsUrl } = await startServer(t);
+  const { engineer } = await createAndJoin(baseUrl);
+
+  // No token in the URL: this is what the app now sends, so the credential
+  // never lands in proxy logs or connection traces.
+  const socket = new WebSocket(
+    `${wsUrl}?session=${engineer.sessionId}&role=engineer`,
+    { headers: { Authorization: `Bearer ${engineer.token}` } },
+  );
+  t.after(() => socket.close());
+  await once(socket, 'open');
+  assert.equal(socket.readyState, WebSocket.OPEN);
+});
+
+test('expired sessions are pruned instead of accumulating forever', async (t) => {
+  const { instance, baseUrl } = await startServer(t);
+  const { engineer } = await createAndJoin(baseUrl);
+  assert.equal(instance.sessions.has(engineer.sessionId), true);
+
+  // Pretend the session has been idle longer than the token TTL.
+  const session = instance.sessions.get(engineer.sessionId);
+  session.lastSeen = Date.now() - 13 * 60 * 60 * 1000;
+
+  // Any create/join/auth triggers the sweep.
+  await fetch(`${baseUrl}/v1/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'engineer' }),
+  });
+  assert.equal(instance.sessions.has(engineer.sessionId), false);
+  assert.equal(instance.invites.has(engineer.inviteCode), false);
+});
+
 test('websocket refuses a cross-origin browser upgrade', async (t) => {
   const { baseUrl, wsUrl } = await startServer(t);
   const { engineer } = await createAndJoin(baseUrl);

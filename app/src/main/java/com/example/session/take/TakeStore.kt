@@ -202,6 +202,22 @@ class TakeStore(
             if (manifestFile(takeId).exists()) continue
             val journal = readJournal(takeId)
             if (journal.none { it.type == TYPE_TAKE_STARTED }) continue
+            // A take the artist aborted, or one that was finalised before the
+            // manifest was lost, is not a crash. Rebuilding it as RECORDED
+            // would upload audio the artist explicitly threw away.
+            val lastLifecycle = journal.lastOrNull {
+                it.type == TYPE_TAKE_STARTED || it.type == TYPE_ABANDONED || it.type == TYPE_FINALIZED
+            }
+            if (lastLifecycle?.type == TYPE_ABANDONED) {
+                writeState(
+                    UploadStateRecord(
+                        takeId = takeId,
+                        state = TakeUploadState.EMPTY,
+                        lastError = "Take was aborted: ${lastLifecycle.reason ?: "no reason recorded"}",
+                    ),
+                )
+                continue
+            }
             results += recoverTake(takeId, journal)
         }
         return results

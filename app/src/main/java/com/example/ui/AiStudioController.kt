@@ -1,11 +1,14 @@
 package com.example.ui
 
+import com.example.BuildConfig
 import com.example.audio.ai.DiscoveredModelInfo
 import com.example.audio.ai.EndpointProbeResult
 import com.example.audio.ai.LocalModelDetector
 import com.example.audio.ai.LocalModelEndpoint
 import com.example.audio.ai.LocalModelProvider
 import com.example.audio.model.DawSettings
+import com.overlay.tondo.TondoResearchClient
+import com.overlay.tondo.TondoResearchConfig
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +28,14 @@ class AiStudioController(
     private val currentSettings: () -> DawSettings,
     private val updateSettings: ((DawSettings) -> DawSettings) -> Unit,
     private val uiState: MutableStateFlow<EngineUiState>,
+    /** Disabled unless the build supplies a Tondo endpoint and device key. */
+    private val tondo: TondoResearchClient = TondoResearchClient(
+        TondoResearchConfig(
+            baseUrl = BuildConfig.TONDO_RESEARCH_URL,
+            appId = "nc-studio",
+            token = BuildConfig.TONDO_RESEARCH_KEY,
+        )
+    ),
 ) {
 
     fun scan(
@@ -140,13 +151,53 @@ class AiStudioController(
     ) = scope.launch(dispatcher) {
         val active = uiState.value.localModelDetectorState.activeModel
         if (active == null) {
+            if (!tondo.isConfigured) {
+                uiState.update { current ->
+                    current.copy(
+                        localModelDetectorState = current.localModelDetectorState.copy(
+                            lastInferenceResponse = null,
+                        ),
+                        statusMessage = "No local model is connected. Scan for a server before sending a query.",
+                        statusKind = StatusKind.ERROR,
+                    )
+                }
+                return@launch
+            }
+
+            // No local model is not an error the user should have to solve
+            // before asking: it is the clearest reason to use the bounded
+            // research lane. The question goes to Tondo, never the session.
             uiState.update { current ->
                 current.copy(
                     localModelDetectorState = current.localModelDetectorState.copy(
+                        isInferenceRunning = true,
                         lastInferenceResponse = null,
                     ),
-                    statusMessage = "No local model is connected. Scan for a server before sending a query.",
-                    statusKind = StatusKind.ERROR,
+                    statusMessage = "No local model connected. Asking Tondo Research...",
+                    statusKind = StatusKind.INFO,
+                )
+            }
+            val assisted = runCatching {
+                tondo.assist(
+                    operation = "audio mix research",
+                    question = prompt,
+                    symptom = "no local model is connected",
+                    context = "no local model active; provider: none",
+                    dataClass = "internal",
+                )
+            }.getOrNull()
+            uiState.update { current ->
+                current.copy(
+                    localModelDetectorState = current.localModelDetectorState.copy(
+                        isInferenceRunning = false,
+                        lastInferenceResponse = assisted?.toPlainText(),
+                    ),
+                    statusMessage = if (assisted != null) {
+                        "Tondo research assist (no local model)"
+                    } else {
+                        "No local model is connected and Tondo did not answer."
+                    },
+                    statusKind = if (assisted != null) StatusKind.SUCCESS else StatusKind.ERROR,
                 )
             }
             return@launch
@@ -168,18 +219,39 @@ class AiStudioController(
             systemPrompt = "You are a professional audio mixing engineer and DAW tactical advisor.",
         )
 
+        // A local model can be absent, overloaded, pointed at a dead port, or
+        // return an empty completion. Tondo is the bounded second opinion, not a
+        // replacement: it receives the question and the failure, never the
+        // session or the audio.
+        val localAnswered = reply.isSuccess && !reply.text.isNullOrBlank()
+        val assisted = if (!localAnswered && tondo.isConfigured) {
+            runCatching {
+                tondo.assist(
+                    operation = "audio mix research",
+                    question = prompt,
+                    symptom = reply.error ?: "the local model returned no text",
+                    context = "local model: ${active.name}; provider: ${active.provider.displayName}",
+                    dataClass = "internal",
+                )
+            }.getOrNull()
+        } else {
+            null
+        }
+
         uiState.update { current ->
             current.copy(
                 localModelDetectorState = current.localModelDetectorState.copy(
                     isInferenceRunning = false,
-                    lastInferenceResponse = reply.text ?: reply.error,
+                    lastInferenceResponse = assisted?.toPlainText()
+                        ?: reply.text?.takeIf { it.isNotBlank() }
+                        ?: reply.error,
                 ),
-                statusMessage = if (reply.isSuccess) {
-                    "Response received from ${active.name}"
-                } else {
-                    reply.error ?: "No response from ${active.name}"
+                statusMessage = when {
+                    assisted != null -> "Tondo research assist (${active.name} did not answer)"
+                    localAnswered -> "Response received from ${active.name}"
+                    else -> reply.error ?: "No response from ${active.name}"
                 },
-                statusKind = if (reply.isSuccess) StatusKind.SUCCESS else StatusKind.ERROR,
+                statusKind = if (assisted != null || localAnswered) StatusKind.SUCCESS else StatusKind.ERROR,
             )
         }
     }

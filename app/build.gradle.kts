@@ -12,10 +12,25 @@ android {
     applicationId = "com.ncstudio.daw"
     minSdk = 24
     targetSdk = 36
-    versionCode = 130
-    versionName = "1.3.0"
+    versionCode = 131
+    versionName = "1.3.1"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    // Tondo research assist. Empty by default: the local model remains the
+    // only path until a build supplies both values.
+    val tondoUrl = System.getenv("TONDO_RESEARCH_URL") ?: ""
+    val tondoKey = System.getenv("TONDO_RESEARCH_KEY") ?: ""
+    buildConfigField(
+      "String",
+      "TONDO_RESEARCH_URL",
+      "\"${tondoUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+    )
+    buildConfigField(
+      "String",
+      "TONDO_RESEARCH_KEY",
+      "\"${tondoKey.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+    )
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,

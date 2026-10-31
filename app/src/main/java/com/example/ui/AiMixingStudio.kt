@@ -741,7 +741,10 @@ fun AiMixingStudio(
                                     onSendQueryToLocalModel?.invoke(localModelPromptText)
                                 }
                             },
-                            enabled = detectorState.activeModel != null,
+                            // The controller now routes a no-model query to Tondo
+                            // Research; disabling the button made that fallback
+                            // unreachable from the UI.
+                            enabled = localModelPromptText.isNotBlank() && !detectorState.isInferenceRunning,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(Radius.md))
                                 .background(ElectricLime)

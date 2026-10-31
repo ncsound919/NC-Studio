@@ -124,6 +124,31 @@ class TakePipelineTest {
     }
 
     @Test
+    fun abortedTakeIsNotResurrectedAsRecordedByRecovery() {
+        val store = TakeStore(temp.newFolder("session"))
+        val writer = ChunkedTakeWriter(
+            store = store,
+            config = TakeConfig(takeId = "aborted", sessionId = "session-1", trackId = 7L),
+            chunkTargetBytes = 300,
+        )
+        assertTrue(writer.begin())
+        val input = samples(350)
+        var written = 0
+        while (written < 350) {
+            val block = minOf(37, 350 - written)
+            written += writer.write(input.copyOfRange(written, written + block), block)
+        }
+        // At least one chunk is already promoted to disk when the artist aborts.
+        writer.abort("artist pressed stop")
+        assertNull(store.manifestFile("aborted").takeIf { it.exists() })
+
+        val recovered = store.recoverAll()
+        assertTrue("aborted take must not be recovered", recovered.isEmpty())
+        assertNull(store.readManifest("aborted"))
+        assertEquals(TakeUploadState.EMPTY, store.readState("aborted").state)
+    }
+
+    @Test
     fun recoveryDropsChunksWhoseBytesNoLongerMatch() {
         val store = TakeStore(temp.newFolder("session"))
         writeTake(store, takeId = "crashed", frames = 350)

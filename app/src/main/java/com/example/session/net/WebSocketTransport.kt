@@ -125,9 +125,13 @@ class WebSocketTransport(
             append(if (settings.wsUrl.contains('?')) '&' else '?')
             append("session=").append(settings.sessionId)
             append("&role=").append(settings.role)
-            append("&token=").append(settings.token)
         }
-        val request = Request.Builder().url(url).build()
+        // Send the bearer token as a header, not a query parameter: URLs are
+        // written to proxy logs, adb connection traces and crash reports.
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer ${settings.token}")
+            .build()
         socket = http.newWebSocket(request, listener())
     }
 

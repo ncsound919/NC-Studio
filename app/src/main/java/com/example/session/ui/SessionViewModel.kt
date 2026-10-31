@@ -349,6 +349,10 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
                         // must advance on every new socket or the engineer's
                         // Hello (and every command after it) is unauthorized.
                         authority?.newTransportGeneration()
+                        // Re-send the monitor codec config on every new socket:
+                        // a peer that joins or reconnects mid-stream otherwise
+                        // has no csd and silently decodes nothing.
+                        monitorEngine?.requestConfigResend()
                         _ui.update { it.copy(connected = true) }
                         log?.record(SessionLog.Direction.LOCAL, "link-up", note = "generation ${event.generation}")
                         sendHello()
@@ -649,9 +653,11 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun runSpeedProbe() {
-        val api = api ?: return
+        // Capture the settings snapshot before switching threads: a concurrent
+        // teardown can null the field between the null check and the `!!`.
+        val baseUrl = settings?.baseUrl ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            val kbps = runCatching { BackendApi(settings!!.baseUrl, http).probe().uploadKbps }.getOrDefault(-1)
+            val kbps = runCatching { BackendApi(baseUrl, http).probe().uploadKbps }.getOrDefault(-1)
             _ui.update { state ->
                 val current = state.preflight
                 val quality = (current?.network ?: NetworkQuality()).copy(uploadKbps = kbps)

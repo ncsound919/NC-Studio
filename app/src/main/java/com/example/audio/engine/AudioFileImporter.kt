@@ -148,6 +148,7 @@ object AudioFileImporter {
 
     private fun decodeWithMediaCodec(context: Context, uri: Uri): DecodedAudio? {
         val extractor = MediaExtractor()
+        var codec: MediaCodec? = null
         try {
             extractor.setDataSource(context, uri, null)
             var audioTrackIndex = -1
@@ -170,7 +171,7 @@ object AudioFileImporter {
             val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
 
-            val codec = MediaCodec.createDecoderByType(mime)
+            codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
             codec.start()
 
@@ -219,14 +220,19 @@ object AudioFileImporter {
                 }
             }
 
-            codec.stop()
-            codec.release()
-            extractor.release()
-
             return DecodedAudio(decodedSamples.toFloatArray(), sampleRate, channels)
         } catch (e: Exception) {
-            extractor.release()
             return null
+        } finally {
+            // Every path — success, early return, or a decoder failure — must
+            // release the codec. A MediaCodec holds a native decoder slot; a
+            // failed import that leaks one eventually exhausts the device pool
+            // and breaks import/export until the process restarts.
+            codec?.let {
+                runCatching { it.stop() }
+                runCatching { it.release() }
+            }
+            runCatching { extractor.release() }
         }
     }
 

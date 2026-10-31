@@ -320,6 +320,11 @@ class AudioTrackPlaybackEngine(
                         null
                     }
                     if (rebuilt != null) {
+                        // Clear the published instance before releasing it, so a
+                        // device callback cannot call setPreferredDevice on a
+                        // released AudioTrack (that throws IllegalStateException
+                        // on a binder thread and crashes the process).
+                        activeAudioTrack = null
                         try {
                             audioTrack?.release()
                         } catch (_: Exception) {
@@ -360,6 +365,17 @@ class AudioTrackPlaybackEngine(
                 }
 
                 val playhead = currentPlayheadFrame.get()
+                val loopLength = loopEndFrame - loopStartFrame
+                val loopActive = loopEnabled && loopLength > 0
+                // Map a block-relative frame into the loop. The block may
+                // straddle loopEndFrame, and the previous code kept rendering
+                // past it and then reset the playhead: the overshoot was heard
+                // twice at the loop head, so every pass was longer than the
+                // loop and drifted against the metronome.
+                fun positionAt(absolute: Long): Long =
+                    if (loopActive && absolute >= loopEndFrame) {
+                        loopStartFrame + ((absolute - loopEndFrame) % loopLength)
+                    } else absolute
                 var anySolo = false
                 for (s in trackSoloed) {
                     if (s) {
@@ -398,7 +414,7 @@ class AudioTrackPlaybackEngine(
                     var trackPeak = 0.0f
 
                     for (i in 0 until bufferSizeFrames) {
-                        val framePos = playhead + i
+                        val framePos = positionAt(playhead + i)
                         val gain = gainSmoother.next()
                         val panL = panSmootherL.next()
                         val panR = panSmootherR.next()
@@ -496,7 +512,7 @@ class AudioTrackPlaybackEngine(
                     var finalL = mixBufferL[i] + stageOut[0]
                     var finalR = mixBufferR[i] + stageOut[1]
 
-                    val click = metronome.processFrame(playhead + i)
+                    val click = metronome.processFrame(positionAt(playhead + i))
                     if (click != 0f) {
                         finalL += click
                         finalR += click
@@ -568,8 +584,8 @@ class AudioTrackPlaybackEngine(
                 // 7. Update playhead & loop
                 val sessionFrames = totalSessionLengthFrames.get()
                 var nextPlayhead = playhead + bufferSizeFrames
-                if (loopEnabled && loopEndFrame > loopStartFrame && nextPlayhead >= loopEndFrame) {
-                    nextPlayhead = loopStartFrame
+                if (loopActive && nextPlayhead >= loopEndFrame) {
+                    nextPlayhead = loopStartFrame + ((nextPlayhead - loopEndFrame) % loopLength)
                 } else if (!loopEnabled && sessionFrames > 0 && nextPlayhead >= sessionFrames) {
                     nextPlayhead = 0L
                     isPlaying.set(false)
@@ -591,6 +607,9 @@ class AudioTrackPlaybackEngine(
             // A dead output device must not leave the engine wedged: the finally
             // block clears isRunning so a later start() can rebuild the output.
         } finally {
+            // Unpublish before teardown: setPreferredOutputDevice reads this
+            // field from the device-callback thread.
+            activeAudioTrack = null
             try {
                 audioTrack?.stop()
             } catch (_: Exception) {
@@ -599,7 +618,6 @@ class AudioTrackPlaybackEngine(
                 audioTrack?.release()
             } catch (_: Exception) {
             /* best-effort audio cleanup: the track is already unusable */ }
-            activeAudioTrack = null
             isRunning.set(false)
             isPlaying.set(false)
         }
@@ -871,6 +889,15 @@ class AudioTrackPlaybackEngine(
 
     fun setPreferredOutputDevice(deviceInfo: AudioDeviceInfo?) {
         preferredDevice = deviceInfo
-        activeAudioTrack?.preferredDevice = deviceInfo
+        // The render thread can release the track between the read and the
+        // setter when a buffer-size change or teardown lands at the same time.
+        // This runs on the system's AudioDeviceCallback thread with no outer
+        // try/catch, so swallow the "not initialized" race here; the render
+        // thread applies `preferredDevice` when it builds the next track.
+        try {
+            activeAudioTrack?.preferredDevice = deviceInfo
+        } catch (_: IllegalStateException) {
+            /* track was released concurrently; next build picks it up */
+        }
     }
 }

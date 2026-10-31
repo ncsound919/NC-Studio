@@ -134,50 +134,111 @@ object WavAudioIO {
         }
     }
 
+    /**
+     * Reads a RIFF/WAVE file by walking its chunks.
+     *
+     * The previous implementation assumed the canonical 44-byte layout, so any
+     * file with a `LIST`/`JUNK` chunk before `data` (Logic, Pro Tools, REAPER)
+     * or a `WAVE_FORMAT_EXTENSIBLE` header — the normal 24-bit format — had its
+     * format fields read from the wrong offsets. `dataSize` then became part of
+     * the format struct, the "audio" was header bytes, and the importer
+     * overwrote the user's copy with that garbage while reporting success.
+     */
     fun readWavFile(file: File): WavInfo? {
-        if (!file.exists() || file.length() < 44) return null
+        if (!file.exists() || file.length() < 12) return null
         return try {
             FileInputStream(file).use { fis ->
-                val headerBytes = ByteArray(44)
-                fis.read(headerBytes)
-                val bb = ByteBuffer.wrap(headerBytes).order(ByteOrder.LITTLE_ENDIAN)
+                val header = ByteArray(12)
+                if (readFully(fis, header) != 12) return null
+                if (String(header, 0, 4) != "RIFF" || String(header, 8, 4) != "WAVE") return null
 
-                val riff = String(headerBytes, 0, 4)
-                if (riff != "RIFF") return null
+                var fmt: ByteArray? = null
+                var dataOffset = -1L
+                var declaredDataSize = 0L
+                val chunkHeader = ByteArray(8)
 
-                val wave = String(headerBytes, 8, 4)
-                if (wave != "WAVE") return null
+                while (true) {
+                    if (readFully(fis, chunkHeader) != 8) break
+                    val id = String(chunkHeader, 0, 4)
+                    val size = (ByteBuffer.wrap(chunkHeader, 4, 4)
+                        .order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL)
+                    if (id == "fmt ") {
+                        // The fmt body is at least 16 bytes; EXTENSIBLE is 40.
+                        val take = size.coerceAtMost(64L).toInt()
+                        val body = ByteArray(take)
+                        if (readFully(fis, body) != take) break
+                        fmt = body
+                        val pad = (size - take).coerceAtLeast(0L) + (size and 1L)
+                        if (pad > 0) skipFully(fis, pad)
+                    } else if (id == "data") {
+                        dataOffset = fis.channel.position()
+                        declaredDataSize = size
+                        break
+                    } else {
+                        skipFully(fis, size + (size and 1L))
+                    }
+                }
 
-                val channels = bb.getShort(22).toInt()
-                val sampleRate = bb.getInt(24)
-                val bitsPerSample = bb.getShort(34).toInt()
-                val dataSize = bb.getInt(40)
+                if (fmt == null || dataOffset < 0) return null
+                val fmtBb = ByteBuffer.wrap(fmt).order(ByteOrder.LITTLE_ENDIAN)
+                if (fmt.size < 16) return null
+                val formatTag = fmtBb.getShort(0).toInt() and 0xFFFF
+                val channels = fmtBb.getShort(2).toInt() and 0xFFFF
+                val sampleRate = fmtBb.getInt(4)
+                val bitsPerSample = fmtBb.getShort(14).toInt() and 0xFFFF
+                if (channels <= 0 || sampleRate <= 0 || bitsPerSample <= 0) return null
+
+                var isFloat = formatTag == 3 // WAVE_FORMAT_IEEE_FLOAT
+                if (formatTag == 0xFFFE && fmt.size >= 26) {
+                    // WAVE_FORMAT_EXTENSIBLE: the real format tag is the first
+                    // two bytes of the sub-format GUID.
+                    isFloat = (fmtBb.getShort(24).toInt() and 0xFFFF) == 3
+                }
 
                 val bytesPerSample = bitsPerSample / 8
-                val totalSamples = dataSize / bytesPerSample
+                if (bytesPerSample !in 1..8) return null
+                val available = (file.length() - dataOffset).coerceAtLeast(0L)
+                val dataSize = when {
+                    declaredDataSize <= 0L -> available
+                    declaredDataSize > available -> available
+                    else -> declaredDataSize
+                }
+                val totalSamples = (dataSize / bytesPerSample).toInt()
+                if (totalSamples <= 0) return null
                 val samples = FloatArray(totalSamples)
 
-                val rawBuffer = ByteArray(4096)
-                var bytesRead: Int
+                // Decode from the data chunk, carrying partial frames across
+                // buffer boundaries so a read never drops a sample.
+                val raw = ByteArray(64 * 1024)
+                var carry = 0
                 var sampleIndex = 0
-
-                while (fis.read(rawBuffer).also { bytesRead = it } != -1 && sampleIndex < totalSamples) {
-                    val rawBb = ByteBuffer.wrap(rawBuffer, 0, bytesRead).order(ByteOrder.LITTLE_ENDIAN)
-                    while (rawBb.remaining() >= bytesPerSample && sampleIndex < totalSamples) {
-                        if (bitsPerSample == 16) {
-                            val shortVal = rawBb.short
-                            samples[sampleIndex++] = shortVal / 32768.0f
-                        } else if (bitsPerSample == 24) {
-                            val b0 = rawBb.get().toInt() and 0xFF
-                            val b1 = rawBb.get().toInt() and 0xFF
-                            val b2 = rawBb.get().toInt()
-                            val intVal = (b2 shl 16) or (b1 shl 8) or b0
-                            samples[sampleIndex++] = intVal / 8388608.0f
-                        } else if (bitsPerSample == 32) {
-                            val floatVal = rawBb.float
-                            samples[sampleIndex++] = floatVal
+                while (sampleIndex < totalSamples) {
+                    val bytes = fis.read(raw, carry, raw.size - carry)
+                    if (bytes <= 0) break
+                    val availableBytes = carry + bytes
+                    val usable = availableBytes - (availableBytes % bytesPerSample)
+                    if (usable > 0) {
+                        val bb = ByteBuffer.wrap(raw, 0, usable).order(ByteOrder.LITTLE_ENDIAN)
+                        while (bb.remaining() >= bytesPerSample && sampleIndex < totalSamples) {
+                            samples[sampleIndex++] = when {
+                                bitsPerSample == 8 -> ((bb.get().toInt() and 0xFF) - 128) / 128f
+                                bitsPerSample == 16 -> bb.short / 32768.0f
+                                bitsPerSample == 24 -> {
+                                    val b0 = bb.get().toInt() and 0xFF
+                                    val b1 = bb.get().toInt() and 0xFF
+                                    val b2 = bb.get().toInt()
+                                    val intVal = (b2 shl 16) or (b1 shl 8) or b0
+                                    intVal / 8388608.0f
+                                }
+                                bitsPerSample == 32 && isFloat -> bb.float
+                                bitsPerSample == 32 -> bb.int / 2147483648.0f
+                                bitsPerSample == 64 && isFloat -> bb.double.toFloat()
+                                else -> 0f
+                            }
                         }
                     }
+                    carry = availableBytes - usable
+                    if (carry > 0) System.arraycopy(raw, usable, raw, 0, carry)
                 }
 
                 WavInfo(
@@ -190,6 +251,25 @@ object WavAudioIO {
             }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    private fun readFully(input: FileInputStream, buffer: ByteArray): Int {
+        var offset = 0
+        while (offset < buffer.size) {
+            val n = input.read(buffer, offset, buffer.size - offset)
+            if (n <= 0) break
+            offset += n
+        }
+        return offset
+    }
+
+    private fun skipFully(input: FileInputStream, count: Long) {
+        var remaining = count
+        while (remaining > 0) {
+            val skipped = input.skip(remaining)
+            if (skipped <= 0) break
+            remaining -= skipped
         }
     }
 

@@ -8,6 +8,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -23,7 +25,11 @@ class AudioRecorder(private val sampleRate: Int = 48000) {
     // Ring buffer capacity: 4 seconds of mono audio
     private val ringBuffer = AudioRingBuffer(sampleRate * 4)
     private var currentOutputFile: File? = null
+    /** Written by the writer thread, read by stopRecording's caller. */
+    @Volatile
     private var totalRecordedFrames = 0L
+    /** Counted down only after the WAV header has been finalised on disk. */
+    private var writerDone = CountDownLatch(0)
 
     fun isCurrentlyRecording(): Boolean = isRecording.get()
 
@@ -34,6 +40,7 @@ class AudioRecorder(private val sampleRate: Int = 48000) {
         currentOutputFile = outputFile
         ringBuffer.clear()
         totalRecordedFrames = 0L
+        writerDone = CountDownLatch(1)
         isRecording.set(true)
 
         val minBufferSize = AudioRecord.getMinBufferSize(
@@ -89,7 +96,13 @@ class AudioRecorder(private val sampleRate: Int = 48000) {
             val channels =
                 if (channelConfig == AudioFormat.CHANNEL_IN_STEREO) 2 else 1
             writerThread = Thread({
-                writeWavStream(outputFile, channels)
+                try {
+                    writeWavStream(outputFile, channels)
+                } finally {
+                    // Signals that the file on disk is complete, not merely
+                    // that the writer stopped draining the ring.
+                    writerDone.countDown()
+                }
             }, "NCStudio-WavWriterThread").apply {
                 priority = Thread.NORM_PRIORITY
                 start()
@@ -103,14 +116,35 @@ class AudioRecorder(private val sampleRate: Int = 48000) {
         }
     }
 
+    /**
+     * Stops capture and returns the number of frames written, or -1 when the
+     * writer did not finish in time.
+     *
+     * The writer drains up to four seconds of ring buffer and then copies the
+     * temp PCM into the final WAV. Joining it with a fixed 1 s timeout used to
+     * return the stale frame count while the writer was still working, so the
+     * caller deleted a valid take (or re-read and rewrote the file) underneath
+     * it. Waiting on the writer's completion latch makes that impossible.
+     */
     fun stopRecording(): Long {
         if (!isRecording.get()) return 0L
         isRecording.set(false)
 
         try {
-            recordThread?.join(500)
-            writerThread?.join(1000)
-        } catch (_: InterruptedException) {/* best-effort audio cleanup: the resource is already unusable */ }
+            // Unblocks the capture thread; it is blocked in AudioRecord.read.
+            recordThread?.join(1_500)
+            val finished = writerDone.await(30, TimeUnit.SECONDS)
+            if (!finished) {
+                recordThread = null
+                writerThread = null
+                return -1L
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            recordThread = null
+            writerThread = null
+            return -1L
+        }
 
         recordThread = null
         writerThread = null

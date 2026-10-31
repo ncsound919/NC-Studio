@@ -170,6 +170,21 @@ class AacMonitorCodec(
     @Volatile
     var csd: ByteArray? = null
 
+    /**
+     * Applies a config that arrived after the decoder was already running (an
+     * engineer who joined or reconnected mid-session). Resetting is required:
+     * a MediaCodec cannot be reconfigured while it is started.
+     */
+    fun updateDecoderConfig(config: ByteArray) {
+        if (csd?.contentEquals(config) == true && decoderConfigured) return
+        csd = config
+        if (decoderConfigured) {
+            runCatching { decoder.stop() }
+            runCatching { decoder.reset() }
+            decoderConfigured = false
+        }
+    }
+
     init {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
@@ -327,6 +342,18 @@ class MonitorAudioEngine(
     /** Codec config (csd) the remote decoder needs; sent once per connection. */
     fun configPayload(): ByteArray? = (codec as? AacMonitorCodec)?.csd
 
+    /**
+     * Ask the encode loop to re-send the codec config before the next audio
+     * frame. Called on every new transport connection so a peer that joined
+     * after the stream started can decode it.
+     */
+    @Volatile
+    private var configResendRequested = false
+
+    fun requestConfigResend() {
+        configResendRequested = true
+    }
+
     private fun encodeLoop() {
         val encoder = codec ?: return
         var seq = 0
@@ -339,11 +366,13 @@ class MonitorAudioEngine(
             }
             val payload = runCatching { encoder.encode(block, block.size) }.getOrNull() ?: continue
             // The remote decoder cannot decode without the codec config, so it
-            // travels once, ahead of the first audio frame.
-            if (!configSent) {
+            // travels ahead of the first audio frame — and again on every new
+            // connection (a peer may have joined after the stream started).
+            if (!configSent || configResendRequested) {
                 val config = (encoder as? AacMonitorCodec)?.csd
                 if (config != null) {
                     configSent = true
+                    configResendRequested = false
                     onEncodedFrame?.invoke(
                         MonitorFrame.encode(
                             kind = MonitorFrame.KIND_CONFIG,
@@ -379,7 +408,7 @@ class MonitorAudioEngine(
         var localTrack: AudioTrack? = null
         while (running.get()) {
             pendingConfig.get()?.let { config ->
-                (decoder as? AacMonitorCodec)?.let { if (it.csd == null) it.csd = config }
+                (decoder as? AacMonitorCodec)?.updateDecoderConfig(config)
             }
             val frame = jitter.pop()
             if (frame == null) {

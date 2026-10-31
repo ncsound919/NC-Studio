@@ -79,6 +79,7 @@ export function createSessionServer(options = {}) {
   }
 
   function createSession({ role = 'engineer', displayName = null } = {}) {
+    pruneExpired();
     if (role !== 'engineer') {
       const error = new Error('only the engineer creates a session; the artist joins with a code');
       error.status = 422;
@@ -94,6 +95,7 @@ export function createSessionServer(options = {}) {
       engineerName: displayName,
       artistName: null,
       artistJoined: false,
+      lastSeen: now(),
       tokens: new Map(),
       takes: new Map(),
     };
@@ -104,6 +106,7 @@ export function createSessionServer(options = {}) {
   }
 
   function joinSession({ inviteCode = '', displayName = null } = {}) {
+    pruneExpired();
     const sessionId = invites.get(String(inviteCode).trim().toUpperCase());
     const session = sessionId ? sessions.get(sessionId) : undefined;
     if (!session) {
@@ -131,6 +134,29 @@ export function createSessionServer(options = {}) {
     return { session, token, role: 'artist' };
   }
 
+  /**
+   * Drops sessions whose last activity is older than the token TTL, and token
+   * entries that have expired. Without this the session map (and every token in
+   * it) grew for the lifetime of the process.
+   */
+  function pruneExpired() {
+    const cutoff = now() - TOKEN_TTL_MS;
+    for (const [sessionId, session] of sessions) {
+      for (const [token, record] of session.tokens) {
+        if (now() > record.expiresAt) session.tokens.delete(token);
+      }
+      // A live socket keeps the session even if nobody has authenticated lately.
+      if (sockets.has(sessionId)) continue;
+      if ((session.lastSeen ?? session.createdAt) < cutoff) {
+        sessions.delete(sessionId);
+        invites.delete(session.inviteCode);
+      }
+    }
+    for (const [code, sessionId] of invites) {
+      if (!sessions.has(sessionId)) invites.delete(code);
+    }
+  }
+
   function authenticate(sessionId, token) {
     const session = sessions.get(sessionId);
     if (!session) return null;
@@ -140,6 +166,7 @@ export function createSessionServer(options = {}) {
       session.tokens.delete(token);
       return null;
     }
+    session.lastSeen = now();
     return { session, role: record.role };
   }
 
@@ -500,7 +527,11 @@ export function createSessionServer(options = {}) {
       return;
     }
     const sessionId = url.searchParams.get('session');
-    const token = url.searchParams.get('token');
+    // Prefer the Authorization header: a token in the query string lands in
+    // proxy logs, connection traces and any intermediate. The query fallback
+    // remains for older clients.
+    const headerToken = bearer(req);
+    const token = headerToken ?? url.searchParams.get('token');
     const role = url.searchParams.get('role');
     const auth = authenticate(sessionId, token);
     if (!auth || (role && role !== auth.role)) {

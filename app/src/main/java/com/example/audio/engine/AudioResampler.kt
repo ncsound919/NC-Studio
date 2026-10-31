@@ -20,14 +20,6 @@ import kotlin.math.sin
 object AudioResampler {
 
     private const val TAPS = 32
-    private val sincWindow = FloatArray(TAPS) { i ->
-        val m = (TAPS - 1) / 2.0
-        val x = (i - m) / m
-        // Hann window over the kernel width
-        val w = 0.5 + 0.5 * cos(2.0 * PI * x)
-        val s = if (abs(x) < 1e-9) 1.0 else sin(PI * x) / (PI * x)
-        (w * s).toFloat()
-    }
 
     const val SESSION_SAMPLE_RATE = 48000
 
@@ -104,59 +96,48 @@ object AudioResampler {
         if (srcFrames == 0) return FloatArray(0)
 
         val ratio = dstRate.toDouble() / srcRate.toDouble()
-        val dstFrames = (srcFrames * ratio).toInt().coerceAtLeast(1)
+        val dstFrames = Math.round(srcFrames * ratio).toInt().coerceAtLeast(1)
         val channelsOut = if (isStereoSrc) 2 else 1
         val out = FloatArray(dstFrames * channelsOut)
 
         val step = 1.0 / ratio // source frames per destination frame
         val tapsHalf = TAPS / 2
+        // Anti-alias: when downsampling, the interpolation kernel's cutoff must
+        // follow the lower output Nyquist or high frequencies fold back.
+        val cutoff = min(1.0, ratio)
 
         for (dst in 0 until dstFrames) {
             val srcPos = dst * step
-            val center = srcPos.toInt()
-            val frac = srcPos - center
+            val center = Math.floor(srcPos).toInt()
 
             for (ch in 0 until channelsOut) {
                 var acc = 0.0
+                var weight = 0.0
                 for (t in 0 until TAPS) {
-                    val tapPos = center - tapsHalf + t + (if (frac > 0.0) 1 else 0)
+                    val tapPos = center - tapsHalf + 1 + t
                     if (tapPos < 0 || tapPos >= srcFrames) continue
-                    val tNorm = t - tapsHalf - frac + (if (frac > 0.0) 1 else 0)
-                    val kernel = sincKernel(tNorm)
+                    // Distance from the fractional read position, in source frames.
+                    val distance = tapPos - srcPos
+                    val normalised = distance / tapsHalf
+                    if (abs(normalised) >= 1.0) continue
+                    // Hann window over the kernel width: zero at the edges, one
+                    // at the centre. (cos(2*PI*x) has period 1 and was zero at
+                    // +-0.5 — it gutted the middle of the kernel.)
+                    val window = 0.5 + 0.5 * cos(PI * normalised)
+                    val x = distance * cutoff
+                    val sinc = if (abs(x) < 1e-9) 1.0 else sin(PI * x) / (PI * x)
+                    val kernel = window * sinc
                     acc += samples[tapPos * channelsIn + ch] * kernel
+                    weight += kernel
                 }
-                out[dst * channelsOut + ch] = acc.toFloat().coerceIn(-1f, 1f)
-                if (!isStereoSrc) break // mono source: single channel
+                // Normalise the tap sum so gain does not modulate with phase
+                // or with the cutoff used for downsampling.
+                out[dst * channelsOut + ch] =
+                    (if (weight > 1e-9) acc / weight else 0.0).toFloat().coerceIn(-1f, 1f)
+                if (!isStereoSrc) break
             }
-            // mono source written once per channel below handled by channelsOut
         }
         return out
-    }
-
-    /**
-     * Continuous (non-integer-tap) windowed sinc kernel value.
-     * Uses the discrete Hann-windowed kernel scaled by distance from center.
-     */
-    private fun sincKernel(t: Double): Float {
-        val x = abs(t)
-        if (x >= TAPS / 2.0) return 0f
-        // Linear blend of the two nearest discrete kernel taps (windowed sinc derivative)
-        val idxFloor = kotlin.math.floor(t).toInt()
-        val frac = (t - idxFloor).toFloat()
-        val m = (TAPS - 1) / 2.0
-
-        fun kernelAt(i: Int): Float {
-            val xi = i - m
-            val xn = (xi / m)
-            val w = 0.5 + 0.5 * cos(2.0 * PI * xn)
-            val s = if (abs(xi) < 1e-9) 1.0 else sin(PI * xi) / (PI * xi)
-            return (w * s).toFloat()
-        }
-
-        val k0 = kernelAt(idxFloor)
-        val k1 = kernelAt(idxFloor + 1)
-        val s = if (x < 1e-9) 1f else (sin(PI * x) / (PI * x)).toFloat()
-        return (k0 * (1f - frac) + k1 * frac) * s
     }
 
     /**

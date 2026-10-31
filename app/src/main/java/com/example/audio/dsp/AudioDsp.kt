@@ -264,16 +264,18 @@ class DuckingDelayProcessor(private val sampleRate: Float) {
     var duckingThresholdDb = -20f
     var duckingDepthDb = -12f
     var duckingReleaseMs = 200f
-    private val maxDelayFrames = (sampleRate * 0.5f).toInt() + 10
+    // Sized for the documented 50–1000 ms range plus the 1.5x right-channel
+    // offset, so turning the Time knob past 500 ms cannot write out of bounds.
+    private val maxDelayFrames = (sampleRate * 1.6f).toInt() + 10
     private val bufferL = FloatArray(maxDelayFrames)
     private val bufferR = FloatArray(maxDelayFrames)
     private var writeIndex = 0
-    private val delayFramesL = (delayMsL * sampleRate / 1000f).toInt()
-    private val delayFramesR = (delayMsR * sampleRate / 1000f).toInt()
+    private var delayFramesL = (delayMsL * sampleRate / 1000f).toInt()
+    private var delayFramesR = (delayMsR * sampleRate / 1000f).toInt()
     private var currentDuckingGain = 1f
-    private val duckingThresholdLinear = 10.0.pow(duckingThresholdDb / 20.0).toFloat()
-    private val duckingDepthLinear = 10.0.pow(duckingDepthDb / 20.0).toFloat()
-    private val duckingReleaseCoeff = exp(-1.0 / (duckingReleaseMs * sampleRate / 1000.0)).toFloat()
+    private var duckingThresholdLinear = 10.0.pow(duckingThresholdDb / 20.0).toFloat()
+    private var duckingDepthLinear = 10.0.pow(duckingDepthDb / 20.0).toFloat()
+    private var duckingReleaseCoeff = exp(-1.0 / (duckingReleaseMs * sampleRate / 1000.0)).toFloat()
 
     fun processSample(inL: Float, inR: Float): Pair<Float, Float> {
         val out = FloatArray(2); processSampleInto(inL, inR, out); return Pair(out[0], out[1])
@@ -302,6 +304,16 @@ class DuckingDelayProcessor(private val sampleRate: Float) {
         enabled = config.enabled; mix = config.mix; feedback = config.feedback
         duckingEnabled = config.duckingEnabled; duckingThresholdDb = config.duckingThresholdDb
         duckingDepthDb = config.duckingDepthDb
+        duckingReleaseMs = config.duckingReleaseMs
+        // These were computed once from the field defaults, so Time and the
+        // ducking controls changed the model and the UI but never the audio.
+        delayMsL = config.timeMs.coerceIn(1f, 1000f)
+        delayMsR = (delayMsL * 1.5f).coerceAtMost(1500f)
+        delayFramesL = (delayMsL * sampleRate / 1000f).toInt().coerceIn(1, maxDelayFrames - 1)
+        delayFramesR = (delayMsR * sampleRate / 1000f).toInt().coerceIn(1, maxDelayFrames - 1)
+        duckingThresholdLinear = 10.0.pow(duckingThresholdDb / 20.0).toFloat()
+        duckingDepthLinear = 10.0.pow(duckingDepthDb / 20.0).toFloat()
+        duckingReleaseCoeff = exp(-1.0 / (duckingReleaseMs.coerceAtLeast(1f) * sampleRate / 1000.0)).toFloat()
     }
     fun reset() { writeIndex = 0; currentDuckingGain = 1f; bufferL.fill(0f); bufferR.fill(0f) }
 }
@@ -790,7 +802,7 @@ class PeakLimiter(private val sampleRate: Float) {
 // ============================================================
 // SchroederReverb
 // ============================================================
-class SchroederReverb(sampleRate: Float) {
+class SchroederReverb(private val sampleRate: Float) {
     var enabled = true
     var returnLevel = 0.3f
     var roomSize = 0.5f
@@ -801,9 +813,10 @@ class SchroederReverb(sampleRate: Float) {
     private val combFiltersR = arrayOfNulls<CombFilter>(4)
     private val allpassFiltersL = arrayOfNulls<AllpassFilter>(2)
     private val allpassFiltersR = arrayOfNulls<AllpassFilter>(2)
-    private val preDelayBuffer = FloatArray((sampleRate * 0.05f).toInt() + 1)
+    // ReverbConfig documents 0–200 ms of pre-delay.
+    private val preDelayBuffer = FloatArray((sampleRate * 0.21f).toInt() + 1)
     private var preDelayWriteIdx = 0
-    private val preDelayReadFrames = (sampleRate * 0.02f).toInt()
+    private var preDelayReadFrames = (sampleRate * 0.02f).toInt()
     private val maxPreDelayFrames = preDelayBuffer.size
     private val lowCutFilter = BiquadFilter(sampleRate)
     private val highCutFilter = BiquadFilter(sampleRate)
@@ -854,8 +867,24 @@ class SchroederReverb(sampleRate: Float) {
         damping = config.damping
         stereoSpread = config.stereoWidth
         decayTimeSec = config.decayTimeSec
+        // Pre-delay, low cut and high cut were exposed knobs that never reached
+        // the DSP: pre-delay was fixed at 20 ms and both filters stayed at
+        // unity. Apply them here, clamped to the buffers/ranges they own.
+        preDelayReadFrames = (config.preDelayMs.coerceIn(0f, 200f) * sampleRate / 1000f)
+            .toInt().coerceIn(0, maxPreDelayFrames - 1)
+        lowCutFilter.configure(EqBand(FilterType.HIGH_PASS, config.lowCutHz.coerceIn(20f, 1000f), 0f, 0.707f))
+        highCutFilter.configure(EqBand(FilterType.LOW_PASS, config.highCutHz.coerceIn(1000f, 20000f), 0f, 0.707f))
     }
-    fun reset() { preDelayBuffer.fill(0f); preDelayWriteIdx = 0 }
+    fun reset() {
+        preDelayBuffer.fill(0f)
+        preDelayWriteIdx = 0
+        lowCutFilter.reset()
+        highCutFilter.reset()
+        for (filter in combFiltersL) filter?.reset()
+        for (filter in combFiltersR) filter?.reset()
+        for (filter in allpassFiltersL) filter?.reset()
+        for (filter in allpassFiltersR) filter?.reset()
+    }
 
     private class CombFilter(sampleRate: Float, private val feedback: Float) {
         private val delaySize = (sampleRate * 0.03f).toInt()
@@ -869,6 +898,11 @@ class SchroederReverb(sampleRate: Float) {
             idx = (idx + 1) % delaySize
             return output
         }
+        fun reset() {
+            buffer.fill(0f)
+            idx = 0
+            filterState = 0f
+        }
     }
 
     private class AllpassFilter(sampleRate: Float, private val feedback: Float) {
@@ -881,6 +915,10 @@ class SchroederReverb(sampleRate: Float) {
             buffer[idx] = input + delayed * feedback
             idx = (idx + 1) % delaySize
             return output
+        }
+        fun reset() {
+            buffer.fill(0f)
+            idx = 0
         }
     }
 }
