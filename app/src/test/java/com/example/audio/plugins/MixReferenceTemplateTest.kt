@@ -118,16 +118,76 @@ class MixReferenceTemplateTest {
     @Test
     fun popVocalChainFollowsTheReferenceOrder() {
         val vocals = kinds(template("pop").roleChains.getValue(ChainRole.LEAD_VOCAL))
+        val denoise = vocals.indexOf(PluginKind.PHONE_NOISE_REDUCTION)
+        val rider = vocals.indexOf(PluginKind.VOCAL_RIDER)
         val neve = vocals.indexOf(PluginKind.NEVE_1073)
+        val resonance = vocals.indexOf(PluginKind.RESONANCE_SMOOTHER)
         val fet = vocals.indexOf(PluginKind.FET_1176)
         val opto = vocals.indexOf(PluginKind.OPTO_LA2A)
         val deEss = vocals.indexOf(PluginKind.DE_ESSER)
         val air = vocals.indexOf(PluginKind.AIR_SHELF)
-        assertTrue("Neve must come first", neve in 0..1)
+        val delay = vocals.indexOf(PluginKind.TEMPO_DELAY)
+        val reverb = vocals.indexOf(PluginKind.PLATE_REVERB)
+
+        assertTrue("denoise must be before the tone/compression stages", denoise in 0..2)
+        assertTrue("rider before EQ and compression", rider in 0..3 && rider < neve)
+        assertTrue("corrective EQ before resonance and compression", neve < resonance && resonance < fet)
         assertTrue("1176 after the preamp", fet > neve)
         assertTrue("LA-2A after the 1176 (edge then smooth)", opto > fet)
         assertTrue("de-esser after the compressors", deEss > opto)
         assertTrue("air shelf near the end", air > deEss)
+        assertTrue("delay feeds the reverb", delay < reverb)
+        assertEquals("reverb must be the last insert", vocals.lastIndex, reverb)
+    }
+
+    @Test
+    fun everyLeadVocalChainEndsWithSpaceAndHasTwoCompressorStages() {
+        for (template in MixReferenceTemplateLibrary.ALL) {
+            val chain = template.roleChains[ChainRole.LEAD_VOCAL] ?: continue
+            val vocals = kinds(chain)
+            val delay = vocals.indexOf(PluginKind.TEMPO_DELAY)
+            val reverb = vocals.indexOfLast {
+                it == PluginKind.PLATE_REVERB ||
+                    it == PluginKind.HALL_REVERB ||
+                    it == PluginKind.ROOM_REVERB
+            }
+            assertTrue("${template.id}: delay must exist", delay >= 0)
+            assertTrue("${template.id}: reverb must exist", reverb >= 0)
+            assertTrue("${template.id}: delay must precede reverb", delay < reverb)
+            assertEquals("${template.id}: reverb must be last", vocals.lastIndex, reverb)
+
+            val compressors = vocals.count {
+                it == PluginKind.FET_1176 ||
+                    it == PluginKind.OPTO_LA2A ||
+                    it == PluginKind.VARI_MU_COMP ||
+                    it == PluginKind.VCA_BUS_COMP ||
+                    it == PluginKind.PARALLEL_COMP
+            }
+            assertTrue("${template.id}: staged vocal needs at least two compressor stages", compressors >= 2)
+
+            val rider = vocals.indexOf(PluginKind.VOCAL_RIDER)
+            val firstComp = vocals.indexOfFirst {
+                it == PluginKind.FET_1176 ||
+                    it == PluginKind.OPTO_LA2A ||
+                    it == PluginKind.VARI_MU_COMP ||
+                    it == PluginKind.VCA_BUS_COMP ||
+                    it == PluginKind.PARALLEL_COMP
+            }
+            assertTrue("${template.id}: vocal rider must run before compression", rider in 0 until firstComp)
+        }
+    }
+
+    @Test
+    fun standardVocalChainIsSwappableAndOrdered() {
+        val chain = MixReferenceTemplateLibrary.byId("vocal_standard")!!
+        val vocals = kinds(chain.roleChains.getValue(ChainRole.LEAD_VOCAL))
+        assertTrue(PluginKind.VOCAL_RIDER in vocals)
+        assertTrue(PluginKind.RESONANCE_SMOOTHER in vocals)
+        assertTrue(PluginKind.PHONE_NOISE_REDUCTION in vocals)
+        assertTrue(PluginKind.TEMPO_DELAY in vocals)
+        assertTrue(PluginKind.PLATE_REVERB in vocals)
+        assertTrue(vocals.indexOf(PluginKind.TEMPO_DELAY) < vocals.indexOf(PluginKind.PLATE_REVERB))
+        assertEquals(PluginKind.PLATE_REVERB, vocals.last())
     }
 
     @Test

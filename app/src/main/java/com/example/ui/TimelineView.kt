@@ -125,8 +125,11 @@ fun TimelineView(
     uiState: EngineUiState,
     settings: DawSettings = DawSettings(),
     onSeekFraction: (Float) -> Unit,
+    onSeekFrame: (Long) -> Unit = {},
     onSelectTrack: (Int) -> Unit,
     onSplitClipAtPlayhead: (Int) -> Unit,
+    onSplitClipAtFrame: (Int, String, Long) -> Unit = { _, _, _ -> },
+    onMoveClipToTrack: (Int, String, Int) -> Unit = { _, _, _ -> },
     onTrimClipEnd: (Int, String) -> Unit,
     onDuplicateClip: (Int, String) -> Unit,
     onOpenClipBin: () -> Unit,
@@ -157,6 +160,8 @@ fun TimelineView(
     onPasteChorusDouble: (Int, String, Int) -> Unit = { _, _, _ -> },
     onAdaptChorusLoop: (Int, String, Int) -> Unit = { _, _, _ -> },
     onStripSilence: (SampleEdit.StripSettings, StripSilenceMode) -> Unit = { _, _ -> },
+    onSelectTake: (Int, String) -> Unit = { _, _ -> },
+    onCompTakeRange: (Int, String, Long, Long) -> Unit = { _, _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val totalFrames = session.totalLengthFrames.toFloat().coerceAtLeast(1f)
@@ -172,6 +177,10 @@ fun TimelineView(
     }
     val framesPerBeat = session.sampleRate * 60.0 / session.tempoBpm.coerceAtLeast(1f)
     val framesPerBar = framesPerBeat * 4.0
+    val canSplitAtPlayhead = selectedTrack?.clips?.any { clip ->
+        uiState.playheadFrame in clip.timelineStartFrame until
+            (clip.timelineStartFrame + clip.lengthFrames)
+    } == true
 
     val haptics = LocalHapticFeedback.current
     var showClipAdjustModal by remember { mutableStateOf(false) }
@@ -179,6 +188,7 @@ fun TimelineView(
     // reads the clip's current position out of the session.
     var spotRequest by remember { mutableStateOf<SpotRequest?>(null) }
     var snapFlashFrame by remember { mutableStateOf<Long?>(null) }
+    var crossTrackTarget by remember { mutableStateOf<Int?>(null) }
     var zoom by remember { mutableFloatStateOf(1f) }
     val contentScroll = rememberScrollState()
     val trackHeaderWidth = 110.dp
@@ -612,7 +622,56 @@ fun TimelineView(
                             fontSize = 9.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.widthIn(max = 110.dp)
+                            modifier = Modifier.widthIn(max = 76.dp)
+                        )
+                    }
+                }
+            }
+
+            // Split is a primary edit, not a buried menu item: park the playhead
+            // and hit this, or pick the Split tool and tap the exact cut point.
+            StudioTooltip("Split selected track at the playhead") {
+                Box(
+                    modifier = Modifier
+                        .padding(start = 6.dp)
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(Radius.md))
+                        .background(if (canSplitAtPlayhead) StudioPurple.copy(alpha = 0.28f) else StudioCard)
+                        .border(
+                            1.dp,
+                            if (canSplitAtPlayhead) StudioPurple else StudioCardBorder,
+                            RoundedCornerShape(Radius.md)
+                        )
+                        .clickable(
+                            enabled = canSplitAtPlayhead,
+                            role = androidx.compose.ui.semantics.Role.Button
+                        ) {
+                            haptics.studioConfirm(settings.enableHapticFeedback)
+                            onSplitClipAtPlayhead(uiState.selectedTrackIndex)
+                            markEditLanded()
+                        }
+                        .semantics { contentDescription = "Split the selected track at the playhead" }
+                        .padding(horizontal = 12.dp)
+                        .testTag("split_at_playhead_button"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCut,
+                            contentDescription = null,
+                            tint = if (canSplitAtPlayhead) StudioPurple else TextMuted,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = stringResource(R.string.timeline_split),
+                            color = if (canSplitAtPlayhead) StudioPurple else TextMuted,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1
                         )
                     }
                 }
@@ -782,6 +841,28 @@ fun TimelineView(
                 val framesPerPixel = session.totalLengthFrames.toFloat() / contentWidthPx
                 val scrollPx = contentScroll.value.toFloat()
 
+                // Playhead first: loop/punch handles are drawn above it, so a
+                // marker that happens to sit on a loop edge never steals that
+                // edge's drag. The 48 dp playhead target still covers the rest
+                // of the ruler.
+                val playheadX = with(density) {
+                    (uiState.playheadFrame / session.totalLengthFrames.toFloat() * contentWidthPx - scrollPx).toDp()
+                }
+                if (playheadX >= 0.dp && playheadX <= maxWidth) {
+                    PlayheadHandle(
+                        centerX = playheadX,
+                        viewportWidth = maxWidth,
+                        frame = uiState.playheadFrame,
+                        framesPerPixel = framesPerPixel,
+                        sampleRate = session.sampleRate,
+                        accentColor = NeonCyan,
+                        label = stringResource(R.string.label_playhead),
+                        testTag = "playhead_handle",
+                        hapticsEnabled = settings.enableHapticFeedback,
+                        onSeek = { frame -> onSeekFrame(frame.coerceIn(0L, session.totalLengthFrames)) }
+                    )
+                }
+
                 if (session.loopEnabled) {
                     val startX = with(density) {
                         (session.loopStartFrame / session.totalLengthFrames.toFloat() * contentWidthPx - scrollPx).toDp()
@@ -859,6 +940,7 @@ fun TimelineView(
                         }
                     )
                 }
+
             }
         }
 
@@ -978,6 +1060,7 @@ fun TimelineView(
                 modifier = Modifier.fillMaxSize()
             ) {
                 itemsIndexed(session.tracks) { index, track ->
+                  Column {
                     TrackLane(
                         track = track,
                         isSelected = uiState.selectedTrackIndex == index,
@@ -985,6 +1068,8 @@ fun TimelineView(
                         sampleRate = session.sampleRate,
                         tempoBpm = session.tempoBpm,
                         settings = settings,
+                        trackCount = session.tracks.size,
+                        isCrossTrackTarget = crossTrackTarget == index,
                         selectedClipId = if (uiState.selectedTrackIndex == index) firstSelectedClip?.id else null,
                         selectedClipIds = uiState.selectedClipIds,
                         contentZoom = zoom,
@@ -994,6 +1079,9 @@ fun TimelineView(
                             ?.let { it.startFrame..it.endFrame },
                         onSelect = { onSelectTrack(index) },
                         onToggleClip = { clipId -> onToggleClipSelection(index, clipId) },
+                        onSplitClipAtFrame = { clipId, frame ->
+                            onSplitClipAtFrame(index, clipId, frame)
+                        },
                         onMoveClip = { clipId, frame, tolerance ->
                             onBeginClipGesture(index, "Move clip")
                             onMoveClip(index, clipId, frame, tolerance)
@@ -1005,13 +1093,17 @@ fun TimelineView(
                         onEditSelectionDrag = { start, end -> onEditSelectionChange(index, start, end) },
                         onEditSelectionCommit = { onEndClipGesture(); onSelectTrack(index) },
                         onClipDragStart = { snapFlashFrame = null },
-                        onClipDragEnd = { movedClipId ->
+                        onCrossTrackTarget = { target -> crossTrackTarget = target },
+                        onClipDragEnd = { movedClipId, targetTrack ->
+                            if (movedClipId != null && targetTrack != null && targetTrack != index) {
+                                onMoveClipToTrack(index, movedClipId, targetTrack)
+                            }
                             onEndClipGesture()
                             markEditLanded()
                             // Spot mode asks for the destination once the drop
                             // settles, the way the Pro Tools spot dialog does.
                             if (movedClipId != null && settings.editMode == EditMode.SPOT) {
-                                spotRequest = SpotRequest(index, movedClipId)
+                                spotRequest = SpotRequest(targetTrack ?: index, movedClipId)
                             }
                         },
                         onFadeIn = { clipId, ms ->
@@ -1026,8 +1118,19 @@ fun TimelineView(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(58.dp)
+                            .height(TRACK_LANE_HEIGHT)
                     )
+                    // Alternates sit directly under the take being heard, on the
+                    // same scroll and zoom, so a comp line is obvious.
+                    TrackTakeLanes(
+                        track = track,
+                        totalFrames = session.totalLengthFrames,
+                        contentZoom = zoom,
+                        scrollState = contentScroll,
+                        onSelectTake = { laneId -> onSelectTake(index, laneId) },
+                        onCompTake = { laneId, from, to -> onCompTakeRange(index, laneId, from, to) }
+                    )
+                  }
                 }
             }
 
@@ -1132,7 +1235,10 @@ fun TimelineView(
 }
 
 /** What the pointer is doing on a clip, decided by the active timeline tool. */
-internal enum class ClipDragKind { MOVE, TRIM_START, TRIM_END, SELECT }
+internal enum class ClipDragKind { MOVE, TRIM_START, TRIM_END, SELECT, NONE }
+
+/** Height of one track lane. Cross-track dragging uses it to pick a row. */
+internal val TRACK_LANE_HEIGHT = 58.dp
 
 /** Width of the trim/fade zone at each end of a clip. */
 /** A spot that still needs a destination time from the engineer. */

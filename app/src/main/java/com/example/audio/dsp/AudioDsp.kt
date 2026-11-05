@@ -394,14 +394,23 @@ class SaturationProcessor {
 }
 
 // ============================================================
-// LufsMeter
+// RmsMeter
 // ============================================================
-class LufsMeter(private val sampleRate: Float) {
+/**
+ * Unweighted, un-gated RMS of the stereo master, in dBFS.
+ *
+ * This is deliberately **not** LUFS: there is no K-weighting, no 400 ms
+ * momentary window and no gating, and the reported value is the latest
+ * completed 1000-sample block rather than an integrated programme loudness.
+ * The EBU R128 implementation lives in [com.example.audio.reference.ReferenceAnalysis]
+ * and is used for reference/file analysis.
+ */
+class RmsMeter(private val sampleRate: Float) {
     private var sumSqL = 0f
     private var sumSqR = 0f
     private var count = 0
-    var integratedLufs = -60f
-    var momentaryLufs = -60f
+    var latestRmsDb = -60f
+    var momentaryRmsDb = -60f
     var peakDbL = -60f
     var peakDbR = -60f
     fun addSample(l: Float, r: Float) {
@@ -411,12 +420,12 @@ class LufsMeter(private val sampleRate: Float) {
         if (20f * log10(pr.coerceAtLeast(1e-6f)) > peakDbR) peakDbR = 20f * log10(pr.coerceAtLeast(1e-6f))
         if (count >= 1000) {
             val rms = sqrt((sumSqL + sumSqR) / (count * 2f))
-            momentaryLufs = if (rms > 1e-6f) 20f * log10(rms) - 0.691f else -60f
-            integratedLufs = momentaryLufs
+            momentaryRmsDb = if (rms > 1e-6f) 20f * log10(rms) else -60f
+            latestRmsDb = momentaryRmsDb
             sumSqL = 0f; sumSqR = 0f; count = 0
         }
     }
-    fun reset() { sumSqL = 0f; sumSqR = 0f; count = 0; integratedLufs = -60f; momentaryLufs = -60f; peakDbL = -60f; peakDbR = -60f }
+    fun reset() { sumSqL = 0f; sumSqR = 0f; count = 0; latestRmsDb = -60f; momentaryRmsDb = -60f; peakDbL = -60f; peakDbR = -60f }
 }
 
 // ============================================================

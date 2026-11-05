@@ -137,6 +137,9 @@ fun TrackInspector(
     onUpdateMasterReverb: (ReverbConfig) -> Unit = {},
     onApplyPreset: (TrackPreset) -> Unit = {},
     onOpenPluginRack: () -> Unit = {},
+    onSelectTake: (String) -> Unit = {},
+    onRateTake: (String) -> Unit = {},
+    onDeleteTake: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var activeModule by rememberSaveable(track.index) { mutableIntStateOf(0) }
@@ -319,6 +322,13 @@ fun TrackInspector(
             }
         }
 
+        TakeLanesRow(
+            track = track,
+            onSelectTake = onSelectTake,
+            onRateTake = onRateTake,
+            onDeleteTake = onDeleteTake
+        )
+
         Spacer(modifier = Modifier.height(8.dp))
 
         // Selected Module Editor Pane
@@ -360,6 +370,99 @@ fun TrackInspector(
             },
             onDismiss = { showPresetDialog = false }
         )
+    }
+}
+
+/**
+ * Alternate takes for the selected track. Tapping a take swaps the audible
+ * clips; the star cycles the rating and the cross removes the take.
+ */
+@Composable
+private fun TakeLanesRow(
+    track: TrackData,
+    onSelectTake: (String) -> Unit,
+    onRateTake: (String) -> Unit,
+    onDeleteTake: (String) -> Unit
+) {
+    // Tracks with a single implicit take get no row: the inspector's height is
+    // scarce, and the section only becomes useful once an overdub exists.
+    if (track.takeLanes.isEmpty()) return
+    Column(modifier = Modifier.fillMaxWidth().testTag("track_takes")) {
+        Text(
+            text = stringResource(R.string.inspector_takes),
+            color = TextMuted,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            track.takeLanes.forEach { lane ->
+                val active = lane.id == track.activeTakeId
+                val selectCd = stringResource(R.string.take_select_cd, lane.name)
+                val rateCd = stringResource(R.string.take_rating_cd, lane.name)
+                val deleteCd = stringResource(R.string.take_delete_cd, lane.name)
+                Surface(
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(Radius.sm))
+                        .clickable {
+                            onSelectTake(lane.id)
+                        }
+                        .semantics { contentDescription = selectCd },
+                    color = if (active) NeonCyan.copy(alpha = 0.18f) else StudioSurface,
+                    shape = RoundedCornerShape(Radius.sm),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        if (active) NeonCyan else StudioCardBorder
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = lane.name,
+                            color = if (active) NeonCyan else TextPrimary,
+                            fontSize = 11.sp,
+                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
+                        )
+                        TextButton(
+                            onClick = { onRateTake(lane.id) },
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(2.dp),
+                            modifier = Modifier.semantics { contentDescription = rateCd }
+                        ) {
+                            Text(
+                                text = if (lane.rating > 0) {
+                                    stringResource(R.string.take_stars, lane.rating)
+                                } else {
+                                    "☆"
+                                },
+                                color = StudioAmber,
+                                fontSize = 11.sp
+                            )
+                        }
+                        IconButton(
+                            onClick = { onDeleteTake(lane.id) },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .semantics { contentDescription = deleteCd }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Close,
+                                contentDescription = null,
+                                tint = TextMuted,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

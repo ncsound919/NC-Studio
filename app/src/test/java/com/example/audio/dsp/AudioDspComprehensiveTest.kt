@@ -30,7 +30,7 @@ import kotlin.math.sin
  * - DuckingDelayProcessor
  * - ChannelLimiter & PeakLimiter
  * - SchroederReverb
- * - LufsMeter
+ * - RmsMeter
  */
 class AudioDspComprehensiveTest {
 
@@ -285,8 +285,8 @@ class AudioDspComprehensiveTest {
     }
 
     @Test
-    fun lufsMeter_measuresPeakAndLoudnessAccurately() {
-        val meter = LufsMeter(sampleRate)
+    fun rmsMeter_measuresPeakAndLevelAccurately() {
+        val meter = RmsMeter(sampleRate)
         meter.reset()
 
         // Feed 1 kHz sine wave at -6 dBFS (amplitude 0.5f) for 9600 samples (200 ms)
@@ -297,7 +297,7 @@ class AudioDspComprehensiveTest {
 
         // Peak should be ~ -6 dBFS (+/- 0.5 dB)
         assertTrue("Peak L should be around -6 dBFS, was: ${meter.peakDbL}", abs(meter.peakDbL - (-6.0f)) < 1.0f)
-        assertTrue("Integrated LUFS should have registered (> -30 LUFS)", meter.integratedLufs > -30.0f)
+        assertTrue("RMS level should have registered (> -30 dBFS)", meter.latestRmsDb > -30.0f)
     }
 
     @Test

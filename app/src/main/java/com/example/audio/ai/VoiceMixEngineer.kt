@@ -13,11 +13,14 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import com.example.audio.model.CompressorType
+import com.example.audio.model.AudioSourceFormat
 import com.example.audio.model.ProjectSession
 import com.example.audio.model.SaturationType
 import com.example.audio.model.StemCategory
 import com.example.audio.model.TrackData
+import com.example.audio.model.TrackFeatures
 import java.util.Locale
+import kotlin.math.abs
 
 /**
  * UI state for the spoken engineer. Kept in one place so the AI Studio can show
@@ -274,6 +277,7 @@ object MixEngineerBrain {
         val text = transcript.lowercase(Locale.US)
         val calls = mutableListOf<ToolCallDispatcher.ToolCall>()
         val targets = resolveTargets(text, session, selectedTrackIndex)
+        val twoTrackTracks = session.tracks.filter { it.isTwoTrackBeat }
         val selected = session.tracks.firstOrNull { it.index == selectedTrackIndex }
             ?: session.tracks.firstOrNull()
 
@@ -315,7 +319,9 @@ object MixEngineerBrain {
 
         // Rough-mix shortcut: one request, a complete starting point.
         val roughMix = Regex(
-            "\\b(rough mix|mix (it|this|the session|the song)|do a mix|take it away|make it sound (good|professional|finished))\\b"
+            "\\b(rough mix|mix (it|this|the session|the song|my song|this song|the track|this track|my track|the beat|this beat)|" +
+                "do a mix|give me a mix|just mix|mix it down|" +
+                "make it sound (good|professional|finished|better)|balance (it|this|the mix|the session))\\b"
         ).containsMatchIn(text)
         if (roughMix) {
             session.tracks.filter { it.stemCategory == StemCategory.VOCAL }.forEach { track ->
@@ -344,7 +350,49 @@ object MixEngineerBrain {
                     "driveDb" to "4"
                 )))
             }
-            return Plan(calls, summarize(calls, session), source = "Built-in engineer")
+            if (calls.isEmpty() && twoTrackTracks.isNotEmpty()) {
+                val premaster = session.sourceFormat == AudioSourceFormat.TWO_TRACK_PREMASTER ||
+                    twoTrackTracks.any { it.sourceFormat == AudioSourceFormat.TWO_TRACK_PREMASTER }
+                if (premaster) {
+                    return Plan(
+                        emptyList(),
+                        "",
+                        "This is a 2-track premaster, so I will not add another limiter or stem move. " +
+                            "Bounce the unmastered mix if you want me to master it."
+                    )
+                }
+                // A finished stereo beat has no isolated stems, but a gentle
+                // master move is still honest and audible.
+                add(ToolCallDispatcher.ToolCall("setMasterLimiter", mapOf(
+                    "enabled" to "true",
+                    "ceilingDb" to "-1.0",
+                    "thresholdDb" to "-8.0",
+                    "releaseMs" to "120"
+                )))
+                add(ToolCallDispatcher.ToolCall("setMasterGain", mapOf("gainDb" to "0.0")))
+            }
+            val roughMixSummary = summarize(calls, session) + when {
+                twoTrackTracks.isNotEmpty() && calls.any { it.name == "setMasterLimiter" } ->
+                    " The stereo 2-track beat got a gentle master limiter."
+                twoTrackTracks.isNotEmpty() ->
+                    " The stereo 2-track beat is left intact; I mixed the vocals against it."
+                else -> ""
+            }
+            return Plan(calls, roughMixSummary, source = "Built-in engineer")
+        }
+
+        // A stereo 2-track beat has no isolated vocal. Applying a vocal chain to
+        // the whole beat would wreck it, so explain the limitation instead.
+        // A recording request is different: the artist is about to add the vocal.
+        val mentionsVocal = Regex("\\b(vocals?|vox|lead vocal|rap|verse|hook)\\b").containsMatchIn(text)
+        val recordingIntent = Regex("\\b(record|recording|take|punch)\\b").containsMatchIn(text)
+        val hasVocalStem = session.tracks.any { it.stemCategory == StemCategory.VOCAL }
+        if (mentionsVocal && !recordingIntent && !hasVocalStem && twoTrackTracks.isNotEmpty()) {
+            return Plan(
+                emptyList(),
+                "",
+                "This beat is a 2-track stereo mix, so its vocal is baked in. Record a vocal take or import the vocal stem, then I can mix it against the beat."
+            )
         }
 
         // Vocal chain shortcut.
@@ -371,14 +419,30 @@ object MixEngineerBrain {
                 ?: Regex("\\bratio(?: of| to| at)?\\s*(\\d+(?:\\.\\d+)?)").find(text)?.groupValues?.get(1)?.toFloatOrNull()
             val threshold = Regex("\\bthreshold(?: to| at)?\\s*(-?\\d+(?:\\.\\d+)?)").find(text)?.groupValues?.get(1)?.toFloatOrNull()
             targets.ifEmpty { listOfNotNull(selected) }.forEach { track ->
-                val type = compressorType ?: if (track.stemCategory == StemCategory.VOCAL) CompressorType.LA_2A else CompressorType.VCA
-                add(ToolCallDispatcher.ToolCall("setCompressor", buildMap {
-                    put("trackIndex", track.index.toString())
-                    put("enabled", if (compressorOff) "false" else "true")
-                    put("type", type.name)
-                    ratio?.let { put("ratio", it.toString()) }
-                    threshold?.let { put("thresholdDb", it.toString()) }
-                }))
+                if (track.isTwoTrackBeat) {
+                    // Bus glue, not stem compression: a slow 2:1 with the sub and
+                    // transient attacks left alone. A premaster already has its
+                    // limiting, so never add a second limiter here.
+                    add(ToolCallDispatcher.ToolCall("setCompressor", buildMap {
+                        put("trackIndex", track.index.toString())
+                        put("enabled", if (compressorOff) "false" else "true")
+                        put("type", CompressorType.VCA.name)
+                        put("ratio", (ratio ?: 2f).coerceAtMost(2f).toString())
+                        put("thresholdDb", (threshold ?: -14f).coerceIn(-24f, -8f).toString())
+                        put("attackMs", "30")
+                        put("releaseMs", "250")
+                        put("makeupGainDb", "0.5")
+                    }))
+                } else {
+                    val type = compressorType ?: if (track.stemCategory == StemCategory.VOCAL) CompressorType.LA_2A else CompressorType.VCA
+                    add(ToolCallDispatcher.ToolCall("setCompressor", buildMap {
+                        put("trackIndex", track.index.toString())
+                        put("enabled", if (compressorOff) "false" else "true")
+                        put("type", type.name)
+                        ratio?.let { put("ratio", it.toString()) }
+                        threshold?.let { put("thresholdDb", it.toString()) }
+                    }))
+                }
             }
         }
 
@@ -391,12 +455,24 @@ object MixEngineerBrain {
             val drive = Regex("\\bdrive(?: to| at)?\\s*(\\d+(?:\\.\\d+)?)\\s*(?:db)?\\b").find(text)
                 ?.groupValues?.get(1)?.toFloatOrNull()
             targets.ifEmpty { listOfNotNull(selected) }.forEach { track ->
-                add(ToolCallDispatcher.ToolCall("setSaturation", buildMap {
-                    put("trackIndex", track.index.toString())
-                    put("enabled", if (saturationOff) "false" else "true")
-                    put("type", (saturationType ?: SaturationType.TUBE).name)
-                    put("driveDb", (drive ?: 3.5f).toString())
-                }))
+                if (track.isTwoTrackBeat) {
+                    // Saturation on a finished stereo beat is a glue decision:
+                    // keep it barely there so the premaster keeps its headroom.
+                    add(ToolCallDispatcher.ToolCall("setSaturation", mapOf(
+                        "trackIndex" to track.index.toString(),
+                        "enabled" to if (saturationOff) "false" else "true",
+                        "type" to SaturationType.TAPE.name,
+                        "driveDb" to "1.5",
+                        "mix" to "0.2"
+                    )))
+                } else {
+                    add(ToolCallDispatcher.ToolCall("setSaturation", buildMap {
+                        put("trackIndex", track.index.toString())
+                        put("enabled", if (saturationOff) "false" else "true")
+                        put("type", (saturationType ?: SaturationType.TUBE).name)
+                        put("driveDb", (drive ?: 3.5f).toString())
+                    }))
+                }
             }
         }
 
@@ -410,10 +486,17 @@ object MixEngineerBrain {
         val parsedFreq = parseFrequency(text)
         if (wantsHighPass) {
             targets.ifEmpty { listOfNotNull(selected) }.forEach { track ->
+                // On a 2-track beat only a rumble filter is safe; 90 Hz would
+                // remove the kick and 808 the beat was mixed around.
+                val frequency = if (track.isTwoTrackBeat) {
+                    (parsedFreq ?: 30f).coerceIn(20f, 40f)
+                } else {
+                    parsedFreq ?: 90f
+                }
                 add(ToolCallDispatcher.ToolCall("setEqFilter", mapOf(
                     "trackIndex" to track.index.toString(),
                     "filter" to "highPass",
-                    "frequencyHz" to (parsedFreq ?: 90f).toString(),
+                    "frequencyHz" to frequency.toString(),
                     "enabled" to "true"
                 )))
             }
@@ -466,12 +549,16 @@ object MixEngineerBrain {
         val wantsMudCut = Regex("\\b(mud|muddy|boxy|cloudy|clean up the mids)\\b").containsMatchIn(text)
         val wantsPresence = Regex("\\b(presence|forward|upfront|in your face|cut through)\\b").containsMatchIn(text)
         targets.ifEmpty { listOfNotNull(selected) }.forEach { track ->
+            // Broad strokes only on a finished stereo mix: narrow boosts turn
+            // into stem surgery the engineer cannot undo inside the beat.
+            val twoTrack = track.isTwoTrackBeat
+            val bandQ = if (twoTrack) "0.7" else "1.2"
             if (wantsBright) {
                 add(ToolCallDispatcher.ToolCall("setEqBand", mapOf(
                     "trackIndex" to track.index.toString(),
                     "band" to "4",
                     "frequencyHz" to "10000",
-                    "gainDb" to "2.5",
+                    "gainDb" to if (twoTrack) "1.5" else "2.5",
                     "enabled" to "true"
                 )))
             }
@@ -480,8 +567,8 @@ object MixEngineerBrain {
                     "trackIndex" to track.index.toString(),
                     "band" to "2",
                     "frequencyHz" to "350",
-                    "gainDb" to "-2.5",
-                    "qFactor" to "1.2",
+                    "gainDb" to if (twoTrack) "-1.5" else "-2.5",
+                    "qFactor" to bandQ,
                     "enabled" to "true"
                 )))
             }
@@ -490,7 +577,8 @@ object MixEngineerBrain {
                     "trackIndex" to track.index.toString(),
                     "band" to "3",
                     "frequencyHz" to "3000",
-                    "gainDb" to "2.0",
+                    "gainDb" to if (twoTrack) "1.0" else "2.0",
+                    "qFactor" to bandQ,
                     "enabled" to "true"
                 )))
             }
@@ -498,10 +586,10 @@ object MixEngineerBrain {
                 add(ToolCallDispatcher.ToolCall("setSaturation", mapOf(
                     "trackIndex" to track.index.toString(),
                     "enabled" to "true",
-                    "type" to SaturationType.TUBE.name,
-                    "driveDb" to "2.5",
-                    "warmth" to "0.6",
-                    "mix" to "0.35"
+                    "type" to (if (twoTrack) SaturationType.TAPE else SaturationType.TUBE).name,
+                    "driveDb" to if (twoTrack) "1.5" else "2.5",
+                    "warmth" to if (twoTrack) "0.35" else "0.6",
+                    "mix" to if (twoTrack) "0.2" else "0.35"
                 )))
             }
         }
@@ -725,24 +813,116 @@ object MixEngineerBrain {
         return Plan(calls, summarize(calls, session))
     }
 
+    /**
+     * Content-aware fallback when the model returns no usable tool calls and the
+     * session already has measured features. This is the "learn" part of the
+     * smart-engineer idea: level-match by measured loudness, apply role offsets,
+     * and spread the wide sources. It guarantees the engineer never silently
+     * does nothing, and it is still bounded to the app's own tools.
+     */
+    fun genericMix(session: ProjectSession, features: List<TrackFeatures>): Plan {
+        val measured = session.tracks.mapNotNull { track ->
+            val f = features.firstOrNull { it.trackIndex == track.index }
+            if (f == null || f.rmsDb <= -50f || f.peakDb <= -50f) null else track to f
+        }
+        if (measured.size < 2) {
+            return Plan(emptyList(), "", "I need at least two tracks with audio to balance a mix.")
+        }
+        val levels = measured.associate { (track, f) ->
+            val loudness = if (f.integratedLufs > -50f) f.integratedLufs else f.rmsDb
+            // A finished stereo beat is the record itself, not a stem bus, so it
+            // gets no role offset: stem-grade offsets would push the premaster
+            // several dB below its own measured level.
+            val offset = if (track.isTwoTrackBeat) 0f else roleOffset(track.stemCategory)
+            track.index to (-loudness + offset)
+        }
+        val anchorIndex = measured.firstOrNull { it.first.stemCategory == StemCategory.DRUMS }?.first?.index
+            ?: measured.firstOrNull { it.first.isTwoTrackBeat }?.first?.index
+        val anchor = anchorIndex?.let { levels[it] } ?: (levels.values.minOrNull() ?: 0f)
+        val pans = panSpread(measured)
+        val calls = mutableListOf<ToolCallDispatcher.ToolCall>()
+        for ((track, _) in measured) {
+            val relativeGain = (levels[track.index] ?: anchor) - anchor
+            // Broad bus moves only on a finished mix: a -24 dB "stem" cut would
+            // gut the whole record.
+            val gainDb = if (track.isTwoTrackBeat) relativeGain.coerceIn(-6f, 6f)
+            else relativeGain.coerceIn(-24f, 6f)
+            calls += ToolCallDispatcher.ToolCall(
+                "setTrackGain",
+                mapOf(
+                    "trackIndex" to track.index.toString(),
+                    "gainDb" to String.format(Locale.US, "%.1f", gainDb)
+                )
+            )
+            pans[track.index]?.let { pan ->
+                if (abs(pan) > 0.01f) {
+                    calls += ToolCallDispatcher.ToolCall(
+                        "setTrackPan",
+                        mapOf(
+                            "trackIndex" to track.index.toString(),
+                            "pan" to String.format(Locale.US, "%.2f", pan)
+                        )
+                    )
+                }
+            }
+        }
+        return Plan(calls, "Balanced ${measured.size} tracks from measured loudness.", source = "Built-in analyser")
+    }
+
+    private fun roleOffset(category: StemCategory): Float = when (category) {
+        StemCategory.DRUMS -> 0f
+        StemCategory.BASS -> -1.5f
+        StemCategory.VOCAL -> 0.5f
+        StemCategory.GUITAR -> -2.5f
+        StemCategory.KEYS -> -3f
+        else -> -4f
+    }
+
+    private fun panSpread(measured: List<Pair<TrackData, TrackFeatures>>): Map<Int, Float> {
+        val pans = mutableMapOf<Int, Float>()
+        val wide = measured.filter { (track, _) ->
+            // A 2-track beat is a mastered stereo image; spreading it would
+            // desynchronise the record from itself. Only isolated stems pan.
+            !track.isTwoTrackBeat && (
+                track.stemCategory == StemCategory.KEYS ||
+                    track.stemCategory == StemCategory.GUITAR ||
+                    track.stemCategory == StemCategory.OTHER
+                )
+        }
+        wide.forEachIndexed { i, (track, _) ->
+            if (abs(track.pan) > 0.05f) return@forEachIndexed
+            val sign = if (i % 2 == 0) -1f else 1f
+            pans[track.index] = sign * (0.12f + 0.04f * (i / 2)).coerceAtMost(0.3f)
+        }
+        return pans
+    }
+
     private fun resolveTargets(
         text: String,
         session: ProjectSession,
         selectedTrackIndex: Int
     ): List<TrackData> {
+        val twoTrackTracks = session.tracks.filter { it.isTwoTrackBeat }
         val explicitTrack = Regex("\\b(?:track|channel|ch)\\s*(\\d{1,2})\\b").find(text)
             ?.groupValues?.get(1)?.toIntOrNull()
         if (explicitTrack != null && explicitTrack in 1..session.tracks.size) {
             return listOfNotNull(session.tracks.firstOrNull { it.index == explicitTrack - 1 })
+        }
+        // The beat itself wins over a stem name: "compress the drums on the
+        // 2-track" means the stereo beat, not a drum stem that does not exist.
+        if (Regex("\\b(beat|instrumental|backing track|2[- ]?track|two[- ]?track|stereo mix)\\b")
+                .containsMatchIn(text)
+        ) {
+            return twoTrackTracks
         }
         if (Regex("\\ball (tracks|channels|vocals|drums|guitars|bass)\\b|\\beverything\\b|\\bthe whole mix\\b")
                 .containsMatchIn(text)
         ) {
             return when {
                 text.contains("vocal") -> session.tracks.filter { it.stemCategory == StemCategory.VOCAL }
-                text.contains("drum") -> session.tracks.filter { it.stemCategory == StemCategory.DRUMS }
+                text.contains("drum") -> session.tracks.filter { it.stemCategory == StemCategory.DRUMS }.ifEmpty { twoTrackTracks }
                 text.contains("guitar") -> session.tracks.filter { it.stemCategory == StemCategory.GUITAR }
-                text.contains("bass") -> session.tracks.filter { it.stemCategory == StemCategory.BASS }
+                text.contains("bass") -> session.tracks.filter { it.stemCategory == StemCategory.BASS }.ifEmpty { twoTrackTracks }
                 else -> session.tracks
             }
         }
@@ -756,16 +936,16 @@ object MixEngineerBrain {
                 session.tracks.filter { it.stemCategory == StemCategory.VOCAL }
                     .sortedBy { if (it.name.contains("lead", true)) 0 else 1 }
                     .take(1)
-            Regex("\\bkick\\b").containsMatchIn(text) -> byName("kick")
-            Regex("\\bsnare|clap\\b").containsMatchIn(text) -> byName("snare")
+            Regex("\\bkick\\b").containsMatchIn(text) -> byName("kick").ifEmpty { twoTrackTracks }
+            Regex("\\bsnare|clap\\b").containsMatchIn(text) -> byName("snare").ifEmpty { twoTrackTracks }
             Regex("\\bhi.?hat|hats\\b").containsMatchIn(text) -> byName("hat")
             Regex("\\btoms?\\b|perc").containsMatchIn(text) -> byName("tom")
-            Regex("\\b808|sub bass\\b").containsMatchIn(text) -> byName("808") + byName("sub bass")
+            Regex("\\b808|sub bass\\b").containsMatchIn(text) -> (byName("808") + byName("sub bass")).ifEmpty { twoTrackTracks }
             Regex("\\bsynth bass\\b").containsMatchIn(text) -> byName("synth bass")
             Regex("\\bdrums?\\b|drum bus|the kit\\b").containsMatchIn(text) ->
-                session.tracks.filter { it.stemCategory == StemCategory.DRUMS }
+                session.tracks.filter { it.stemCategory == StemCategory.DRUMS }.ifEmpty { twoTrackTracks }
             Regex("\\bbass\\b").containsMatchIn(text) ->
-                session.tracks.filter { it.stemCategory == StemCategory.BASS }.take(1)
+                session.tracks.filter { it.stemCategory == StemCategory.BASS }.take(1).ifEmpty { twoTrackTracks }
             Regex("\\bguitars?\\b").containsMatchIn(text) ->
                 session.tracks.filter { it.stemCategory == StemCategory.GUITAR }
             Regex("\\bpiano\\b").containsMatchIn(text) -> byName("piano")
@@ -784,6 +964,68 @@ object MixEngineerBrain {
         if (khz != null) return (khz.groupValues[1].toFloatOrNull() ?: 0f) * 1000f
         val hz = Regex("(\\d{2,5}(?:\\.\\d+)?)\\s*h(?:z|ertz)").find(text)
         return hz?.groupValues?.get(1)?.toFloatOrNull()
+    }
+
+    /**
+     * Last line of defence for a stereo beat: a local model can ignore the
+     * prompt and emit stem moves anyway. Filter those out and clamp broad bus
+     * parameters so a 2-track is never carved up like separated stems.
+     */
+    private val TWO_TRACK_UNSAFE_TOOLS = setOf(
+        "applyVocalChain", "setVocalRider", "setResonanceSmoother",
+        "setSidechain", "setAutoPitch", "setNoiseReduction"
+    )
+
+    fun enforceSourceFormat(
+        calls: List<ToolCallDispatcher.ToolCall>,
+        session: ProjectSession
+    ): List<ToolCallDispatcher.ToolCall> = calls.mapNotNull { call ->
+        val idx = call.args["trackIndex"]?.toIntOrNull() ?: return@mapNotNull call
+        val track = session.tracks.firstOrNull { it.index == idx } ?: return@mapNotNull call
+        if (!track.isTwoTrackBeat) return@mapNotNull call
+
+        when (call.name) {
+            in TWO_TRACK_UNSAFE_TOOLS -> null
+            "setEqBand" -> {
+                val gain = call.args["gainDb"]?.toFloatOrNull()?.coerceIn(-1.5f, 1.5f)
+                    ?: return@mapNotNull call
+                val q = call.args["qFactor"]?.toFloatOrNull()?.coerceIn(0.5f, 1.2f)
+                val clamped = call.args + ("gainDb" to gain.toString()) +
+                    if (q != null) mapOf("qFactor" to q.toString()) else emptyMap()
+                call.copy(args = clamped)
+            }
+            "setEqFilter" -> {
+                val raw = call.args["filter"]?.lowercase().orEmpty()
+                when {
+                    raw.contains("low") -> {
+                        val freq = call.args["frequencyHz"]?.toFloatOrNull() ?: 12000f
+                        call.copy(args = call.args + ("frequencyHz" to freq.coerceAtLeast(12000f).toString()))
+                    }
+                    // Missing filter defaults to high-pass in the dispatcher.
+                    else -> call.copy(args = call.args + ("frequencyHz" to "30.0"))
+                }
+            }
+            "setCompressor" -> {
+                val threshold = call.args["thresholdDb"]?.toFloatOrNull()?.coerceIn(-24f, -8f) ?: -14f
+                val attack = call.args["attackMs"]?.toFloatOrNull()?.coerceAtLeast(30f) ?: 30f
+                val release = call.args["releaseMs"]?.toFloatOrNull()?.coerceAtLeast(200f) ?: 250f
+                val makeup = call.args["makeupGainDb"]?.toFloatOrNull()?.coerceIn(0f, 1f) ?: 0.5f
+                call.copy(args = call.args + mapOf(
+                    "type" to CompressorType.VCA.name,
+                    "ratio" to "2.0",
+                    "thresholdDb" to threshold.toString(),
+                    "attackMs" to attack.toString(),
+                    "releaseMs" to release.toString(),
+                    "makeupGainDb" to makeup.toString()
+                ))
+            }
+            "setSaturation" -> call.copy(args = call.args + mapOf(
+                "type" to SaturationType.TAPE.name,
+                "driveDb" to "1.5",
+                "mix" to "0.2"
+            ))
+            else -> call
+        }
     }
 
     fun summarize(calls: List<ToolCallDispatcher.ToolCall>, session: ProjectSession): String {
@@ -823,7 +1065,12 @@ object MixEngineerBrain {
         }.distinct()
         val head = parts.take(4).joinToString(", ")
         val tail = if (parts.size > 4) " and ${parts.size - 4} more move${if (parts.size - 4 == 1) "" else "s"}" else ""
-        return "Done. $head$tail."
+        val twoTrackTouched = calls.any { call ->
+            val idx = call.args["trackIndex"]?.toIntOrNull() ?: return@any false
+            session.tracks.firstOrNull { it.index == idx }?.isTwoTrackBeat == true
+        }
+        val note = if (twoTrackTouched) " The 2-track beat stays one stereo mix, so these are broad bus moves." else ""
+        return "Done. $head$tail.$note"
     }
 
     private fun compressorLabel(raw: String?): String = when (ToolCallDispatcher.compressorTypeFromText(raw)) {
@@ -847,9 +1094,34 @@ object MixEngineerBrain {
      * the session tracks; the response is parsed into the same ToolCalls as the
      * deterministic planner.
      */
-    fun systemPromptFor(session: ProjectSession): String {
+    fun systemPromptFor(session: ProjectSession, features: List<TrackFeatures> = emptyList()): String {
+        val twoTrack = session.isTwoTrackBeat
         val tracks = session.tracks.joinToString("\n") { track ->
-            "${track.index}. ${track.name} [${track.stemCategory.displayName}] gain=${track.gainDb}dB pan=${track.pan}"
+            val kind = if (track.isTwoTrackBeat) {
+                "[${track.sourceFormat.displayName.uppercase()} - one stereo file, NOT separated stems]"
+            } else {
+                "[${track.stemCategory.displayName}]"
+            }
+            val measured = features.firstOrNull { it.trackIndex == track.index }?.let { f ->
+                val loudness = if (f.integratedLufs > -50f) f.integratedLufs else f.rmsDb
+                " measuredLUFS=${String.format(Locale.US, "%.1f", loudness)}" +
+                    " rms=${String.format(Locale.US, "%.1f", f.rmsDb)}" +
+                    " centroid=${f.spectralCentroidHz.toInt()}Hz"
+            }.orEmpty()
+            "${track.index}. ${track.name} $kind gain=${track.gainDb}dB pan=${track.pan}$measured"
+        }
+        val sourceRules = if (twoTrack) {
+            """
+            SOURCE FORMAT: 2-TRACK STEREO BEAT. The beat is a finished stereo mix.
+            2-track rules:
+            - Never treat a 2-track track as isolated drums, bass, keys or vocals.
+            - Do not emit applyVocalChain, setVocalRider, setResonanceSmoother or setSidechain on a 2-track track.
+            - For "drums" or "bass" requests on a 2-track, use broad bus moves: EQ 1.5 dB or less, gentle 2:1 compression with a 30 ms attack.
+            - For a premaster, do not stack another limiter or heavy glue.
+            - If the user asks to process a vocal inside a 2-track beat, return no objects and explain that the vocal is baked into the stereo file.
+            """.trimIndent()
+        } else {
+            "SOURCE FORMAT: Separate stems. Each track can be processed as its own instrument."
         }
         return """
             You are NC Studio's recording and mixing engineer. Convert the user's spoken request into JSON tool calls only. No prose, no markdown.
@@ -880,7 +1152,9 @@ object MixEngineerBrain {
             setMasterLimiter (enabled, ceilingDb, thresholdDb, releaseMs)
             setMasterReverb (enabled, roomSize, damping, stereoWidth, returnLevel, preDelayMs, decayTimeSec, lowCutHz, highCutHz)
             setMasterGain (gainDb)
+            $sourceRules
             Never invent a track index. Use the exact track index from the session list. If the request is unclear, return no objects.
+            Use measuredLUFS/rms when present: do not boost a track that is already the loudest, and prefer a cut or a pan move when two tracks overlap.
             Session tracks:
             $tracks
         """.trimIndent()

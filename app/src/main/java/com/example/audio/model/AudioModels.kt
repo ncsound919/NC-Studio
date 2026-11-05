@@ -16,6 +16,39 @@ enum class StemCategory(val displayName: String) {
 }
 
 /**
+ * How imported beat material arrived. Hip-hop sessions often start from a
+ * finished stereo beat (sometimes already premastered) instead of separated
+ * stems, and the agent has to mix those two situations differently.
+ */
+enum class AudioSourceFormat(
+    val displayName: String,
+    val shortLabel: String,
+    val tagline: String,
+    val description: String
+) {
+    STEMS(
+        displayName = "Stems / multitrack",
+        shortLabel = "STEMS",
+        tagline = "Separate tracks",
+        description = "Separate instrument stems. The engineer can EQ, compress and balance each one."
+    ),
+    TWO_TRACK(
+        displayName = "Two-track beat",
+        shortLabel = "2-TRACK",
+        tagline = "Stereo mix",
+        description = "One stereo beat mix. The engineer makes broad bus moves and leaves the beat intact."
+    ),
+    TWO_TRACK_PREMASTER(
+        displayName = "Two-track premaster",
+        shortLabel = "PREMASTER",
+        tagline = "Stereo + glue",
+        description = "A stereo beat that already has glue or limiting. The engineer won't stack more mastering on it."
+    );
+
+    val isTwoTrack: Boolean get() = this != STEMS
+}
+
+/**
  * Filter type for 4-band parametric EQ.
  */
 enum class FilterType {
@@ -200,6 +233,23 @@ data class AutomationLane(
 )
 
 /**
+ * One recorded alternate take on a track. The clips of the take that is current
+ * live in [TrackData.clips]; every take keeps its own clips so switching is a
+ * swap of the active list, not a destructive replace.
+ */
+data class TakeLane(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val clips: List<AudioClip> = emptyList(),
+    val rating: Int = 0, // 0 = unrated, 1..5 stars
+    val colorHex: Long = 0L, // 0 = inherit the track colour
+    val recordedAtMillis: Long = 0L
+) {
+    val durationFrames: Long
+        get() = clips.maxOfOrNull { it.timelineStartFrame + it.lengthFrames } ?: 0L
+}
+
+/**
  * Tape / Tube Saturation configuration.
  */
 data class SaturationConfig(
@@ -293,6 +343,14 @@ data class TrackData(
      */
     val pluginChain: List<com.overlay.audio.plugins.PluginSlot> = emptyList(),
     val clips: List<AudioClip> = emptyList(),
+    /**
+     * Alternate recorded takes. Empty until the first overdub, so a session
+     * recorded before take lanes existed keeps a single implicit take.
+     */
+    val takeLanes: List<TakeLane> = emptyList(),
+    /** Id of the take whose clips are currently in [clips]; null means the
+     * single implicit take. */
+    val activeTakeId: String? = null,
     val automationLanes: List<AutomationLane> = emptyList(),
     // Group / bus routing
     val outputBusId: String = "master",
@@ -306,10 +364,65 @@ data class TrackData(
     val sends: Map<String, Float> = emptyMap(),
     val auxSends: Map<String, Float> = emptyMap(),
     val sendLevels: List<Float> = emptyList(),
-    val reverbSend2Level: Float = 0.0f
+    val reverbSend2Level: Float = 0.0f,
+    /**
+     * How this track's audio arrived. Two-track tracks hold a whole stereo beat
+     * and must not be treated as isolated drums, bass or vocals by the agent.
+     */
+    val sourceFormat: AudioSourceFormat = AudioSourceFormat.STEMS
 ) {
     val gainLinear: Float
         get() = if (gainDb <= -60f) 0f else Math.pow(10.0, (gainDb / 20.0)).toFloat()
+
+    val isTwoTrackBeat: Boolean
+        get() = sourceFormat.isTwoTrack
+
+    /**
+     * Returns this track with [laneId]'s clips promoted into [clips]. The
+     * current clips are written back into the take they came from first, so no
+     * recorded material is lost by switching takes.
+     */
+    /**
+     * Every source file this track can sound, including takes that are not
+     * currently active. Session restore must load all of them, or switching to
+     * an alternate take after reopening a project plays silence.
+     */
+    val audioSourcePaths: Set<String>
+        get() = (clips + takeLanes.flatMap { it.clips })
+            .mapTo(LinkedHashSet()) { it.sourcePath }
+
+    fun withActiveTake(laneId: String): TrackData {
+        val target = takeLanes.firstOrNull { it.id == laneId } ?: return this
+        if (activeTakeId == laneId) return this
+        val lanesWithCurrentClips = if (activeTakeId != null) {
+            takeLanes.map { if (it.id == activeTakeId) it.copy(clips = clips) else it }
+        } else {
+            // The implicit first take adopts whatever the track already held.
+            takeLanes + TakeLane(name = "Take ${takeLanes.size + 1}", clips = clips)
+        }
+        return copy(
+            clips = target.clips,
+            takeLanes = lanesWithCurrentClips,
+            activeTakeId = laneId
+        )
+    }
+
+    /** Adds [lane] as the active take, preserving the material it replaces. */
+    fun withNewTake(lane: TakeLane): TrackData {
+        // A session that predates take lanes holds its recorded material in
+        // clips with no active lane: promote that to an implicit first take so
+        // the new take never overwrites it.
+        val lanes = if (activeTakeId == null && clips.isNotEmpty()) {
+            takeLanes + TakeLane(name = "Take ${takeLanes.size + 1}", clips = clips)
+        } else {
+            takeLanes.map { if (it.id == activeTakeId) it.copy(clips = clips) else it }
+        }
+        return copy(
+            clips = lane.clips,
+            takeLanes = lanes + lane,
+            activeTakeId = lane.id
+        )
+    }
 }
 
 /**
@@ -435,10 +548,21 @@ data class ProjectSession(
      * with its measured profile. Optional: sessions written before it existed
      * must still load, and it is never bundled with the app.
      */
-    val reference: com.example.audio.reference.ReferenceTrackConfig? = null
+    val reference: com.example.audio.reference.ReferenceTrackConfig? = null,
+    /**
+     * Format of the backing beat the song is built on. Persisted so a reloaded
+     * two-track session keeps warning the agent not to do stem surgery.
+     */
+    val sourceFormat: AudioSourceFormat = AudioSourceFormat.STEMS
 ) {
     val masterGainLinear: Float
         get() = if (masterGainDb <= -60f) 0f else Math.pow(10.0, (masterGainDb / 20.0)).toFloat()
+
+    val twoTrackTracks: List<TrackData>
+        get() = tracks.filter { it.isTwoTrackBeat }
+
+    val isTwoTrackBeat: Boolean
+        get() = sourceFormat.isTwoTrack || tracks.any { it.isTwoTrackBeat }
 }
 
 /**
@@ -485,8 +609,9 @@ enum class EditMode(val displayName: String, val description: String) {
  */
 enum class TimelineTool(val displayName: String, val description: String) {
     SELECTOR("Selector", "Tap to select a clip; drag to make a time selection"),
-    GRABBER("Grabber", "Drag clips straight away, with snapping"),
+    GRABBER("Grabber", "Grab anywhere on a clip to move it; drag up or down to another track"),
     TRIM("Trim", "Drag near a clip edge to trim start or end"),
+    SPLIT("Split", "Tap a clip to cut it exactly where you tap"),
     SMART("Smart", "Edge zones trim, the body drags, taps select")
 }
 

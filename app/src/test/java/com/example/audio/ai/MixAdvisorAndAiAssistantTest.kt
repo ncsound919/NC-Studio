@@ -1,6 +1,7 @@
 package com.example.audio.ai
 
 import com.example.audio.model.CompressorType
+import com.example.audio.model.AudioSourceFormat
 import com.example.audio.model.EqBand
 import com.example.audio.model.FilterType
 import com.example.audio.model.ProjectSession
@@ -389,5 +390,141 @@ class MixAdvisorAndAiAssistantTest {
         val calls = ToolCallDispatcher.parseToolCalls(raw)
         assertEquals(1, calls.size)
         assertTrue(ToolCallDispatcher.isKnownTool(calls[0].name))
+    }
+
+    private fun twoTrackSession(format: AudioSourceFormat = AudioSourceFormat.TWO_TRACK): ProjectSession =
+        ProjectSession(
+            sourceFormat = format,
+            tracks = listOf(
+                TrackData(
+                    index = 0,
+                    name = "Beat 2-Track",
+                    colorHex = 0xFFFF5722,
+                    stemCategory = StemCategory.OTHER,
+                    sourceFormat = format
+                )
+            )
+        )
+
+    @Test
+    fun generateSuggestions_twoTrackBeatAvoidsStemSurgery() {
+        val features = listOf(
+            TrackFeatures(
+                trackIndex = 0,
+                peakDb = -1.0f,
+                rmsDb = -14.0f,
+                subEnergy = 0.42f,
+                lowEnergy = 0.30f,
+                midEnergy = 0.18f,
+                crestFactorDb = 18f,
+                classifiedStem = StemCategory.OTHER
+            )
+        )
+
+        val suggestions = MixAdvisor.generateSuggestions(twoTrackSession(), features)
+
+        assertTrue("Clipping 2-track should still get gain staging", suggestions.any { it.category == "Gain Staging" })
+        assertTrue(
+            "A stereo beat must not receive stem HPF or stem compression",
+            suggestions.none {
+                it.parameter.contains("High-Pass", ignoreCase = true) ||
+                    it.parameter.contains("Compressor", ignoreCase = true)
+            }
+        )
+    }
+
+    @Test
+    fun mixEngineerBrain_vocalRequestOnTwoTrackExplainsStereoLimitation() {
+        val plan = MixEngineerBrain.plan("set up the lead vocal", twoTrackSession(), selectedTrackIndex = 0)
+
+        assertTrue("The engineer must not apply a vocal chain to the whole beat", plan.calls.isEmpty())
+        assertTrue(plan.clarification?.contains("2-track", ignoreCase = true) == true)
+    }
+
+    @Test
+    fun mixEngineerBrain_twoTrackDrumRequestUsesGentleBusGlue() {
+        val plan = MixEngineerBrain.plan("1176 on the drums", twoTrackSession(), selectedTrackIndex = 0)
+        val comp = plan.calls.first { it.name == "setCompressor" }
+
+        assertEquals("0", comp.args["trackIndex"])
+        assertEquals(CompressorType.VCA.name, comp.args["type"])
+        assertEquals("2.0", comp.args["ratio"])
+        assertEquals("-14.0", comp.args["thresholdDb"])
+        assertTrue(plan.summary.contains("2-track", ignoreCase = true))
+    }
+
+    @Test
+    fun systemPromptFor_declaresTwoTrackStereoRules() {
+        val prompt = MixEngineerBrain.systemPromptFor(twoTrackSession(AudioSourceFormat.TWO_TRACK_PREMASTER))
+
+        assertTrue(prompt.contains("2-TRACK STEREO BEAT"))
+        assertTrue(prompt.contains("Never treat a 2-track track as isolated drums"))
+        assertTrue(prompt.contains("do not stack another limiter", ignoreCase = true))
+    }
+
+    @Test
+    fun parseNaturalLanguageCommand_twoTrackUsesBroadBusMoves() {
+        val glue = MixAdvisor.parseNaturalLanguageCommand("glue the beat", twoTrackSession())
+        assertEquals("Bus Glue 2:1", glue.single().parameter)
+
+        val clean = MixAdvisor.parseNaturalLanguageCommand("clean the beat", twoTrackSession())
+        assertEquals("Broad Mid Dip -1.5 dB @ 350 Hz", clean.single().parameter)
+
+        val applied = MixAdvisor.applySuggestionsToSession(twoTrackSession(), glue)
+        assertTrue(applied.tracks[0].compressorConfig.enabled)
+        assertEquals(2.0f, applied.tracks[0].compressorConfig.ratio, 0.001f)
+        assertEquals(CompressorType.VCA, applied.tracks[0].compressorConfig.type)
+    }
+
+    @Test
+    fun genericMix_leavesTheTwoTrackBeatCentredAndNearUnity() {
+        val session = ProjectSession(
+            sourceFormat = AudioSourceFormat.TWO_TRACK_PREMASTER,
+            tracks = listOf(
+                TrackData(
+                    index = 0,
+                    name = "Beat Premaster",
+                    colorHex = 0xFFFF5722,
+                    stemCategory = StemCategory.OTHER,
+                    sourceFormat = AudioSourceFormat.TWO_TRACK_PREMASTER
+                ),
+                TrackData(index = 1, name = "Vocal 1", colorHex = 0xFF2196F3, stemCategory = StemCategory.VOCAL)
+            )
+        )
+        val features = listOf(
+            TrackFeatures(trackIndex = 0, peakDb = -0.5f, rmsDb = -9f, integratedLufs = -8f),
+            TrackFeatures(trackIndex = 1, peakDb = -6f, rmsDb = -18f, integratedLufs = -16f)
+        )
+
+        val plan = MixEngineerBrain.genericMix(session, features)
+
+        assertTrue(
+            "The finished stereo mix must never be panned",
+            plan.calls.none { it.name == "setTrackPan" && it.args["trackIndex"] == "0" }
+        )
+        val beatGain = plan.calls.first { it.name == "setTrackGain" && it.args["trackIndex"] == "0" }
+        assertTrue(
+            "Two-track gains stay inside broad bus moves, got ${beatGain.args["gainDb"]}",
+            (beatGain.args["gainDb"] ?: "").toFloat() in -6f..6f
+        )
+    }
+
+    @Test
+    fun enforceSourceFormat_removesStemToolsAndClampsBusMoves() {
+        val calls = listOf(
+            ToolCallDispatcher.ToolCall("applyVocalChain", mapOf("trackIndex" to "0")),
+            ToolCallDispatcher.ToolCall("setEqBand", mapOf("trackIndex" to "0", "band" to "4", "gainDb" to "6")),
+            ToolCallDispatcher.ToolCall("setCompressor", mapOf("trackIndex" to "0", "type" to "FET_1176", "ratio" to "8")),
+            ToolCallDispatcher.ToolCall("setEqFilter", mapOf("trackIndex" to "0", "filter" to "highPass", "frequencyHz" to "100"))
+        )
+
+        val safe = MixEngineerBrain.enforceSourceFormat(calls, twoTrackSession())
+
+        assertEquals(3, safe.size)
+        assertTrue(safe.none { it.name == "applyVocalChain" })
+        assertEquals("1.5", safe.first { it.name == "setEqBand" }.args["gainDb"])
+        assertEquals(CompressorType.VCA.name, safe.first { it.name == "setCompressor" }.args["type"])
+        assertEquals("2.0", safe.first { it.name == "setCompressor" }.args["ratio"])
+        assertEquals("30.0", safe.first { it.name == "setEqFilter" }.args["frequencyHz"])
     }
 }

@@ -15,6 +15,17 @@ val StudioAmber = Color(0xFFFFB300)
 val ClipRed = Color(0xFFFF3D00)
 val StudioPurple = Color(0xFFD05CE3)
 
+// Overlay365 brand chrome (marketing-studio DESIGN-KIT + brand/tokens).
+// Meters and control states stay on the studio ramp above; headers and
+// primary CTAs may use BrandGold / BrandCyanElec for cross-app identity.
+val BrandMidnight = Color(0xFF05060A)
+val BrandGraphite = Color(0xFF0E1117)
+val BrandSlate = Color(0xFF141924)
+val BrandCyanElec = Color(0xFF22D3EE)
+val BrandGold = Color(0xFFF5C451)
+val BrandGoldSoft = Color(0xFFF7D983)
+val BrandSoftWhite = Color(0xFFF6F7F9)
+
 val TextPrimary = Color(0xFFF0F4F8)
 val TextSecondary = Color(0xFF94A3B8)
 val TextMuted = Color(0xFF74839A) // ≥4.5:1 against StudioBackground

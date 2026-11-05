@@ -101,14 +101,17 @@ object MixReferenceTemplateLibrary {
         description = "Forward vocal over a tight, controlled low end. Carve 1-3 kHz on guitars so the vocal cuts without level, sub-group the drums, glue the mix bus.",
         roleChains = mapOf(
             ChainRole.LEAD_VOCAL to listOf(
-                slot(PluginKind.TRIM, "gainDb" to 0f),
-                slot(PluginKind.NEVE_1073, "driveDb" to 3f, "hpfHz" to 80f, "midDb" to 1f, "hfDb" to 1f),
+                slot(PluginKind.TRIM, "gainDb" to 0f, "autoStage" to 1f),
+                slot(PluginKind.PHONE_NOISE_REDUCTION, "thresholdDb" to -45f, "reductionDb" to 6f, "smoothingMs" to 120f),
+                slot(PluginKind.VOCAL_RIDER, "targetLufs" to -18f, "maxGainDb" to 5f, "minGainDb" to -5f, "sensitivity" to 0.55f),
+                slot(PluginKind.NEVE_1073, "driveDb" to 3f, "hpfHz" to 80f, "midDb" to -1f, "hfDb" to 1f),
+                slot(PluginKind.RESONANCE_SMOOTHER, "frequencyHz" to 3200f, "thresholdDb" to -24f, "depthDb" to 6f, "qFactor" to 4f),
                 slot(PluginKind.FET_1176, "inputDb" to 4f, "ratio" to 4f, "attackUs" to 200f, "releaseMs" to 100f, "outputDb" to 1f),
                 slot(PluginKind.OPTO_LA2A, "peakReduction" to 3.5f, "gainDb" to 5f),
                 slot(PluginKind.DE_ESSER, "freqHz" to 6000f, "thresholdDb" to -22f, "amountDb" to 3f),
                 slot(PluginKind.AIR_SHELF, "freqHz" to 11000f, "gainDb" to 2f),
-                slot(PluginKind.PLATE_REVERB, "decaySec" to 1.2f, "preDelayMs" to 30f, "hpHz" to 200f, "lpHz" to 9000f, "mix" to 0.12f),
-                slot(PluginKind.TEMPO_DELAY, "division" to 1f, "feedback" to 0.25f, "hpHz" to 200f, "lpHz" to 4000f, "mix" to 0.12f)
+                slot(PluginKind.TEMPO_DELAY, "division" to 1f, "feedback" to 0.25f, "hpHz" to 200f, "lpHz" to 4000f, "mix" to 0.12f),
+                slot(PluginKind.PLATE_REVERB, "decaySec" to 1.2f, "preDelayMs" to 30f, "hpHz" to 200f, "lpHz" to 9000f, "mix" to 0.12f)
             ),
             ChainRole.HARMONY to listOf(
                 slot(PluginKind.NEVE_1073, "hpfHz" to 100f, "hfDb" to 1f),
@@ -169,10 +172,15 @@ object MixReferenceTemplateLibrary {
         description = "One dominant sample plus live overdubs, dead-simple low end, snare reverb filling the space the kick and bass leave open. Warm Neve weight, mono sub.",
         roleChains = mapOf(
             ChainRole.LEAD_VOCAL to listOf(
+                slot(PluginKind.TRIM, "autoStage" to 1f),
+                slot(PluginKind.PHONE_NOISE_REDUCTION, "thresholdDb" to -45f, "reductionDb" to 6f, "smoothingMs" to 120f),
+                slot(PluginKind.VOCAL_RIDER, "targetLufs" to -18f, "maxGainDb" to 4f, "minGainDb" to -4f, "sensitivity" to 0.5f),
                 slot(PluginKind.NEVE_1073, "driveDb" to 4f, "hpfHz" to 100f, "hfDb" to 1f),
+                slot(PluginKind.RESONANCE_SMOOTHER, "frequencyHz" to 3000f, "thresholdDb" to -24f, "depthDb" to 5f, "qFactor" to 4f),
                 slot(PluginKind.FET_1176, "inputDb" to 5f, "ratio" to 4f, "attackUs" to 200f, "releaseMs" to 80f),
                 slot(PluginKind.OPTO_LA2A, "peakReduction" to 3f, "gainDb" to 5f),
                 slot(PluginKind.DE_ESSER, "freqHz" to 6000f, "amountDb" to 2f),
+                slot(PluginKind.TEMPO_DELAY, "division" to 1f, "feedback" to 0.18f, "mix" to 0.08f),
                 slot(PluginKind.PLATE_REVERB, "decaySec" to 1.0f, "preDelayMs" to 20f, "hpHz" to 300f, "lpHz" to 8000f, "mix" to 0.1f)
             ),
             ChainRole.HARMONY to listOf(
@@ -227,12 +235,16 @@ object MixReferenceTemplateLibrary {
         description = "Heavy tuned 808 with its transient separated, rolling hats with pitch variation, layered snare, drenched vocal. Duck the 808 against the kick so both low-end parts survive.",
         roleChains = mapOf(
             ChainRole.LEAD_VOCAL to listOf(
+                slot(PluginKind.TRIM, "autoStage" to 1f),
+                slot(PluginKind.PHONE_NOISE_REDUCTION, "thresholdDb" to -48f, "reductionDb" to 5f, "smoothingMs" to 100f),
+                slot(PluginKind.VOCAL_RIDER, "targetLufs" to -17f, "maxGainDb" to 5f, "minGainDb" to -5f, "sensitivity" to 0.6f),
                 slot(PluginKind.NEVE_1073, "driveDb" to 4f, "hpfHz" to 110f, "hfDb" to 1f),
+                slot(PluginKind.RESONANCE_SMOOTHER, "frequencyHz" to 3600f, "thresholdDb" to -24f, "depthDb" to 6f, "qFactor" to 5f),
                 slot(PluginKind.FET_1176, "inputDb" to 6f, "ratio" to 4f, "attackUs" to 100f, "releaseMs" to 50f),
                 slot(PluginKind.OPTO_LA2A, "peakReduction" to 3f, "gainDb" to 4f),
                 slot(PluginKind.DE_ESSER, "freqHz" to 7000f, "amountDb" to 4f),
-                slot(PluginKind.HALL_REVERB, "decaySec" to 1.8f, "preDelayMs" to 10f, "hpHz" to 200f, "lpHz" to 7000f, "mix" to 0.2f),
-                slot(PluginKind.TEMPO_DELAY, "division" to 3f, "feedback" to 0.3f, "hpHz" to 200f, "lpHz" to 4000f, "mix" to 0.14f)
+                slot(PluginKind.TEMPO_DELAY, "division" to 3f, "feedback" to 0.3f, "hpHz" to 200f, "lpHz" to 4000f, "mix" to 0.14f),
+                slot(PluginKind.HALL_REVERB, "decaySec" to 1.8f, "preDelayMs" to 10f, "hpHz" to 200f, "lpHz" to 7000f, "mix" to 0.2f)
             ),
             ChainRole.HARMONY to listOf(
                 slot(PluginKind.FET_1176, "inputDb" to 6f, "ratio" to 4f, "releaseMs" to 80f),
@@ -298,11 +310,16 @@ object MixReferenceTemplateLibrary {
                 slot(PluginKind.PLATE_REVERB, "decaySec" to 1.0f, "preDelayMs" to 10f, "hpHz" to 250f, "lpHz" to 8000f, "mix" to 0.15f)
             ),
             ChainRole.LEAD_VOCAL to listOf(
+                slot(PluginKind.TRIM, "autoStage" to 1f),
+                slot(PluginKind.PHONE_NOISE_REDUCTION, "thresholdDb" to -45f, "reductionDb" to 6f, "smoothingMs" to 120f),
+                slot(PluginKind.VOCAL_RIDER, "targetLufs" to -18f, "maxGainDb" to 5f, "minGainDb" to -5f, "sensitivity" to 0.55f),
                 slot(PluginKind.NEVE_1073, "driveDb" to 3f, "hpfHz" to 100f, "hfDb" to 1f),
+                slot(PluginKind.RESONANCE_SMOOTHER, "frequencyHz" to 3200f, "thresholdDb" to -24f, "depthDb" to 5f, "qFactor" to 4f),
                 slot(PluginKind.FET_1176, "inputDb" to 4f, "ratio" to 4f, "releaseMs" to 100f),
                 slot(PluginKind.OPTO_LA2A, "peakReduction" to 3f, "gainDb" to 4f),
-                slot(PluginKind.PLATE_REVERB, "decaySec" to 1.2f, "preDelayMs" to 20f, "mix" to 0.14f),
-                slot(PluginKind.TEMPO_DELAY, "division" to 2f, "feedback" to 0.2f, "lpHz" to 3500f, "mix" to 0.16f)
+                slot(PluginKind.DE_ESSER, "freqHz" to 6500f, "amountDb" to 3f),
+                slot(PluginKind.TEMPO_DELAY, "division" to 2f, "feedback" to 0.2f, "lpHz" to 3500f, "mix" to 0.16f),
+                slot(PluginKind.PLATE_REVERB, "decaySec" to 1.2f, "preDelayMs" to 20f, "mix" to 0.14f)
             ),
             ChainRole.KEYS to listOf(
                 slot(PluginKind.CHORUS_WIDTH, "mode" to 1f, "mix" to 0.4f),
@@ -326,13 +343,17 @@ object MixReferenceTemplateLibrary {
         description = "Warm and round low end, velvet top, stacked harmonies spread across the stereo image, and a vocal that everything else supports.",
         roleChains = mapOf(
             ChainRole.LEAD_VOCAL to listOf(
+                slot(PluginKind.TRIM, "autoStage" to 1f),
+                slot(PluginKind.PHONE_NOISE_REDUCTION, "thresholdDb" to -45f, "reductionDb" to 6f, "smoothingMs" to 120f),
+                slot(PluginKind.VOCAL_RIDER, "targetLufs" to -18f, "maxGainDb" to 5f, "minGainDb" to -5f, "sensitivity" to 0.5f),
                 slot(PluginKind.NEVE_1073, "driveDb" to 3f, "hpfHz" to 80f, "lfHz" to 110f, "lfDb" to 1f, "hfDb" to 1f),
+                slot(PluginKind.RESONANCE_SMOOTHER, "frequencyHz" to 3000f, "thresholdDb" to -24f, "depthDb" to 5f, "qFactor" to 4f),
                 slot(PluginKind.FET_1176, "inputDb" to 4f, "ratio" to 4f, "attackUs" to 300f, "releaseMs" to 120f),
                 slot(PluginKind.OPTO_LA2A, "peakReduction" to 3f, "gainDb" to 4f),
                 slot(PluginKind.DE_ESSER, "freqHz" to 6000f, "amountDb" to 2f),
                 slot(PluginKind.AIR_SHELF, "freqHz" to 11000f, "gainDb" to 2f),
-                slot(PluginKind.PLATE_REVERB, "decaySec" to 1.5f, "preDelayMs" to 35f, "hpHz" to 200f, "lpHz" to 8000f, "mix" to 0.16f),
-                slot(PluginKind.TEMPO_DELAY, "division" to 1f, "feedback" to 0.2f, "lpHz" to 3500f, "mix" to 0.12f)
+                slot(PluginKind.TEMPO_DELAY, "division" to 1f, "feedback" to 0.2f, "lpHz" to 3500f, "mix" to 0.12f),
+                slot(PluginKind.PLATE_REVERB, "decaySec" to 1.5f, "preDelayMs" to 35f, "hpHz" to 200f, "lpHz" to 8000f, "mix" to 0.16f)
             ),
             ChainRole.HARMONY to listOf(
                 slot(PluginKind.NEVE_1073, "hpfHz" to 100f, "hfDb" to 1f),
@@ -374,9 +395,15 @@ object MixReferenceTemplateLibrary {
         description = "Lead forward and dry, choir wide and deep; depth - not level - separates them. Minimal compression so the performance dynamics survive.",
         roleChains = mapOf(
             ChainRole.LEAD_VOCAL to listOf(
+                slot(PluginKind.TRIM, "autoStage" to 1f),
+                slot(PluginKind.PHONE_NOISE_REDUCTION, "thresholdDb" to -45f, "reductionDb" to 5f, "smoothingMs" to 140f),
+                slot(PluginKind.VOCAL_RIDER, "targetLufs" to -19f, "maxGainDb" to 4f, "minGainDb" to -4f, "sensitivity" to 0.4f),
                 slot(PluginKind.NEVE_1073, "driveDb" to 2f, "hpfHz" to 80f, "hfDb" to 1f),
+                slot(PluginKind.RESONANCE_SMOOTHER, "frequencyHz" to 3000f, "thresholdDb" to -26f, "depthDb" to 4f, "qFactor" to 4f),
                 slot(PluginKind.OPTO_LA2A, "peakReduction" to 2.5f, "gainDb" to 4f),
+                slot(PluginKind.VARI_MU_COMP, "driveDb" to 2f, "thresholdDb" to -20f, "ratio" to 2f, "timeConstant" to 5f, "makeupDb" to 2f, "mix" to 0.6f),
                 slot(PluginKind.DE_ESSER, "freqHz" to 5000f, "amountDb" to 2f),
+                slot(PluginKind.TEMPO_DELAY, "division" to 3f, "feedback" to 0.16f, "mix" to 0.08f),
                 slot(PluginKind.HALL_REVERB, "decaySec" to 2.5f, "preDelayMs" to 45f, "hpHz" to 200f, "lpHz" to 6500f, "mix" to 0.14f)
             ),
             ChainRole.HARMONY to listOf(
@@ -418,7 +445,11 @@ object MixReferenceTemplateLibrary {
         description = "Wall-of-sound guitars carved at 1-3 kHz so the vocal cuts, punchy drums with parallel compression, slapback on the vocal, dynamics between verse and chorus preserved.",
         roleChains = mapOf(
             ChainRole.LEAD_VOCAL to listOf(
-                slot(PluginKind.NEVE_1073, "driveDb" to 4f, "hpfHz" to 100f, "midDb" to 1f, "hfDb" to 1f),
+                slot(PluginKind.TRIM, "autoStage" to 1f),
+                slot(PluginKind.PHONE_NOISE_REDUCTION, "thresholdDb" to -45f, "reductionDb" to 6f, "smoothingMs" to 120f),
+                slot(PluginKind.VOCAL_RIDER, "targetLufs" to -18f, "maxGainDb" to 5f, "minGainDb" to -5f, "sensitivity" to 0.55f),
+                slot(PluginKind.NEVE_1073, "driveDb" to 4f, "hpfHz" to 100f, "midDb" to -1f, "hfDb" to 1f),
+                slot(PluginKind.RESONANCE_SMOOTHER, "frequencyHz" to 3200f, "thresholdDb" to -24f, "depthDb" to 6f, "qFactor" to 4f),
                 slot(PluginKind.FET_1176, "inputDb" to 6f, "ratio" to 4f, "attackUs" to 200f, "releaseMs" to 80f),
                 slot(PluginKind.OPTO_LA2A, "peakReduction" to 3f, "gainDb" to 4f),
                 slot(PluginKind.DE_ESSER, "freqHz" to 6000f, "amountDb" to 3f),
@@ -478,11 +509,15 @@ object MixReferenceTemplateLibrary {
         roleChains = mapOf(
             ChainRole.LEAD_VOCAL to listOf(
                 slot(PluginKind.TRIM, "autoStage" to 1f),
+                slot(PluginKind.PHONE_NOISE_REDUCTION, "thresholdDb" to -45f, "reductionDb" to 6f, "smoothingMs" to 120f),
+                slot(PluginKind.VOCAL_RIDER, "targetLufs" to -18f, "maxGainDb" to 5f, "minGainDb" to -5f, "sensitivity" to 0.5f),
                 slot(PluginKind.PULTEC_EQP1A, "lowBoostHz" to 100f, "lowBoostDb" to 2f, "lowAttenHz" to 60f, "lowAttenDb" to 2f, "highBoostHz" to 12000f, "highBoostDb" to 2f),
+                slot(PluginKind.SSL_CHANNEL_EQ, "lmfHz" to 400f, "lmfDb" to -2f, "lmfQ" to 2.5f),
+                slot(PluginKind.RESONANCE_SMOOTHER, "frequencyHz" to 3200f, "thresholdDb" to -24f, "depthDb" to 6f, "qFactor" to 4f),
                 slot(PluginKind.FET_1176, "inputDb" to 8f, "ratio" to 8f, "attackUs" to 100f, "releaseMs" to 150f, "outputDb" to -2f),
                 slot(PluginKind.VARI_MU_COMP, "driveDb" to 4f, "thresholdDb" to -14f, "ratio" to 2.5f, "timeConstant" to 4f, "makeupDb" to 3f, "mix" to 0.75f),
                 slot(PluginKind.DE_ESSER, "freqHz" to 7000f, "amountDb" to 3f),
-                slot(PluginKind.SSL_CHANNEL_EQ, "lmfHz" to 400f, "lmfDb" to -2f, "lmfQ" to 2.5f),
+                slot(PluginKind.TEMPO_DELAY, "division" to 1f, "feedback" to 0.18f, "mix" to 0.1f),
                 slot(PluginKind.PLATE_REVERB, "decaySec" to 1.3f, "preDelayMs" to 30f, "mix" to 0.14f)
             )
         ),
@@ -516,11 +551,17 @@ object MixReferenceTemplateLibrary {
                 slot(PluginKind.SIDECHAIN_DUCK, "thresholdDb" to -20f, "ratio" to 8f, "floorDb" to -10f)
             ),
             ChainRole.LEAD_VOCAL to listOf(
-                slot(PluginKind.SSL_CHANNEL_EQ, "hpHz" to 100f, "lmfHz" to 400f, "lmfDb" to -2f, "hmfHz" to 3000f, "hmfDb" to 2f, "hfHz" to 12000f, "hfDb" to 1.5f),
+                slot(PluginKind.TRIM, "autoStage" to 1f),
+                slot(PluginKind.PHONE_NOISE_REDUCTION, "thresholdDb" to -45f, "reductionDb" to 6f, "smoothingMs" to 120f),
+                slot(PluginKind.VOCAL_RIDER, "targetLufs" to -17f, "maxGainDb" to 5f, "minGainDb" to -5f, "sensitivity" to 0.55f),
+                slot(PluginKind.SSL_CHANNEL_EQ, "hpHz" to 100f, "lmfHz" to 400f, "lmfDb" to -2f, "hmfHz" to 3000f, "hmfDb" to 1f, "hfHz" to 12000f, "hfDb" to 1.5f),
+                slot(PluginKind.RESONANCE_SMOOTHER, "frequencyHz" to 3200f, "thresholdDb" to -24f, "depthDb" to 6f, "qFactor" to 5f),
                 slot(PluginKind.FET_1176, "inputDb" to 6f, "ratio" to 4f, "attackUs" to 150f, "releaseMs" to 90f),
+                slot(PluginKind.OPTO_LA2A, "peakReduction" to 2.5f, "gainDb" to 3f),
                 slot(PluginKind.DE_ESSER, "freqHz" to 6500f, "amountDb" to 3f),
                 slot(PluginKind.CHORUS_WIDTH, "mode" to 2f, "depthMs" to 2.5f, "mix" to 0.18f),
-                slot(PluginKind.TEMPO_DELAY, "division" to 1f, "feedback" to 0.25f, "lpHz" to 4000f, "mix" to 0.12f)
+                slot(PluginKind.TEMPO_DELAY, "division" to 1f, "feedback" to 0.25f, "lpHz" to 4000f, "mix" to 0.12f),
+                slot(PluginKind.PLATE_REVERB, "decaySec" to 1.2f, "preDelayMs" to 28f, "mix" to 0.12f)
             )
         ),
         drumBusChain = listOf(
@@ -544,7 +585,11 @@ object MixReferenceTemplateLibrary {
         roleChains = mapOf(
             ChainRole.LEAD_VOCAL to listOf(
                 slot(PluginKind.TRIM, "autoStage" to 1f),
-                slot(PluginKind.NEVE_1073, "hpfHz" to 100f, "hfDb" to 1f),
+                slot(PluginKind.PHONE_NOISE_REDUCTION, "thresholdDb" to -45f, "reductionDb" to 5f, "smoothingMs" to 120f),
+                slot(PluginKind.VOCAL_RIDER, "targetLufs" to -18f, "maxGainDb" to 5f, "minGainDb" to -5f, "sensitivity" to 0.5f),
+                slot(PluginKind.NEVE_1073, "hpfHz" to 100f, "midDb" to -1f, "hfDb" to 1f),
+                slot(PluginKind.RESONANCE_SMOOTHER, "frequencyHz" to 3000f, "thresholdDb" to -24f, "depthDb" to 5f, "qFactor" to 4f),
+                slot(PluginKind.FET_1176, "inputDb" to 3f, "ratio" to 4f, "attackUs" to 250f, "releaseMs" to 120f),
                 slot(PluginKind.OPTO_LA2A, "peakReduction" to 3f, "gainDb" to 4f),
                 slot(PluginKind.DE_ESSER, "freqHz" to 6000f, "amountDb" to 2.5f),
                 slot(PluginKind.CHORUS_WIDTH, "mode" to 2f, "depthMs" to 2.5f, "rateHz" to 0.4f, "width" to 0.7f, "mix" to 0.2f),
@@ -562,9 +607,31 @@ object MixReferenceTemplateLibrary {
         )
     )
 
+    /**
+     * The one-click vocal chain. Everything before the delay is repair/level/
+     * tone; everything after it is space, so the vocal can be re-used in any
+     * genre just by swapping the EQ, compressor or reverb in place.
+     */
+    val VOCAL_STANDARD = MixReferenceTemplate(
+        id = "vocal_standard",
+        name = "Vocal Chain (standard)",
+        genre = "Vocal",
+        referenceTrack = "Modern lead vocal - Brathwaite / Elmhirst order",
+        referenceCredit = "Denoise -> rider -> EQ -> resonance -> 1176 -> LA-2A -> de-ess -> air -> delay -> plate",
+        tempoRange = 60..180,
+        lufsTarget = -14f to -8f,
+        description = "A recallable starting chain with the parts in the order that matters: clean and level first, " +
+            "correct and compress in the middle, then delay and reverb last. Every slot can be bypassed, " +
+            "swapped or moved, so the chain never locks the engineer out.",
+        roleChains = mapOf(
+            ChainRole.LEAD_VOCAL to VocalChainPresets.standard()
+        )
+    )
+
     val ALL = listOf(
         POP, HIP_HOP_CLASSIC, TRAP_DRILL, HOUSE, RNB, GOSPEL, ROCK,
-        ENGINEER_STAGED_VOCAL, ENGINEER_PARALLEL_LOW_END, ENGINEER_DELAY_WIDTH
+        ENGINEER_STAGED_VOCAL, ENGINEER_PARALLEL_LOW_END, ENGINEER_DELAY_WIDTH,
+        VOCAL_STANDARD
     )
 
     fun byId(id: String): MixReferenceTemplate? = ALL.firstOrNull { it.id == id }

@@ -815,6 +815,51 @@ class StudioPluginDspTest {
         assertTrue("reconfigured band must lift 400 Hz ($flat -> $boosted dB)", boosted > flat + 5f)
     }
 
+    @Test
+    fun vocalRiderLiftsAQuietVocalIntoTheChain() {
+        val module = VocalRiderModule(sr)
+        module.configure(
+            slot(
+                PluginKind.VOCAL_RIDER,
+                "targetLufs" to -18f,
+                "maxGainDb" to 12f,
+                "minGainDb" to -12f,
+                "sensitivity" to 0.8f
+            )
+        )
+        val input = sine(220f, 48000, 0.01f)
+        val output = render(module, input)
+
+        val before = rms(input, 0.1f, 0.2f)
+        val after = rms(output, 0.7f, 1f)
+        assertTrue("rider must lift a quiet take ($before -> $after)", after > before * 1.8f)
+        assertTrue("rider must stay bounded", after < 0.5f)
+    }
+
+    @Test
+    fun resonanceSmootherNotchesTheHarshBandAndLeavesTheBodyAlone() {
+        val module = ResonanceSmootherModule(sr)
+        module.configure(
+            slot(
+                PluginKind.RESONANCE_SMOOTHER,
+                "frequencyHz" to 3200f,
+                "thresholdDb" to -30f,
+                "depthDb" to 12f,
+                "qFactor" to 4f
+            )
+        )
+        val harsh = sine(3200f, 48000, 0.5f)
+        val harshOut = render(module, harsh)
+        module.reset()
+        val body = sine(500f, 48000, 0.5f)
+        val bodyOut = render(module, body)
+
+        val harshReduction = db(rms(harshOut, 0.5f, 1f)) - db(rms(harsh, 0.5f, 1f))
+        val bodyChange = db(rms(bodyOut, 0.5f, 1f)) - db(rms(body, 0.5f, 1f))
+        assertTrue("3.2 kHz should be reduced ($harshReduction dB)", harshReduction < -3f)
+        assertTrue("500 Hz body should survive ($bodyChange dB)", bodyChange > -1.5f)
+    }
+
     private fun rackGainDb(rack: TrackPluginRack, freq: Float): Float {
         val input = sine(freq, 24000, 0.2f)
         val output = FloatArray(input.size)

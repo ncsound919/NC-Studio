@@ -58,6 +58,50 @@ class TimelineEditController(
         }
     }
 
+    /**
+     * Scissors split: cuts exactly one clip at the frame the user tapped. The
+     * two halves keep their own source offsets and fade state, and both are
+     * selected afterwards so a follow-up trim or move acts on the cut.
+     */
+    fun splitClipAtFrame(trackIndex: Int, clipId: String, frame: Long) {
+        val track = session.value.tracks.getOrNull(trackIndex) ?: return
+        val clip = track.clips.find { it.id == clipId } ?: return
+        val offset = frame - clip.timelineStartFrame
+        if (offset <= MIN_CLIP_FRAMES || offset >= clip.lengthFrames - MIN_CLIP_FRAMES) {
+            setStatus(
+                "Move the cut away from the clip edge (minimum ${MIN_CLIP_FRAMES / 48} ms).",
+                StatusKind.INFO
+            )
+            return
+        }
+        val left = clip.copy(
+            id = UUID.randomUUID().toString(),
+            name = "${clip.name} (Part 1)",
+            lengthFrames = offset,
+            fadeOutFrames = 0L
+        ).clampedFades()
+        val right = clip.copy(
+            id = UUID.randomUUID().toString(),
+            name = "${clip.name} (Part 2)",
+            sourceStartFrame = clip.sourceStartFrame + offset,
+            timelineStartFrame = clip.timelineStartFrame + offset,
+            lengthFrames = clip.lengthFrames - offset,
+            fadeInFrames = 0L
+        ).clampedFades()
+        val afterClips = track.clips.filterNot { it.id == clipId } + left + right
+        pushClipEdit(trackIndex, "Split ${clip.name}", track.clips, afterClips)
+        applyClipsToTrack(trackIndex, afterClips)
+        uiState.update {
+            it.copy(
+                selectedTrackIndex = trackIndex,
+                selectedClipIds = setOf(left.id, right.id),
+                statusMessage = "Split ${clip.name} at ${Timecode.format(frame, sampleRate)}",
+                statusKind = StatusKind.SUCCESS,
+                statusAction = StatusAction("Undo")
+            )
+        }
+    }
+
     // ------------------------------------------------------------------
     // Pro Tools style timeline tools, edit modes and clip operations
     // ------------------------------------------------------------------
@@ -779,6 +823,76 @@ class TimelineEditController(
 
         pushClipEdit(trackIndex, "Move ${clip.name} to frame $snappedFrame", track.clips, afterClips)
         applyClipsToTrack(trackIndex, afterClips)
+    }
+
+    /**
+     * Drops a clip on another lane. The horizontal position has already been
+     * committed by the drag; this transfers ownership of the clip and records
+     * one undo entry covering both tracks, so Undo puts it back on the source
+     * lane instead of leaving a duplicate or an empty gap.
+     */
+    fun moveClipToTrack(sourceTrackIndex: Int, clipId: String, targetTrackIndex: Int) {
+        if (sourceTrackIndex == targetTrackIndex) return
+        val source = session.value.tracks.getOrNull(sourceTrackIndex) ?: return
+        val target = session.value.tracks.getOrNull(targetTrackIndex) ?: return
+        val clip = source.clips.find { it.id == clipId } ?: return
+
+        // The horizontal drag already updated the source lane without pushing
+        // undo entries. The gesture snapshot is the state before that drag, so
+        // Undo returns the clip to its original lane *and* its original time.
+        val beforeSource = clipGesture
+            ?.takeIf { it.trackIndex == sourceTrackIndex }
+            ?.beforeClips
+            ?: source.clips
+        val beforeTarget = target.clips
+        val afterSource = source.clips.filterNot { it.id == clipId }
+        // The clip's own track reference follows the lane, not the old one.
+        val afterTarget = target.clips + clip.copy(trackIndex = targetTrackIndex)
+
+        // The drag is over: any earlier pointer-level edits are folded into this
+        // two-track command, never pushed as a half edit.
+        clipGesture = null
+        undoManager.pushAction(
+            SessionCommand.MoveClipAcrossTracks(
+                description = "Move ${clip.name} to track ${targetTrackIndex + 1}",
+                sourceTrackIndex = sourceTrackIndex,
+                targetTrackIndex = targetTrackIndex,
+                beforeSourceClips = beforeSource,
+                afterSourceClips = afterSource,
+                beforeTargetClips = beforeTarget,
+                afterTargetClips = afterTarget
+            )
+        )
+
+        val newTracks = session.value.tracks.map {
+            when (it.index) {
+                sourceTrackIndex -> it.copy(clips = afterSource)
+                targetTrackIndex -> it.copy(clips = afterTarget)
+                else -> it
+            }
+        }
+        session.update {
+            it.copy(
+                tracks = newTracks,
+                totalLengthFrames = max(
+                    it.totalLengthFrames,
+                    afterTarget.maxOfOrNull { c -> c.timelineStartFrame + c.lengthFrames } ?: 0L
+                ),
+                revision = it.revision + 1
+            )
+        }
+        requestJournalWrite(session.value)
+        scheduleRebuildTrack(sourceTrackIndex)
+        scheduleRebuildTrack(targetTrackIndex)
+        uiState.update {
+            it.copy(
+                selectedTrackIndex = targetTrackIndex,
+                selectedClipIds = setOf(clipId),
+                statusMessage = "Moved ${clip.name} to track ${targetTrackIndex + 1}",
+                statusKind = StatusKind.SUCCESS,
+                statusAction = StatusAction("Undo")
+            )
+        }
     }
 
     /**

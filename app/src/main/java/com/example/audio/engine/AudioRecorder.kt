@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * High-performance audio recorder streaming from microphone through an AudioRingBuffer
  * to a background WAV file writer thread.
  */
-class AudioRecorder(private val sampleRate: Int = 48000) {
+open class AudioRecorder(private val sampleRate: Int = 48000) {
 
     private val isRecording = AtomicBoolean(false)
     private var recordThread: Thread? = null
@@ -31,10 +31,10 @@ class AudioRecorder(private val sampleRate: Int = 48000) {
     /** Counted down only after the WAV header has been finalised on disk. */
     private var writerDone = CountDownLatch(0)
 
-    fun isCurrentlyRecording(): Boolean = isRecording.get()
+    open fun isCurrentlyRecording(): Boolean = isRecording.get()
 
     @SuppressLint("MissingPermission")
-    fun startRecording(outputFile: File, channelConfig: Int = AudioFormat.CHANNEL_IN_MONO): Boolean {
+    open fun startRecording(outputFile: File, channelConfig: Int = AudioFormat.CHANNEL_IN_MONO): Boolean {
         if (isRecording.get()) return false
 
         currentOutputFile = outputFile
@@ -126,7 +126,7 @@ class AudioRecorder(private val sampleRate: Int = 48000) {
      * caller deleted a valid take (or re-read and rewrote the file) underneath
      * it. Waiting on the writer's completion latch makes that impossible.
      */
-    fun stopRecording(): Long {
+    open fun stopRecording(): Long {
         if (!isRecording.get()) return 0L
         isRecording.set(false)
 

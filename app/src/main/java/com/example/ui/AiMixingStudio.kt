@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.R
 import com.example.audio.ai.MixAdvisor
+import com.example.audio.model.AudioSourceFormat
 import com.example.audio.model.MixSuggestion
 import com.example.audio.model.ProjectSession
 import com.example.audio.model.TrackFeatures
@@ -322,11 +323,20 @@ fun AiMixingStudio(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        listOf(
-                            "Set up the lead vocal",
-                            "1176 on the drums",
-                            "Start recording"
-                        ).forEach { chip ->
+                        val engineerChips = if (session.isTwoTrackBeat) {
+                            listOf(
+                                "Glue the 2-track gently",
+                                "Clean the 2-track mud",
+                                "Brighten the 2-track"
+                            )
+                        } else {
+                            listOf(
+                                "Set up the lead vocal",
+                                "1176 on the drums",
+                                "Start recording"
+                            )
+                        }
+                        engineerChips.forEach { chip ->
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(Radius.lg))
@@ -337,6 +347,56 @@ fun AiMixingStudio(
                                     .testTag("engineer_chip_${chip.lowercase().replace(" ", "_")}")
                             ) {
                                 Text(text = chip, color = ElectricLime, fontSize = 10.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // STEREO 2-TRACK CONTEXT: the engineer must not propose stem surgery.
+        if (session.isTwoTrackBeat) {
+            item {
+                val isPremaster = session.twoTrackTracks.any {
+                    it.sourceFormat == AudioSourceFormat.TWO_TRACK_PREMASTER
+                }
+                Card(
+                    modifier = Modifier.fillMaxWidth().testTag("two_track_mode_card"),
+                    colors = CardDefaults.cardColors(containerColor = StudioSurface),
+                    border = androidx.compose.foundation.BorderStroke(1.5.dp, StudioAmber.copy(alpha = 0.8f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = StudioAmber,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = stringResource(R.string.ai_two_track_mode_title),
+                                color = StudioAmber,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = stringResource(R.string.ai_two_track_mode_body),
+                                color = TextPrimary,
+                                fontSize = 10.sp,
+                                lineHeight = 14.sp
+                            )
+                            if (isPremaster) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = stringResource(R.string.ai_two_track_premaster_body),
+                                    color = TextMuted,
+                                    fontSize = 10.sp
+                                )
                             }
                         }
                     }
@@ -823,7 +883,17 @@ fun AiMixingStudio(
                         OutlinedTextField(
                             value = promptText,
                             onValueChange = { promptText = it },
-                            placeholder = { Text(stringResource(R.string.ui_e_g_make_vocals_brighter_glue_drums_clean_mud), fontSize = 11.sp, color = TextMuted) },
+                            placeholder = {
+                                Text(
+                                    text = if (session.isTwoTrackBeat) {
+                                        "e.g. Glue the beat, clean the beat, warm the beat…"
+                                    } else {
+                                        stringResource(R.string.ui_e_g_make_vocals_brighter_glue_drums_clean_mud)
+                                    },
+                                    fontSize = 11.sp,
+                                    color = TextMuted
+                                )
+                            },
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = NeonCyan,
                                 unfocusedBorderColor = StudioCardBorder,
@@ -865,13 +935,23 @@ fun AiMixingStudio(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        listOf(
-                            "Brighten Vocals",
-                            "Glue Drums 4:1",
-                            "Clean Bass Mud",
-                            "Analog Warmth",
-                            "Commercial Punch"
-                        ).forEach { chip ->
+                        val promptChips = if (session.isTwoTrackBeat) {
+                            listOf(
+                                "Glue the beat",
+                                "Clean the beat",
+                                "Brighten the beat",
+                                "Warm the beat"
+                            )
+                        } else {
+                            listOf(
+                                "Brighten Vocals",
+                                "Glue Drums 4:1",
+                                "Clean Bass Mud",
+                                "Analog Warmth",
+                                "Commercial Punch"
+                            )
+                        }
+                        promptChips.forEach { chip ->
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(Radius.lg))
@@ -1005,13 +1085,22 @@ fun AiMixingStudio(
                         }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            feat.neuralResult?.let { nr ->
+                            if (trk?.isTwoTrackBeat == true) {
                                 Text(
-                                    text = "Neural: ${(nr.confidence * 100).toInt()}% • ",
-                                    color = ElectricLime,
+                                    text = stringResource(R.string.ai_two_track_stereo_badge),
+                                    color = StudioAmber,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold
                                 )
+                            } else {
+                                feat.neuralResult?.let { nr ->
+                                    Text(
+                                        text = "Neural: ${(nr.confidence * 100).toInt()}% • ",
+                                        color = ElectricLime,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                             Box(
                                 modifier = Modifier
@@ -1021,7 +1110,11 @@ fun AiMixingStudio(
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = feat.classifiedStem.displayName,
+                                    text = if (trk?.isTwoTrackBeat == true) {
+                                        trk.sourceFormat.displayName
+                                    } else {
+                                        feat.classifiedStem.displayName
+                                    },
                                     color = NeonCyan,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.SemiBold
@@ -1057,7 +1150,7 @@ fun AiMixingStudio(
                         )
                     }
 
-                    feat.neuralResult?.let { nr ->
+                    if (trk?.isTwoTrackBeat != true) feat.neuralResult?.let { nr ->
                         Spacer(modifier = Modifier.height(4.dp))
                         Row(
                             modifier = Modifier

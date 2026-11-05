@@ -3,6 +3,7 @@ package com.example.audio.history
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import com.example.audio.model.AudioClip
+import com.example.audio.model.AudioSourceFormat
 import com.example.audio.model.ProjectSession
 import com.example.audio.model.TrackData
 import org.junit.Assert.assertEquals
@@ -11,6 +12,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.After
+import org.junit.Before
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -18,6 +21,27 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class ProjectPersistenceAndUndoTest {
+
+    /**
+     * Robolectric gives every test class the same app files directory, and the
+     * ViewModel restores whatever journal or saved project it finds there. A
+     * journal left behind by one test used to make a later class in the same
+     * suite start from this fixture instead of its own track layout.
+     */
+    private fun clearPersistedState(app: Application) {
+        app.deleteFile("recovery_journal.json")
+        app.filesDir.resolve("projects").deleteRecursively()
+    }
+
+    @Before
+    fun clearPersistedStateBeforeTest() {
+        clearPersistedState(ApplicationProvider.getApplicationContext())
+    }
+
+    @After
+    fun clearPersistedStateAfterTest() {
+        clearPersistedState(ApplicationProvider.getApplicationContext())
+    }
 
     @Test
     fun undoManager_pushUndoRedoStackOperations() {
@@ -99,5 +123,33 @@ class ProjectPersistenceAndUndoTest {
         // Clear crash journal by saving a project
         persistence.saveProject(restoredSession)
         assertFalse(persistence.hasCrashRecoveryJournal())
+    }
+
+    @Test
+    fun projectPersistence_preservesTwoTrackSourceFormat() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val persistence = ProjectPersistence(app)
+
+        val session = ProjectSession(
+            projectName = "Two Track Project",
+            sourceFormat = AudioSourceFormat.TWO_TRACK_PREMASTER,
+            tracks = listOf(
+                TrackData(
+                    index = 0,
+                    name = "Beat Premaster",
+                    colorHex = 0xFFFF5722,
+                    stemCategory = com.example.audio.model.StemCategory.OTHER,
+                    sourceFormat = AudioSourceFormat.TWO_TRACK_PREMASTER
+                )
+            )
+        )
+
+        persistence.writeCrashRecoveryJournal(session)
+        val restored = persistence.restoreFromCrashRecoveryJournal()
+
+        assertNotNull(restored)
+        assertEquals(AudioSourceFormat.TWO_TRACK_PREMASTER, restored!!.sourceFormat)
+        assertEquals(AudioSourceFormat.TWO_TRACK_PREMASTER, restored.tracks[0].sourceFormat)
+        assertTrue(restored.isTwoTrackBeat)
     }
 }

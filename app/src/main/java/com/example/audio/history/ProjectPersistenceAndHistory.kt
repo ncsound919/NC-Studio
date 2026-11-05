@@ -28,6 +28,20 @@ sealed interface SessionCommand {
         val afterTrack: TrackData
     ) : SessionCommand
 
+    /**
+     * A clip dragged from one lane to another. Both lanes are stored because
+     * undoing only the source would either duplicate or lose the clip.
+     */
+    data class MoveClipAcrossTracks(
+        override val description: String,
+        val sourceTrackIndex: Int,
+        val targetTrackIndex: Int,
+        val beforeSourceClips: List<AudioClip>,
+        val afterSourceClips: List<AudioClip>,
+        val beforeTargetClips: List<AudioClip>,
+        val afterTargetClips: List<AudioClip>
+    ) : SessionCommand
+
     data class BatchMixChange(
         override val description: String,
         val beforeTracks: List<TrackData>,
@@ -82,6 +96,16 @@ class UndoManager(private val maxHistory: Int = 50) {
                 }
                 currentSession.copy(tracks = newTracks, revision = currentSession.revision + 1)
             }
+            is SessionCommand.MoveClipAcrossTracks -> {
+                val newTracks = currentSession.tracks.map { trk ->
+                    when (trk.index) {
+                        command.sourceTrackIndex -> trk.copy(clips = command.beforeSourceClips)
+                        command.targetTrackIndex -> trk.copy(clips = command.beforeTargetClips)
+                        else -> trk
+                    }
+                }
+                currentSession.copy(tracks = newTracks, revision = currentSession.revision + 1)
+            }
             is SessionCommand.BatchMixChange -> {
                 currentSession.copy(
                     tracks = command.beforeTracks,
@@ -110,6 +134,16 @@ class UndoManager(private val maxHistory: Int = 50) {
             is SessionCommand.UpdateTrackParams -> {
                 val newTracks = currentSession.tracks.map { trk ->
                     if (trk.index == command.trackIndex) command.afterTrack else trk
+                }
+                currentSession.copy(tracks = newTracks, revision = currentSession.revision + 1)
+            }
+            is SessionCommand.MoveClipAcrossTracks -> {
+                val newTracks = currentSession.tracks.map { trk ->
+                    when (trk.index) {
+                        command.sourceTrackIndex -> trk.copy(clips = command.afterSourceClips)
+                        command.targetTrackIndex -> trk.copy(clips = command.afterTargetClips)
+                        else -> trk
+                    }
                 }
                 currentSession.copy(tracks = newTracks, revision = currentSession.revision + 1)
             }

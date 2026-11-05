@@ -37,6 +37,10 @@ class TimelineEditingTest {
         application = ApplicationProvider.getApplicationContext()
         application.getSharedPreferences("pulse_ui_prefs", 0).edit().clear().commit()
         application.deleteFile("recovery_journal.json")
+        // Each test starts from the shipped blank session, never from an
+        // auto-save written by the previous test (some tests move a clip to
+        // another lane, which used to leak into the next test's fixture).
+        application.filesDir.resolve("projects").deleteRecursively()
         viewModel = DawViewModel(application)
         viewModel.installTestClip(0)
     }
@@ -107,6 +111,75 @@ class TimelineEditingTest {
         assertEquals(24_000L, clips.single().timelineStartFrame)
         assertEquals(0L, clips.single().sourceStartFrame)
         assertEquals(768_000L, clips.single().lengthFrames)
+    }
+
+    @Test
+    fun splitClipAtFrame_cutsOneClipExactlyWhereTapped() {
+        val id = clips.single().id
+
+        viewModel.splitClipAtFrame(0, id, 300_000L)
+
+        val parts = clips.sortedBy { it.timelineStartFrame }
+        assertEquals(2, parts.size)
+        assertEquals(listOf(0L, 300_000L), parts.map { it.timelineStartFrame })
+        assertEquals(listOf(300_000L, 468_000L), parts.map { it.lengthFrames })
+        assertEquals(300_000L, parts[1].sourceStartFrame)
+        assertEquals(setOf(parts[0].id, parts[1].id), viewModel.uiState.value.selectedClipIds)
+
+        viewModel.undo()
+        assertEquals(1, clips.size)
+        assertEquals(id, clips.single().id)
+    }
+
+    @Test
+    fun movingAClipAcrossTracksIsOneUndoableEdit() {
+        val id = clips.single().id
+        val originalFrame = clips.single().timelineStartFrame
+        val targetBefore = viewModel.session.value.tracks[1].clips
+
+        // A real cross-track drag also moved the clip horizontally first. Undo
+        // must restore the time from before the drag, not the drop position.
+        viewModel.beginClipGesture(0, "Move clip")
+        viewModel.moveClipToFrame(0, id, 120_000L)
+        assertEquals(120_000L, clips.single().timelineStartFrame)
+
+        viewModel.moveClipToTrack(0, id, 1)
+
+        assertTrue("source lane is empty", clips.isEmpty())
+        assertEquals(1, viewModel.session.value.tracks[1].clips.size)
+        assertEquals(id, viewModel.session.value.tracks[1].clips.single().id)
+        assertEquals(1, viewModel.uiState.value.selectedTrackIndex)
+        assertEquals(setOf(id), viewModel.uiState.value.selectedClipIds)
+
+        viewModel.undo()
+        assertEquals(1, clips.size)
+        assertEquals(id, clips.single().id)
+        assertEquals(originalFrame, clips.single().timelineStartFrame)
+        assertEquals(targetBefore, viewModel.session.value.tracks[1].clips)
+
+        viewModel.redo()
+        assertTrue(clips.isEmpty())
+        assertEquals(id, viewModel.session.value.tracks[1].clips.single().id)
+    }
+
+    @Test
+    fun absoluteSeekAndBarNudgeMoveTheMarker() {
+        val barFrames = 96_000L // 48 kHz, 120 BPM, 4/4
+
+        viewModel.seekToFrame(250_000L)
+        assertEquals(250_000L, viewModel.uiState.value.playheadFrame)
+
+        viewModel.nudgePlayhead(1)
+        assertEquals(250_000L + barFrames, viewModel.uiState.value.playheadFrame)
+
+        viewModel.nudgePlayhead(-1)
+        assertEquals(250_000L, viewModel.uiState.value.playheadFrame)
+
+        // Out-of-range seeks clamp instead of leaving the marker off-session.
+        viewModel.seekToFrame(-1L)
+        assertEquals(0L, viewModel.uiState.value.playheadFrame)
+        viewModel.seekToFrame(Long.MAX_VALUE)
+        assertEquals(viewModel.session.value.totalLengthFrames, viewModel.uiState.value.playheadFrame)
     }
 
     @Test

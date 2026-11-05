@@ -6,6 +6,9 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,6 +27,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Loop
 import androidx.compose.material.icons.filled.Pause
@@ -38,15 +43,24 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -71,6 +85,7 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.OnAccent
 import com.example.ui.theme.OverlayWhite
+import kotlinx.coroutines.delay
 
 @Composable
 fun TransportBar(
@@ -80,6 +95,7 @@ fun TransportBar(
     canRedo: Boolean,
     onTogglePlay: () -> Unit,
     onStop: () -> Unit,
+    onNudgePlayhead: (Int) -> Unit = {},
     onToggleRecord: () -> Unit,
     onToggleLoop: () -> Unit,
     onUndo: () -> Unit,
@@ -273,6 +289,24 @@ fun TransportBar(
                         tint = loopColor
                     )
                 }
+
+                // Coarse marker positioning. Tap steps one bar; hold repeats so
+                // a long move does not need a dozen taps. Fine positioning is
+                // still the job of the draggable playhead in the ruler.
+                TransportStepButton(
+                    forward = false,
+                    label = "Rewind one bar",
+                    testTag = "transport_rewind_button",
+                    hapticsEnabled = hapticsEnabled,
+                    onStep = { onNudgePlayhead(-1) }
+                )
+                TransportStepButton(
+                    forward = true,
+                    label = "Fast forward one bar",
+                    testTag = "transport_fast_forward_button",
+                    hapticsEnabled = hapticsEnabled,
+                    onStep = { onNudgePlayhead(1) }
+                )
 
                 if (uiState.isRecording) {
                     Text(
@@ -472,6 +506,73 @@ fun TransportBar(
                 }
             }
         }
+    }
+}
+
+/**
+ * Rewind / fast-forward with tap-to-step and hold-to-repeat. The semantics
+ * onClick keeps TalkBack working even though the press loop owns the pointer.
+ */
+@Composable
+private fun TransportStepButton(
+    forward: Boolean,
+    label: String,
+    testTag: String,
+    enabled: Boolean = true,
+    hapticsEnabled: Boolean,
+    onStep: () -> Unit
+) {
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val stepNow = rememberUpdatedState(onStep)
+    var pressing by remember { mutableStateOf(false) }
+    var didRepeat by remember { mutableStateOf(false) }
+
+    // Holding the button repeats on the composition clock, so a long rewind
+    // does not need a dozen taps and the gesture scope stays restricted-safe.
+    LaunchedEffect(pressing) {
+        if (!pressing) return@LaunchedEffect
+        delay(420)
+        didRepeat = true
+        while (true) {
+            stepNow.value()
+            delay(80)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .testTag(testTag)
+            .semantics {
+                role = Role.Button
+                contentDescription = label
+                onClick(label) {
+                    stepNow.value()
+                    true
+                }
+            }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    down.consume()
+                    haptics.studioTick(hapticsEnabled)
+                    didRepeat = false
+                    pressing = true
+                    waitForUpOrCancellation()
+                    pressing = false
+                    if (!didRepeat) stepNow.value()
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = if (forward) Icons.Default.FastForward else Icons.Default.FastRewind,
+            contentDescription = null,
+            tint = if (enabled) TextSecondary else TextMuted.copy(alpha = 0.55f),
+            modifier = Modifier.size(20.dp)
+        )
     }
 }
 

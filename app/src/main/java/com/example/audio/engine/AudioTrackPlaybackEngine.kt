@@ -8,7 +8,7 @@ import android.os.SystemClock
 import com.example.audio.dsp.ChannelLimiter
 import com.example.audio.dsp.DuckingDelayProcessor
 import com.example.audio.dsp.FourBandEq
-import com.example.audio.dsp.LufsMeter
+import com.example.audio.dsp.RmsMeter
 import com.example.audio.dsp.NoiseReductionProcessor
 import com.example.audio.dsp.PanLaw
 import com.example.audio.dsp.ParameterSmoother
@@ -145,7 +145,7 @@ class AudioTrackPlaybackEngine(
     private val masterGainSmoother = ParameterSmoother(1.0f, sampleRate.toFloat(), 15f)
     private val masterReverb = SchroederReverb(sampleRate.toFloat())
     private val masterLimiter = PeakLimiter(sampleRate.toFloat())
-    val lufsMeter = LufsMeter(sampleRate.toFloat())
+    val rmsMeter = RmsMeter(sampleRate.toFloat())
 
     // Telemetry and meters
     val trackPeakLevels = FloatArray(trackCount)
@@ -558,7 +558,7 @@ class AudioTrackPlaybackEngine(
                     val postLimitL = mixBufferL[i]
                     val postLimitR = mixBufferR[i]
 
-                    lufsMeter.addSample(postLimitL, postLimitR)
+                    rmsMeter.addSample(postLimitL, postLimitR)
 
                     val absL = Math.abs(postLimitL)
                     val absR = Math.abs(postLimitR)

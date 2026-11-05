@@ -145,8 +145,8 @@ fun MixerView(
                 session = session,
                 masterPeakL = uiState.masterPeakL,
                 masterPeakR = uiState.masterPeakR,
-                momentaryLufs = uiState.momentaryLufs,
-                integratedLufs = uiState.integratedLufs,
+                momentaryRmsDb = uiState.momentaryRmsDb,
+                latestRmsDb = uiState.latestRmsDb,
                 onMasterGainChange = onSetMasterGain,
                 onApplyMasterPreset = onApplyMasterPreset,
                 modifier = Modifier
@@ -425,8 +425,8 @@ fun MasterChannelStrip(
     session: ProjectSession,
     masterPeakL: Float,
     masterPeakR: Float,
-    momentaryLufs: Float,
-    integratedLufs: Float,
+    momentaryRmsDb: Float,
+    latestRmsDb: Float,
     onMasterGainChange: (Float) -> Unit,
     onApplyMasterPreset: (MasterPreset) -> Unit = {},
     modifier: Modifier = Modifier
@@ -496,7 +496,7 @@ fun MasterChannelStrip(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // LUFS Readouts
+            // RMS readout (unweighted, not LUFS)
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(4.dp))
@@ -504,9 +504,9 @@ fun MasterChannelStrip(
                     .padding(horizontal = 6.dp, vertical = 4.dp)
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    val lufsIntStr = if (integratedLufs <= -59f) "--" else String.format(java.util.Locale.US, "%.1f", integratedLufs)
+                    val rmsStr = if (latestRmsDb <= -59f) "--" else String.format(java.util.Locale.US, "%.1f", latestRmsDb)
                     Text(
-                        text = "$lufsIntStr LUFS",
+                        text = "$rmsStr dBFS",
                         color = ElectricLime,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,

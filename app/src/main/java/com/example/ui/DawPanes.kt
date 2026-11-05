@@ -44,8 +44,11 @@ internal fun TimelinePane(
         uiState = uiState,
         settings = settings,
         onSeekFraction = { f -> viewModel.seekToFraction(f) },
+        onSeekFrame = { frame -> viewModel.seekToFrame(frame) },
         onSelectTrack = { idx -> viewModel.selectTrack(idx) },
         onSplitClipAtPlayhead = { idx -> viewModel.splitClipAtPlayhead(idx) },
+        onSplitClipAtFrame = { idx, clipId, frame -> viewModel.splitClipAtFrame(idx, clipId, frame) },
+        onMoveClipToTrack = { from, clipId, to -> viewModel.moveClipToTrack(from, clipId, to) },
         onTrimClipEnd = { idx, id -> viewModel.trimClipEnd(idx, id, 48000L) },
         onDuplicateClip = { idx, id -> viewModel.duplicateClip(idx, id) },
         onOpenClipBin = { viewModel.showClipBin(true) },
@@ -88,7 +91,11 @@ internal fun TimelinePane(
         onPasteChorusSection = { trackIdx, clipId, bars -> viewModel.pasteClipAsChorusSection(trackIdx, clipId, bars) },
         onPasteChorusDouble = { trackIdx, clipId, targetTrack -> viewModel.pasteClipAsDoubledChorus(trackIdx, clipId, targetTrack) },
         onAdaptChorusLoop = { trackIdx, clipId, rpts -> viewModel.adaptClipToChorusLoop(trackIdx, clipId, rpts) },
-        onStripSilence = { settings, mode -> viewModel.stripSilenceSelectedClips(settings, mode) }
+        onStripSilence = { settings, mode -> viewModel.stripSilenceSelectedClips(settings, mode) },
+        onSelectTake = { trackIdx, laneId -> viewModel.selectTakeLane(trackIdx, laneId) },
+        onCompTakeRange = { trackIdx, laneId, from, to ->
+            viewModel.compTakeRange(trackIdx, laneId, from, to)
+        }
     )
 }
 
@@ -116,6 +123,7 @@ internal fun InspectorPane(
             onApplyTemplateRole = { role, templateId ->
                 viewModel.applyTemplateRoleToTrack(selTrack.index, role, templateId)
             },
+            onApplyVocalChain = { viewModel.applyVocalPluginChain(selTrack.index) },
             onDismiss = { showPluginRack = false }
         )
     }
@@ -136,6 +144,9 @@ internal fun InspectorPane(
         onUpdateResonanceSmoother = { cfg -> viewModel.updateTrackResonanceSmoother(selTrack.index, cfg) },
         onApplyPreset = { preset -> viewModel.applyTrackPreset(selTrack.index, preset) },
         onOpenPluginRack = { showPluginRack = true },
+        onSelectTake = { laneId -> viewModel.selectTakeLane(selTrack.index, laneId) },
+        onRateTake = { laneId -> viewModel.rateTakeLane(selTrack.index, laneId) },
+        onDeleteTake = { laneId -> viewModel.deleteTakeLane(selTrack.index, laneId) },
         masterReverb = session.masterReverb,
         onUpdateMasterReverb = { rev -> viewModel.updateMasterReverb(rev) }
     )

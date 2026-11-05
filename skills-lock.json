@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "skills": {
+    "android-cli": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "devtools/android-cli/SKILL.md",
+      "computedHash": "791335db7bd348cc3ae68859d8732ad12a4f62e22b0a7a2cddb72058d89e73d3"
+    },
+    "android-jetpack-compose": {
+      "source": "thebushidocollective/han",
+      "sourceType": "github",
+      "skillPath": "plugins/specialized/android/skills/jetpack-compose/SKILL.md",
+      "computedHash": "11ab9a1ee4ebfb46cea085b9183539a2a9e5b7d5a897bea544297d42ee1b6fc5"
+    },
+    "jetpack-compose-performance": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "jetpack-compose/jetpack-compose-performance/SKILL.md",
+      "computedHash": "5ddd50960de268e7c7d6ee33b9529d2e07cfed05c3de034c2f4e833e72e7ecc7"
+    },
+    "limrun-android-emulator": {
+      "source": "limrun-inc/skills",
+      "sourceType": "github",
+      "skillPath": "skills/limrun-android-emulator/SKILL.md",
+      "computedHash": "5cd9132536a1b8a0147f9bcbc288828e1222c1c4a97f650227a04459cf73ed58"
+    },
+    "testing-setup": {
+      "source": "android/skills",
+      "sourceType": "github",
+      "skillPath": "testing/testing-setup/SKILL.md",
+      "computedHash": "823537d239f2ba61e0ed04e3858b77346d01167e77e953007a814a1f5bb87264"
+    }
+  }
+}

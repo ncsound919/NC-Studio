@@ -62,8 +62,8 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.OnAccent
 
-const val STUDIO_VERSION = "1.3.0"
-const val RELEASE_NOTES_VERSION = "1.3.0"
+const val STUDIO_VERSION = "1.3.1"
+const val RELEASE_NOTES_VERSION = "1.3.1"
 const val ONBOARDING_PREF = "onboarding_complete"
 const val RELEASE_NOTES_PREF = "whats_new_seen_version"
 const val TIMELINE_TOOL_PREF = "timeline_tool"

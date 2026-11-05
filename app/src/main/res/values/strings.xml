@@ -6,6 +6,12 @@
     <string name="notification_playback_playing">Playing \u2022 Low-latency audio engine</string>
 
     <string name="tab_mixer">Mixer</string>
+    <string name="inspector_takes">TAKES</string>
+    <string name="take_rating_cd">Rate take %1$s</string>
+    <string name="take_select_cd">Select take %1$s</string>
+    <string name="take_delete_cd">Delete take %1$s</string>
+    <string name="take_stars">%1$d★</string>
+    <string name="take_lane_comp_clip">Use %1$s from %2$s</string>
     <string name="tab_timeline">Timeline</string>
     <string name="tab_inspector">Inspector</string>
     <string name="tab_ai_studio">AI Studio</string>
@@ -120,7 +126,7 @@
     <string name="ui_hardware_device_policy">Hardware Device Policy</string>
     <string name="ui_harmonic_warmth_soft_clip_tape_compression">Harmonic warmth &amp; soft-clip tape compression</string>
     <string name="ui_identifies_vocal_drums_bass_keys_using_spectral_">Identifies Vocal, Drums, Bass, Keys using spectral centroid &amp; crest factor.</string>
-    <string name="ui_import_audio_file_stem">Import Audio File / Stem</string>
+    <string name="ui_import_audio_file_stem">Upload Audio / Beat</string>
     <string name="ui_industry_master_bus_chains_schroeder_reverb_curv">Industry master bus chains &amp; Schroeder reverb curves</string>
     <string name="ui_input_latency_calibration">Input latency calibration</string>
     <string name="ui_input_latency_offset_calibration">Input Latency Offset Calibration</string>
@@ -320,9 +326,10 @@
     <string name="mixer_master">MASTER</string>
     <string name="mixer_brickwall">BRICKWALL</string>
     <string name="mixer_presets">PRESETS</string>
-    <string name="mixer_itu_loudness">ITU-R BS.1770</string>
+    <string name="mixer_itu_loudness">RMS level</string>
     <string name="plugin_rack_title">PLUGIN RACK</string>
     <string name="plugin_legacy_hint">This track still uses the legacy channel strip. Add a module or load a reference template to build a real chain.</string>
+    <string name="timeline_split">SPLIT</string>
     <string name="timeline_sep">SEP</string>
     <string name="timeline_heal">HEAL</string>
     <string name="timeline_crossfade">X-FADE</string>
@@ -423,6 +430,7 @@
     <string name="label_high_cut">High-Cut</string>
     <string name="label_limiter_on">Limiter On</string>
     <string name="label_loop_end">Loop end</string>
+    <string name="label_playhead">Playhead. Drag to move the marker.</string>
     <string name="label_loop_start">Loop start</string>
     <string name="label_low_cut">Low-Cut</string>
     <string name="label_m">M</string>
@@ -462,4 +470,14 @@
     <string name="label_dl">DL</string>
     <string name="label_spot">SPOT</string>
     <string name="import_ncbeat_hint">Or open an NC Phone Beat package (.ncbeat): pattern, tracks, mix and one loop of stems arrive as an editable session.</string>
+    <string name="import_source_title">WHAT ARE YOU UPLOADING?</string>
+    <string name="import_source_agent_note">The engineer will read a two-track upload as one finished stereo mix: broad bus moves and vocal-against-beat decisions, never stem surgery.</string>
+    <string name="import_source_premaster_note">Premaster selected: no extra limiter or heavy glue will be suggested.</string>
+    <string name="import_choose_source">CHOOSE %1$s</string>
+    <string name="import_two_track_success">Imported \"%1$s\" as a 2-track beat into Track %2$d. The engineer will mix it from the stereo file.</string>
+    <string name="import_premaster_success">Imported \"%1$s\" as a 2-track premaster into Track %2$d. The engineer will protect the existing master.</string>
+    <string name="ai_two_track_mode_title">2-TRACK BEAT MODE</string>
+    <string name="ai_two_track_mode_body">The engineer hears the beat as one finished stereo mix. It will make broad bus moves and fit vocals against the beat instead of carving isolated drums, bass or vocals.</string>
+    <string name="ai_two_track_premaster_body">Premaster detected: no extra limiter or heavy glue will be stacked on the beat.</string>
+    <string name="ai_two_track_stereo_badge">Stereo mix • no stem isolation</string>
 </resources>

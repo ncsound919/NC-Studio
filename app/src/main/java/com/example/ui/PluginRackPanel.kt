@@ -95,6 +95,7 @@ fun PluginRackDialog(
     onOutputBusChange: (String) -> Unit,
     onApplyTemplateAll: (String) -> Unit,
     onApplyTemplateRole: (ChainRole, String) -> Unit,
+    onApplyVocalChain: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var gainReductions by remember { mutableStateOf(List(chain.size) { 0f }) }
@@ -154,6 +155,15 @@ fun PluginRackDialog(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
+                Button(
+                    onClick = onApplyVocalChain,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("LOAD VOCAL CHAIN", fontSize = 11.sp, maxLines = 1)
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = { showTemplates = true },
@@ -186,6 +196,14 @@ fun PluginRackDialog(
                     }
                 }
 
+                Text(
+                    "Signal flows top to bottom. SWAP keeps a slot's position; the arrows move it. " +
+                        "Stack compression by adding the same module twice.",
+                    color = TextMuted,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+
                 Spacer(modifier = Modifier.height(8.dp))
 
                 if (chain.isEmpty()) {
@@ -215,6 +233,7 @@ fun PluginRackDialog(
                                 onToggleEnabled = { onChainChange(chainModel.toggle(slot.id).slots) },
                                 onMoveUp = { onChainChange(chainModel.move(slot.id, -1).slots) },
                                 onMoveDown = { onChainChange(chainModel.move(slot.id, 1).slots) },
+                                onReplace = { kind -> onChainChange(chainModel.replace(slot.id, kind).slots) },
                                 onRemove = { onChainChange(chainModel.remove(slot.id).slots) },
                                 onParamChange = { key, value ->
                                     onChainChange(chainModel.update(slot.id) { it.withParam(key, value) }.slots)
@@ -264,9 +283,11 @@ private fun RackSlotRow(
     onToggleEnabled: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
+    onReplace: (PluginKind) -> Unit,
     onRemove: () -> Unit,
     onParamChange: (String, Float) -> Unit
 ) {
+    var showSwapMenu by remember { mutableStateOf(false) }
     val accent = when (slot.kind.category) {
         com.overlay.audio.plugins.PluginCategory.DYNAMICS -> ElectricLime
         com.overlay.audio.plugins.PluginCategory.COLOR -> StudioAmber
@@ -331,6 +352,33 @@ private fun RackSlotRow(
             }
             IconButton(onClick = onMoveDown, modifier = Modifier.size(28.dp)) {
                 Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move ${slot.kind.displayName} later", tint = TextSecondary, modifier = Modifier.size(16.dp))
+            }
+            Box {
+                TextButton(
+                    onClick = { showSwapMenu = true },
+                    modifier = Modifier.height(28.dp)
+                ) {
+                    Text("SWAP", fontSize = 9.sp, color = NeonCyan)
+                }
+                DropdownMenu(
+                    expanded = showSwapMenu,
+                    onDismissRequest = { showSwapMenu = false }
+                ) {
+                    PluginKind.entries.sortedBy { it.category.ordinal }.forEach { kind ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(kind.displayName, fontSize = 12.sp, color = TextPrimary)
+                                    Text(kind.blurb, fontSize = 10.sp, color = TextMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            },
+                            onClick = {
+                                showSwapMenu = false
+                                onReplace(kind)
+                            }
+                        )
+                    }
+                }
             }
             TextButton(onClick = onToggleEnabled, modifier = Modifier.height(28.dp)) {
                 Text(if (slot.enabled) "ON" else "BYP", fontSize = 10.sp, color = if (slot.enabled) ElectricLime else TextMuted)

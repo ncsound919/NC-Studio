@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Science
 import com.example.R
+import com.example.audio.model.AudioSourceFormat
 import com.example.audio.model.MasterPreset
 import com.example.audio.model.PresetLibrary
 import androidx.compose.material.icons.filled.Place
@@ -278,6 +279,8 @@ fun UsbAudioInterfaceDialog(
 fun AudioImportDialog(
     tracks: List<com.example.audio.model.TrackData>,
     selectedTrackIndex: Int,
+    selectedFormat: AudioSourceFormat,
+    onSelectFormat: (AudioSourceFormat) -> Unit,
     onSelectTrack: (Int) -> Unit,
     onLaunchPicker: () -> Unit,
     onDismiss: () -> Unit,
@@ -307,6 +310,77 @@ fun AudioImportDialog(
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = stringResource(R.string.import_source_title),
+                    color = TextSecondary,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(5.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    AudioSourceFormat.values().forEach { format ->
+                        val isSelected = format == selectedFormat
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(Radius.md))
+                                .background(if (isSelected) ElectricLime.copy(alpha = 0.15f) else StudioCard)
+                                .border(
+                                    1.dp,
+                                    if (isSelected) ElectricLime else StudioCardBorder,
+                                    RoundedCornerShape(Radius.md)
+                                )
+                                .clickable(enabled = !isImporting) { onSelectFormat(format) }
+                                .padding(horizontal = 6.dp, vertical = 7.dp)
+                                .testTag("import_format_${format.name.lowercase()}"),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = format.shortLabel,
+                                color = if (isSelected) ElectricLime else TextPrimary,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                text = format.tagline,
+                                color = TextMuted,
+                                fontSize = 8.sp,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = selectedFormat.description,
+                    color = if (selectedFormat.isTwoTrack) StudioAmber else TextSecondary,
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp
+                )
+                if (selectedFormat.isTwoTrack) {
+                    Text(
+                        text = stringResource(R.string.import_source_agent_note),
+                        color = TextMuted,
+                        fontSize = 9.sp,
+                        lineHeight = 13.sp,
+                        modifier = Modifier.padding(top = 3.dp)
+                    )
+                }
+                if (selectedFormat == AudioSourceFormat.TWO_TRACK_PREMASTER) {
+                    Text(
+                        text = stringResource(R.string.import_source_premaster_note),
+                        color = StudioAmber,
+                        fontSize = 9.sp,
+                        modifier = Modifier.padding(top = 3.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(9.dp))
+
                 Text(text = stringResource(R.string.ui_select_destination_track_to_import_your_wav_mp3_),
                     color = TextSecondary,
                     fontSize = 11.sp
@@ -401,7 +475,15 @@ fun AudioImportDialog(
                     enabled = !isImporting,
                     colors = ButtonDefaults.buttonColors(containerColor = ElectricLime)
                 ) {
-                    Text(stringResource(if (isImporting) R.string.daw_importing else R.string.daw_choose_file), color = OnAccent, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = if (isImporting) {
+                            stringResource(R.string.daw_importing)
+                        } else {
+                            stringResource(R.string.import_choose_source, selectedFormat.shortLabel)
+                        },
+                        color = OnAccent,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         },

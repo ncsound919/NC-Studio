@@ -42,10 +42,15 @@ class PluginRackViewModelTest {
         assertEquals(MixBuses.DRUMS, kick.outputBusId)
         assertTrue("lead vocal must receive the pop vocal chain", vocal.pluginChain.isNotEmpty())
         // Every template leads with the gain-staging trim ("TRIM sits first and
-        // stages the signal to -18 dBFS", STUDIO_PLUGIN_CHAINS.md), so the Neve
-        // pre is the first module of the chain proper.
+        // stages the signal to -18 dBFS", STUDIO_PLUGIN_CHAINS.md). Cleaning and
+        // leveling come before the preamp, so they are the first modules after it.
         assertEquals(PluginKind.TRIM, vocal.pluginChain.first().kind)
-        assertEquals(PluginKind.NEVE_1073, vocal.pluginChain.first { it.kind != PluginKind.TRIM }.kind)
+        val afterTrim = vocal.pluginChain.map { it.kind }.drop(1)
+        assertTrue(
+            "denoise, rider and EQ must precede the compressors",
+            afterTrim.indexOf(PluginKind.PHONE_NOISE_REDUCTION) < afterTrim.indexOf(PluginKind.NEVE_1073) &&
+                afterTrim.indexOf(PluginKind.VOCAL_RIDER) < afterTrim.indexOf(PluginKind.NEVE_1073)
+        )
         assertTrue(
             "the pop vocal chain must include a 1176 and a de-esser",
             vocal.pluginChain.any { it.kind == PluginKind.FET_1176 } &&

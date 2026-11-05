@@ -193,8 +193,13 @@ object MixAdvisor {
                 val trkA = tracks.find { it.index == fA.trackIndex } ?: continue
                 val trkB = tracks.find { it.index == fB.trackIndex } ?: continue
 
+                // A 2-track beat is a finished stereo mix: its kick, 808 and
+                // vocals are already summed. There is no isolated low end to cut
+                // without altering the whole beat.
+                val twoTrackPair = trkA.isTwoTrackBeat || trkB.isTwoTrackBeat
+
                 // Check Low-end collision (< 150 Hz)
-                if (fA.subEnergy > 0.25f && fB.subEnergy > 0.25f) {
+                if (!twoTrackPair && fA.subEnergy > 0.25f && fB.subEnergy > 0.25f) {
                     val severity = (fA.subEnergy * fB.subEnergy * 3.5f).coerceIn(0.2f, 0.95f)
                     clashes.add(
                         MaskingClash(
@@ -278,8 +283,13 @@ object MixAdvisor {
                 )
             }
 
-            // 2. High-Pass Mud Rule: Non-bass tracks should high-pass sub-80Hz
-            if (feat.classifiedStem != StemCategory.BASS && feat.classifiedStem != StemCategory.DRUMS) {
+            // 2. High-Pass Mud Rule: Non-bass tracks should high-pass sub-80Hz.
+            // A 2-track beat is exempt: cutting it would remove the kick/808 that
+            // the whole beat is built on.
+            if (!track.isTwoTrackBeat &&
+                feat.classifiedStem != StemCategory.BASS &&
+                feat.classifiedStem != StemCategory.DRUMS
+            ) {
                 if (feat.subEnergy > 0.08f && !track.eqConfig.highPass.enabled) {
                     suggestions.add(
                         MixSuggestion(
@@ -297,8 +307,10 @@ object MixAdvisor {
                 }
             }
 
-            // 3. Dynamic Control: Heavy crest factor on drums or vocals
-            if (feat.crestFactorDb > 16.0f && !track.compressorConfig.enabled) {
+            // 3. Dynamic Control: Heavy crest factor on drums or vocals.
+            // Never suggest per-stem compression on a stereo beat: that is a
+            // mastering decision, and a premaster may already have glue applied.
+            if (!track.isTwoTrackBeat && feat.crestFactorDb > 16.0f && !track.compressorConfig.enabled) {
                 suggestions.add(
                     MixSuggestion(
                         trackIndex = track.index,
@@ -363,6 +375,37 @@ object MixAdvisor {
                     )
                     updatedTracks[idx] = trk.copy(eqConfig = updatedEq)
                 }
+                sug.parameter.contains("High Shelf") -> {
+                    val gain = sug.proposedValue.replace("dB", "").trim().toFloatOrNull() ?: 2.5f
+                    val updatedEq = trk.eqConfig.copy(
+                        band4 = EqBand(FilterType.HIGH_SHELF, 10000f, gain, 0.7f, enabled = true)
+                    )
+                    updatedTracks[idx] = trk.copy(eqConfig = updatedEq)
+                }
+                sug.parameter.contains("Low Shelf") -> {
+                    val gain = sug.proposedValue.replace("dB", "").trim().toFloatOrNull() ?: 2.0f
+                    val updatedEq = trk.eqConfig.copy(
+                        band1 = EqBand(FilterType.LOW_SHELF, 100f, gain, 0.7f, enabled = true)
+                    )
+                    updatedTracks[idx] = trk.copy(eqConfig = updatedEq)
+                }
+                sug.parameter.contains("Bus Glue") -> {
+                    val updatedComp = trk.compressorConfig.withType(CompressorType.VCA).copy(
+                        enabled = true,
+                        thresholdDb = -14f,
+                        ratio = 2.0f,
+                        attackMs = 30f,
+                        releaseMs = 250f,
+                        makeupGainDb = 0.5f
+                    )
+                    updatedTracks[idx] = trk.copy(compressorConfig = updatedComp)
+                }
+                sug.parameter.contains("Broad Mid Dip") -> {
+                    val updatedEq = trk.eqConfig.copy(
+                        band2 = EqBand(FilterType.PEAKING, 350f, -1.5f, 0.7f, enabled = true)
+                    )
+                    updatedTracks[idx] = trk.copy(eqConfig = updatedEq)
+                }
                 sug.parameter.contains("Compressor") -> {
                     val updatedComp = trk.compressorConfig.copy(
                         enabled = true,
@@ -396,6 +439,7 @@ object MixAdvisor {
         val p = prompt.lowercase()
         val suggestions = mutableListOf<MixSuggestion>()
         val rev = session.revision
+        val twoTrack = session.twoTrackTracks
 
         when {
             p.contains("bright") || p.contains("air") || p.contains("sparkle") -> {
@@ -411,6 +455,23 @@ object MixAdvisor {
                                 proposedValue = "+2.5 dB",
                                 reason = "User requested brighter tone. Gentle high-shelf lift adds vocal presence and sheen.",
                                 confidence = 0.95f,
+                                targetRevision = rev
+                            )
+                        )
+                    }
+                }
+                if (suggestions.isEmpty()) {
+                    for (trk in twoTrack) {
+                        suggestions.add(
+                            MixSuggestion(
+                                trackIndex = trk.index,
+                                trackName = trk.name,
+                                category = "2-Track Tone",
+                                parameter = "High Shelf +1.5 dB @ 10 kHz",
+                                currentValue = "${trk.eqConfig.band4.gainDb} dB",
+                                proposedValue = "+1.5 dB",
+                                reason = "The beat is a stereo 2-track, so this is a broad 1.5 dB sheen, not stem surgery.",
+                                confidence = 0.82f,
                                 targetRevision = rev
                             )
                         )
@@ -435,6 +496,23 @@ object MixAdvisor {
                         )
                     }
                 }
+                if (suggestions.isEmpty()) {
+                    for (trk in twoTrack) {
+                        suggestions.add(
+                            MixSuggestion(
+                                trackIndex = trk.index,
+                                trackName = trk.name,
+                                category = "2-Track Glue",
+                                parameter = "Bus Glue 2:1",
+                                currentValue = if (trk.compressorConfig.enabled) "Active" else "Bypassed",
+                                proposedValue = "Enabled (Thresh -14dB, 2:1, 30ms)",
+                                reason = "Gentle stereo-bus glue bonds the finished beat without squeezing its kick or 808.",
+                                confidence = 0.85f,
+                                targetRevision = rev
+                            )
+                        )
+                    }
+                }
             }
             p.contains("warm") || p.contains("analog") || p.contains("bass") -> {
                 for (trk in session.tracks) {
@@ -454,10 +532,30 @@ object MixAdvisor {
                         )
                     }
                 }
+                if (suggestions.isEmpty()) {
+                    for (trk in twoTrack) {
+                        suggestions.add(
+                            MixSuggestion(
+                                trackIndex = trk.index,
+                                trackName = trk.name,
+                                category = "2-Track Warmth",
+                                parameter = "Low Shelf +1.5 dB @ 100 Hz",
+                                currentValue = "${trk.eqConfig.band1.gainDb} dB",
+                                proposedValue = "+1.5 dB",
+                                reason = "The bass lives inside the 2-track. A broad 1.5 dB low shelf adds weight without remixing the beat.",
+                                confidence = 0.8f,
+                                targetRevision = rev
+                            )
+                        )
+                    }
+                }
             }
             p.contains("clean") || p.contains("mud") || p.contains("rumble") -> {
                 for (trk in session.tracks) {
-                    if (trk.stemCategory != StemCategory.BASS && trk.stemCategory != StemCategory.DRUMS) {
+                    if (!trk.isTwoTrackBeat &&
+                        trk.stemCategory != StemCategory.BASS &&
+                        trk.stemCategory != StemCategory.DRUMS
+                    ) {
                         suggestions.add(
                             MixSuggestion(
                                 trackIndex = trk.index,
@@ -468,6 +566,23 @@ object MixAdvisor {
                                 proposedValue = "Enabled @ 90 Hz",
                                 reason = "User requested mud cleanup. Cutting sub frequencies leaves clean room for 808s and kick.",
                                 confidence = 0.95f,
+                                targetRevision = rev
+                            )
+                        )
+                    }
+                }
+                if (suggestions.isEmpty()) {
+                    for (trk in twoTrack) {
+                        suggestions.add(
+                            MixSuggestion(
+                                trackIndex = trk.index,
+                                trackName = trk.name,
+                                category = "2-Track Clarity",
+                                parameter = "Broad Mid Dip -1.5 dB @ 350 Hz",
+                                currentValue = "${trk.eqConfig.band2.gainDb} dB",
+                                proposedValue = "-1.5 dB",
+                                reason = "A 2-track cannot be high-passed safely, so the mud is cleared with a wide 350 Hz dip instead.",
+                                confidence = 0.84f,
                                 targetRevision = rev
                             )
                         )
@@ -782,6 +897,11 @@ object ToolCallDispatcher {
                     highPass = EqBand(FilterType.HIGH_PASS, 90f, 0f, 0.707f, enabled = true)
                 )
                 val updated = target.copy(
+                    // The ordered rack is the real vocal chain now. The legacy
+                    // strip fields are still filled for old projects, but when
+                    // pluginChain is non-empty the engine runs these inserts in
+                    // this exact order.
+                    pluginChain = com.example.audio.plugins.VocalChainPresets.standard(),
                     eqConfig = eq,
                     compressorConfig = target.compressorConfig.copy(
                         enabled = true,

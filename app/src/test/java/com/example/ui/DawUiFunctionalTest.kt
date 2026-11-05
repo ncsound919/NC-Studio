@@ -540,4 +540,76 @@ class DawUiFunctionalTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("settings_screen").assertIsDisplayed()
     }
+
+    @Test
+    fun functionalTest_takeLanesRenderUnderTheTrackAndCompOnClipTap() {
+        // Built straight from the model: this exercises the take-lane strip, so
+        // it must not start a recording and leave engine state behind for the
+        // next test in the class.
+        val audible = com.example.audio.model.TakeLane(
+            name = "Take 1",
+            clips = listOf(testClip("audible", start = 0L, length = 96_000L))
+        )
+        val alternate = com.example.audio.model.TakeLane(
+            name = "Take 2",
+            clips = listOf(testClip("alternate", start = 24_000L, length = 24_000L)),
+            rating = 4
+        )
+        val track = com.example.audio.model.TrackData(
+            index = 0,
+            name = "Lead Vocal",
+            colorHex = 0xFF2196F3,
+            clips = audible.clips,
+            takeLanes = listOf(audible, alternate),
+            activeTakeId = audible.id
+        )
+        val session = com.example.audio.model.ProjectSession(
+            tracks = listOf(track),
+            totalLengthFrames = 96_000L
+        )
+        val viewModel = newViewModel()
+        var comped: Triple<String, Long, Long>? = null
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                TimelineView(
+                    session = session,
+                    uiState = viewModel.uiState.value.copy(selectedTrackIndex = 0),
+                    settings = DawSettings(),
+                    onSeekFraction = {},
+                    onSelectTrack = {},
+                    onSplitClipAtPlayhead = {},
+                    onTrimClipEnd = { _, _ -> },
+                    onDuplicateClip = { _, _ -> },
+                    onOpenClipBin = {},
+                    onCompTakeRange = { _, laneId, from, to ->
+                        comped = Triple(laneId, from, to)
+                    }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("take_lanes_0").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("take_row_${audible.id}").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("take_row_${alternate.id}").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("take_clip_${alternate.clips.first().id}", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .performClick()
+
+        val request = comped
+        assertNotNull("Tapping a clip on another take must comp it in", request)
+        assertEquals(alternate.id, request!!.first)
+        assertEquals(24_000L, request.second)
+        assertEquals(48_000L, request.third)
+    }
+
+    private fun testClip(name: String, start: Long, length: Long) =
+        com.example.audio.model.AudioClip(
+            name = name,
+            sourcePath = "$name.wav",
+            lengthFrames = length,
+            timelineStartFrame = start,
+            trackIndex = 0
+        )
 }

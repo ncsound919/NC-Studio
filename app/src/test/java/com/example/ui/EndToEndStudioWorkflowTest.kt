@@ -120,6 +120,9 @@ class EndToEndStudioWorkflowTest {
 
     @Test
     fun testAdvancedRecordingTakeAndClipMovementWorkflow() {
+        // AudioRecord delivers nothing under Robolectric, so the record path is
+        // driven through a deterministic recorder instead of the real one.
+        viewModel.useRecorderForTest(FakeAudioRecorder())
         // 1. Multiple recording passes (takes) on track 2
         viewModel.toggleTrackArm(2)
         
@@ -133,19 +136,28 @@ class EndToEndStudioWorkflowTest {
         viewModel.stopRecording()
         val take2 = viewModel.session.value.tracks[2].clips.last()
         
-        // 2. Select take (swap active clip to take1)
-        viewModel.setClipGain(2, take1.id, 0.0f)
-        viewModel.setClipGain(2, take2.id, -60.0f) // Mute take 2
-        
-        // 3. Move active clip to new position
-        viewModel.moveClipToFrame(2, take1.id, 96000L) // Move to 2 seconds in
-        val movedTake1 = viewModel.session.value.tracks[2].clips.find { it.id == take1.id }
-        assertEquals(96000L, movedTake1!!.timelineStartFrame)
-        
-        // 4. Verify undo/redo of movement
+        // 2. Both passes are preserved as takes; the newest one is audible.
+        val withTakes = viewModel.session.value.tracks[2]
+        assertEquals("Each recording pass keeps its own take", 2, withTakes.takeLanes.size)
+        assertEquals("Newest take is active", take2.id, withTakes.clips.single().id)
+        assertEquals("First take still holds its clip", take1.id, withTakes.takeLanes[0].clips.single().id)
+
+        // 3. Switch back to take 1: it becomes the audible clip list again.
+        viewModel.selectTakeLane(2, withTakes.takeLanes[0].id)
+        val activeTake1 = viewModel.session.value.tracks[2].clips.single()
+        assertEquals(take1.id, activeTake1.id)
+
+        // 4. Move the active take's clip to two seconds in.
+        viewModel.moveClipToFrame(2, activeTake1.id, 96000L)
+        assertEquals(
+            96000L,
+            viewModel.session.value.tracks[2].clips.single().timelineStartFrame
+        )
+
+        // 5. Undo restores the move (and leaves take 1 selected).
         viewModel.undo()
-        val undoneTake1 = viewModel.session.value.tracks[2].clips.find { it.id == take1.id }
-        assertTrue("Clip movement should undo", undoneTake1!!.timelineStartFrame != 96000L)
+        val undoneTake1 = viewModel.session.value.tracks[2].clips.single()
+        assertTrue("Clip movement should undo", undoneTake1.timelineStartFrame != 96000L)
     }
 }
 

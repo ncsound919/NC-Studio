@@ -68,8 +68,18 @@ data class LocalModelReply(
 
 object LocalModelDetector {
 
-    // Standard local server endpoints to probe
+    // The gateway resolves this app's adapter from shared/llm-mesh/models.json.
+    // Direct llama.cpp/Ollama servers ignore the headers.
+    private const val MESH_APP_ID = "nc-studio"
+    private const val MESH_TASK = "audio-mix"
+    private const val GENERATION_READ_TIMEOUT_MS = 120_000
+
+    // Standard local server endpoints to probe. The mesh is first: it is the
+    // app-wide entry point and switches the adapter by x-llm-app, so a scan
+    // selects it before a direct llama.cpp/Ollama instance.
     val DEFAULT_ENDPOINTS = listOf(
+        LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://127.0.0.1:8788", "Overlay mesh (Localhost 127.0.0.1:8788)"),
+        LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://10.0.2.2:8788", "Overlay mesh (Emulator Host 10.0.2.2:8788)"),
         LocalModelEndpoint(LocalModelProvider.OLLAMA, "http://10.0.2.2:11434", "Ollama (Emulator Host 10.0.2.2:11434)"),
         LocalModelEndpoint(LocalModelProvider.OLLAMA, "http://127.0.0.1:11434", "Ollama (Localhost 127.0.0.1:11434)"),
         LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://10.0.2.2:8080", "Llama.cpp (Emulator Host 10.0.2.2:8080)"),
@@ -139,8 +149,8 @@ object LocalModelDetector {
 
             val conn = (versionUrl.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = 1200
-                readTimeout = 1500
+                connectTimeout = 2500
+                readTimeout = 3000
                 doInput = true
             }
 
@@ -158,8 +168,8 @@ object LocalModelDetector {
                 val modelsUrl = URL(modelsUrlStr)
                 val mConn = (modelsUrl.openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
-                    connectTimeout = 1200
-                    readTimeout = 1500
+                    connectTimeout = 2500
+                    readTimeout = 3000
                     doInput = true
                 }
 
@@ -209,17 +219,23 @@ object LocalModelDetector {
                 val url = URL("${model.baseUrl}/api/generate")
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
-                    connectTimeout = 3000
-                    readTimeout = 8000
+                    connectTimeout = 5000
+                    readTimeout = GENERATION_READ_TIMEOUT_MS
                     doOutput = true
                     doInput = true
                     setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("x-llm-app", MESH_APP_ID)
+                    setRequestProperty("x-llm-task", MESH_TASK)
                 }
 
                 val body = JSONObject().apply {
                     put("model", model.name)
                     put("prompt", "$systemPrompt\n\nUser Question: $prompt")
                     put("stream", false)
+                    put("options", JSONObject().apply {
+                        put("temperature", 0.2)
+                        put("num_predict", 512)
+                    })
                 }
 
                 OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
@@ -239,11 +255,13 @@ object LocalModelDetector {
                 val url = URL("${model.baseUrl}/v1/chat/completions")
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
-                    connectTimeout = 3000
-                    readTimeout = 8000
+                    connectTimeout = 5000
+                    readTimeout = GENERATION_READ_TIMEOUT_MS
                     doOutput = true
                     doInput = true
                     setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("x-llm-app", MESH_APP_ID)
+                    setRequestProperty("x-llm-task", MESH_TASK)
                 }
 
                 val messages = JSONArray().apply {
@@ -260,6 +278,10 @@ object LocalModelDetector {
                 val body = JSONObject().apply {
                     put("model", model.name)
                     put("messages", messages)
+                    put("temperature", 0.2)
+                    put("max_tokens", 512)
+                    put("stream", false)
+                    put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
                 }
 
                 OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
@@ -272,7 +294,11 @@ object LocalModelDetector {
                     val choices = jsonObj.optJSONArray("choices")
                     val firstChoice = choices?.optJSONObject(0)
                     val message = firstChoice?.optJSONObject("message")
-                    LocalModelReply(text = message?.optString("content", "") ?: "")
+                    val content = message?.optString("content", "").orEmpty()
+                    // Some builds put the whole answer in reasoning_content when
+                    // thinking is on; do not throw that answer away.
+                    val reasoning = message?.optString("reasoning_content", "").orEmpty()
+                    LocalModelReply(text = content.ifBlank { reasoning })
                 } else {
                     conn.disconnect()
                     LocalModelReply(error = "Llama.cpp returned HTTP $code")

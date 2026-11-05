@@ -116,6 +116,7 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import kotlinx.coroutines.delay
 import kotlin.math.ceil
+import kotlin.math.roundToInt
 import com.example.ui.theme.OnAccent
 import com.example.ui.theme.OverlayWhite
 import com.example.ui.theme.Scrim
@@ -129,6 +130,8 @@ fun TrackLane(
     sampleRate: Int,
     tempoBpm: Float,
     settings: DawSettings,
+    trackCount: Int = 1,
+    isCrossTrackTarget: Boolean = false,
     selectedClipId: String? = null,
     selectedClipIds: Set<String> = emptySet(),
     contentZoom: Float = 1f,
@@ -136,13 +139,18 @@ fun TrackLane(
     editSelectionRange: LongRange? = null,
     onSelect: () -> Unit,
     onToggleClip: (String) -> Unit = {},
+    onSplitClipAtFrame: (String, Long) -> Unit = { _, _ -> },
     onMoveClip: (String, Long, Long) -> Unit = { _, _, _ -> },
     onTrimClip: (String, Boolean, Long, Long) -> Unit = { _, _, _, _ -> },
     onEditSelectionDrag: (Long, Long) -> Unit = { _, _ -> },
     onEditSelectionCommit: () -> Unit = {},
     onClipDragStart: () -> Unit = {},
-    /** Called with the clip id when a drag moved a clip, null for other drags. */
-    onClipDragEnd: (String?) -> Unit = {},
+    onCrossTrackTarget: (Int?) -> Unit = {},
+    /**
+     * Called with the clip id when a drag moved a clip, null for other drags,
+     * and the track the pointer landed over (or null when it stayed put).
+     */
+    onClipDragEnd: (String?, Int?) -> Unit = { _, _ -> },
     onFadeIn: (String, Float) -> Unit = { _, _ -> },
     onFadeOut: (String, Float) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
@@ -153,10 +161,22 @@ fun TrackLane(
     Row(
         modifier = modifier
             .background(if (isSelected) TrackLaneSelected else StudioSurface)
-            .border(0.5.dp, if (isSelected) NeonCyan.copy(alpha = 0.5f) else StudioCardBorder)                    .clickable { onSelect() }
-                    .semantics {
-                        stateDescription = if (isSelected) "Selected track" else "Not selected"
-                    }
+            .border(
+                width = if (isCrossTrackTarget) 2.dp else 0.5.dp,
+                color = when {
+                    isCrossTrackTarget -> ElectricLime
+                    isSelected -> NeonCyan.copy(alpha = 0.5f)
+                    else -> StudioCardBorder
+                }
+            )
+            .clickable { onSelect() }
+            .semantics {
+                stateDescription = when {
+                    isCrossTrackTarget -> "Drop target"
+                    isSelected -> "Selected track"
+                    else -> "Not selected"
+                }
+            }
             .testTag("track_lane_${track.index}")
     ) {
         // Track Header (left label)
@@ -202,6 +222,11 @@ fun TrackLane(
         ) {
             val viewportWidth = maxWidth
             val contentWidth = viewportWidth * contentZoom
+            // Screen-space width of the visible lane window. Used for edge
+            // auto-scroll while a clip is being dragged.
+            val viewportWidthPx = with(androidx.compose.ui.platform.LocalDensity.current) {
+                viewportWidth.toPx()
+            }.coerceAtLeast(1f)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -389,10 +414,15 @@ fun TrackLane(
                 val clipStartFrac = (clip.timelineStartFrame.toFloat() / totalFrames).coerceIn(0f, 1f)
                 val clipLenFrac = (clip.lengthFrames.toFloat() / totalFrames).coerceIn(0.01f, 1f)
                 val isChosen = clip.id in selectedClipIds
-                val contentWidthPx = with(androidx.compose.ui.platform.LocalDensity.current) {
+                val density = androidx.compose.ui.platform.LocalDensity.current
+                val contentWidthPx = with(density) {
                     contentWidth.toPx()
                 }.coerceAtLeast(1f)
                 val framesPerPixel = totalFrames / contentWidthPx
+                val clipLeftPx = with(density) { (contentWidth * clipStartFrac).toPx() }
+                // A very short clip is still grabbable: the hit area is never
+                // narrower than a fingertip, even when the audio is 2 px wide.
+                val hitWidth = maxOf(contentWidth * clipLenFrac, 28.dp)
                 // Where the finger went down. A Smart tool decision has to come
                 // from the press point, not from wherever the drag finally
                 // crossed the touch slop, or a long body drag would trim.
@@ -400,14 +430,16 @@ fun TrackLane(
                 Box(
                     modifier = Modifier
                         .offset(x = contentWidth * clipStartFrac)
-                        .width(contentWidth * clipLenFrac)
+                        .width(hitWidth)
                         .fillMaxHeight()
                         .testTag("clip_${clip.id}")
                         .semantics {
                             contentDescription = "Clip ${clip.name}"
                             stateDescription = if (isChosen) "Selected" else "Not selected"
                         }
-                        .clickable { onToggleClip(clip.id) }
+                        .clickable(enabled = settings.timelineTool != TimelineTool.SPLIT) {
+                            onToggleClip(clip.id)
+                        }
                         .pointerInput(clip.id) {
                             awaitPointerEventScope {
                                 while (true) {
@@ -415,6 +447,18 @@ fun TrackLane(
                                     event.changes.firstOrNull { it.changedToDown() }?.let { press ->
                                         pressX.floatValue = press.position.x
                                     }
+                                }
+                            }
+                        }
+                        .pointerInput(clip.id, settings.timelineTool) {
+                            if (settings.timelineTool == TimelineTool.SPLIT) {
+                                detectTapGestures { offset ->
+                                    val fraction = (offset.x / size.width.coerceAtLeast(1))
+                                        .coerceIn(0f, 1f)
+                                    val frame = clip.timelineStartFrame +
+                                        (fraction * clip.lengthFrames).toLong()
+                                    haptics.studioConfirm(settings.enableHapticFeedback)
+                                    onSplitClipAtFrame(clip.id, frame)
                                 }
                             }
                         }
@@ -426,7 +470,12 @@ fun TrackLane(
                             var dragEdgeFrame = clip.timelineStartFrame
                             var selectionAnchor = clip.timelineStartFrame
                             var selectionPointerX = 0f
+                            var verticalDrag = 0f
+                            var dropTrack = track.index
                             val edgeZonePx = EDGE_ZONE_WIDTH.toPx()
+                            val laneHeightPx = TRACK_LANE_HEIGHT.toPx()
+                            val scrollEdgePx = 56.dp.toPx()
+                            val scrollStepPx = 14.dp.toPx()
                             // Snap window in frames, so the magnet feels the same at
                             // every zoom level (12 dp of screen travel).
                             val snapTolerance = (12f * framesPerPixel).toLong().coerceAtLeast(1L)
@@ -440,6 +489,7 @@ fun TrackLane(
                                     } else {
                                         ClipDragKind.TRIM_END
                                     }
+                                    TimelineTool.SPLIT -> ClipDragKind.NONE
                                     TimelineTool.SMART -> when {
                                         startX <= edgeZonePx -> ClipDragKind.TRIM_START
                                         startX >= width - edgeZonePx -> ClipDragKind.TRIM_END
@@ -461,15 +511,32 @@ fun TrackLane(
                                     selectionAnchor = clip.timelineStartFrame + (
                                         (startOffset.x / size.width.coerceAtLeast(1)) * clip.lengthFrames
                                         ).toLong()
-                                    if (dragKind != ClipDragKind.SELECT) {
+                                    verticalDrag = 0f
+                                    dropTrack = track.index
+                                    onCrossTrackTarget(null)
+                                    if (dragKind != ClipDragKind.SELECT && dragKind != ClipDragKind.NONE) {
                                         haptics.studioConfirm(settings.enableHapticFeedback)
                                     }
-                                    onClipDragStart()
+                                    if (dragKind == ClipDragKind.MOVE) onClipDragStart()
                                 },
-                                onDragCancel = { onClipDragEnd(null) },
+                                onDragCancel = {
+                                    onCrossTrackTarget(null)
+                                    onClipDragEnd(null, null)
+                                },
                                 onDragEnd = {
                                     if (dragKind == ClipDragKind.SELECT) onEditSelectionCommit()
-                                    onClipDragEnd(if (dragKind == ClipDragKind.MOVE) clip.id else null)
+                                    val target = if (dragKind == ClipDragKind.MOVE &&
+                                        dropTrack != track.index
+                                    ) {
+                                        dropTrack
+                                    } else {
+                                        null
+                                    }
+                                    onCrossTrackTarget(null)
+                                    onClipDragEnd(
+                                        if (dragKind == ClipDragKind.MOVE) clip.id else null,
+                                        target
+                                    )
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
@@ -477,6 +544,41 @@ fun TrackLane(
                                         ClipDragKind.MOVE -> {
                                             dragFrame = (dragFrame + dragAmount.x * framesPerPixel).toLong()
                                                 .coerceAtLeast(0L)
+
+                                            // Edge auto-scroll: drag toward either side of
+                                            // the visible window and the arrangement
+                                            // scrolls under the finger. The clip keeps
+                                            // following the pointer by applying the
+                                            // consumed scroll to its frame position.
+                                            val pointerInViewport =
+                                                clipLeftPx + change.position.x - scrollState.value
+                                            val scrollStep = when {
+                                                pointerInViewport < scrollEdgePx -> -scrollStepPx
+                                                pointerInViewport > viewportWidthPx - scrollEdgePx -> scrollStepPx
+                                                else -> 0f
+                                            }
+                                            if (scrollStep != 0f) {
+                                                val consumed = scrollState.dispatchRawDelta(scrollStep)
+                                                if (consumed != 0f) {
+                                                    dragFrame = (dragFrame + consumed * framesPerPixel).toLong()
+                                                        .coerceAtLeast(0L)
+                                                }
+                                            }
+
+                                            // Vertical travel picks the destination track.
+                                            // The ghost stays in its source lane until the
+                                            // finger lifts, so the pointer never loses its
+                                            // gesture owner mid-drag.
+                                            verticalDrag += dragAmount.y
+                                            val rowDelta = (verticalDrag / laneHeightPx).roundToInt()
+                                            val candidate = (track.index + rowDelta)
+                                                .coerceIn(0, (trackCount - 1).coerceAtLeast(0))
+                                            if (candidate != dropTrack) {
+                                                dropTrack = candidate
+                                                onCrossTrackTarget(
+                                                    if (candidate != track.index) candidate else null
+                                                )
+                                            }
                                             onMoveClip(clip.id, dragFrame, snapTolerance)
                                         }
                                         ClipDragKind.TRIM_START -> {
@@ -498,6 +600,7 @@ fun TrackLane(
                                                 maxOf(selectionAnchor, pointerFrame)
                                             )
                                         }
+                                        ClipDragKind.NONE -> Unit
                                     }
                                 }
                             )
@@ -663,6 +766,95 @@ internal fun RangeHandle(
                 .clip(RoundedCornerShape(Radius.sm))
                 .background(accentColor)
         )
+    }
+}
+
+/**
+ * The playhead is a first-class grab target, not just a painted line.
+ *
+ * The hit box is 48 dp wide even though the marker is 3 dp: on a phone the
+ * difference between "tap near it" and "grab it" is the whole interaction.
+ * Dragging seeks continuously and shows the exact timecode under the finger.
+ */
+@Composable
+internal fun PlayheadHandle(
+    centerX: androidx.compose.ui.unit.Dp,
+    viewportWidth: androidx.compose.ui.unit.Dp,
+    frame: Long,
+    framesPerPixel: Float,
+    sampleRate: Int,
+    accentColor: Color,
+    label: String,
+    testTag: String,
+    hapticsEnabled: Boolean = true,
+    onSeek: (Long) -> Unit
+) {
+    val haptics = LocalHapticFeedback.current
+    val seekNow = androidx.compose.runtime.rememberUpdatedState(onSeek)
+    val currentFrame = androidx.compose.runtime.rememberUpdatedState(frame)
+    var dragFrame by remember { mutableStateOf<Long?>(null) }
+
+    Box(
+        modifier = Modifier
+            .offset(
+                x = (centerX - 24.dp).coerceIn(
+                    0.dp,
+                    (viewportWidth - 48.dp).coerceAtLeast(0.dp)
+                )
+            )
+            .width(48.dp)
+            .fillMaxHeight()
+            .testTag(testTag)
+            .semantics {
+                contentDescription = label
+                stateDescription = Timecode.format(frame, sampleRate)
+            }
+            .pointerInput(framesPerPixel) {
+                detectDragGestures(
+                    onDragStart = {
+                        haptics.studioConfirm(hapticsEnabled)
+                        dragFrame = currentFrame.value
+                    },
+                    onDragEnd = { dragFrame = null },
+                    onDragCancel = { dragFrame = null },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        val next = ((dragFrame ?: currentFrame.value) +
+                            (dragAmount.x * framesPerPixel).toLong()).coerceAtLeast(0L)
+                        dragFrame = next
+                        seekNow.value(next)
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .width(4.dp)
+                .height(30.dp)
+                .clip(RoundedCornerShape(Radius.sm))
+                .background(accentColor)
+        )
+        dragFrame?.let { dragged ->
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .offset(y = 4.dp)
+                    .clip(RoundedCornerShape(Radius.sm))
+                    .background(StudioBackground)
+                    .border(1.dp, accentColor, RoundedCornerShape(Radius.sm))
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = Timecode.format(dragged, sampleRate),
+                    color = accentColor,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1
+                )
+            }
+        }
     }
 }
 

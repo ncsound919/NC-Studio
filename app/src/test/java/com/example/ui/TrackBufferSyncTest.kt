@@ -5,7 +5,9 @@ import android.net.Uri
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import com.example.audio.engine.WavAudioIO
+import com.example.audio.model.AudioSourceFormat
 import com.example.audio.model.AutoPitchConfig
+import com.example.audio.model.StemCategory
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -100,6 +102,43 @@ class TrackBufferSyncTest {
                 val movedProbe = viewModel.trackAudioBuffers[3]
                 movedProbe.size > probeIndex && kotlin.math.abs(movedProbe[probeIndex]) <= 1e-4f
             }
+        } finally {
+            viewModel.viewModelScope.cancel()
+            viewModel.onCleared()
+        }
+    }
+
+    @Test
+    fun twoTrackImportMarksSessionAndBeatTrack() = runBlocking {
+        val application = ApplicationProvider.getApplicationContext<Application>()
+        val viewModel = DawViewModel(application)
+        try {
+            viewModel.awaitSessionReady()
+            val wav = java.io.File(application.cacheDir, "two-track-beat.wav")
+            val frames = 24000
+            val mix = FloatArray(frames * 2) { i ->
+                val t = (i / 2).toDouble() / 48000.0
+                (kotlin.math.sin(2.0 * Math.PI * 90.0 * t) * 0.25 +
+                    kotlin.math.sin(2.0 * Math.PI * 900.0 * t) * 0.15).toFloat()
+            }
+            WavAudioIO.writeWavFile(wav, mix, channels = 2, sampleRate = 48000, bitsPerSample = 16)
+
+            viewModel.importAudioFile(
+                Uri.fromFile(wav),
+                2,
+                AudioSourceFormat.TWO_TRACK_PREMASTER
+            )
+            waitUntil(10_000) {
+                viewModel.session.value.tracks[2].clips.isNotEmpty()
+            }
+
+            val session = viewModel.session.value
+            assertEquals(AudioSourceFormat.TWO_TRACK_PREMASTER, session.sourceFormat)
+            val beat = session.tracks[2]
+            assertEquals(AudioSourceFormat.TWO_TRACK_PREMASTER, beat.sourceFormat)
+            assertTrue(beat.isTwoTrackBeat)
+            assertEquals(StemCategory.OTHER, beat.stemCategory)
+            assertTrue(session.isTwoTrackBeat)
         } finally {
             viewModel.viewModelScope.cancel()
             viewModel.onCleared()

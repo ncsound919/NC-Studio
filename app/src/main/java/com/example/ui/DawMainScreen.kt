@@ -216,7 +216,7 @@ fun DawMainScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
-            viewModel.importAudioFile(uri, uiState.selectedTrackIndex)
+            viewModel.importAudioFile(uri, uiState.selectedTrackIndex, uiState.importSourceFormat)
             viewModel.showImportDialog(false)
         }
     }
@@ -647,6 +647,7 @@ fun DawMainScreen(
                 canRedo = viewModel.canRedo(),
                 onTogglePlay = { viewModel.togglePlayPause() },
                 onStop = { viewModel.stop() },
+                onNudgePlayhead = { bars -> viewModel.nudgePlayhead(bars) },
                 onToggleRecord = onRecordClick,
                 onToggleLoop = { viewModel.toggleLoop() },
                 onUndo = { viewModel.undo() },
@@ -782,6 +783,8 @@ fun DawMainScreen(
         AudioImportDialog(
             tracks = session.tracks,
             selectedTrackIndex = uiState.selectedTrackIndex,
+            selectedFormat = uiState.importSourceFormat,
+            onSelectFormat = { format -> viewModel.selectImportFormat(format) },
             onSelectTrack = { idx -> viewModel.selectTrack(idx) },
             onLaunchPicker = {
                 audioPickerLauncher.launch("audio/*")
@@ -797,7 +800,7 @@ fun DawMainScreen(
     if (showSharedLibrary) {
         SharedLibraryDialog(
             onPick = { uri ->
-                viewModel.importAudioFile(uri, uiState.selectedTrackIndex)
+                viewModel.importAudioFile(uri, uiState.selectedTrackIndex, uiState.importSourceFormat)
                 viewModel.showImportDialog(false)
                 showSharedLibrary = false
             },

@@ -17,6 +17,7 @@ import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.R
 import com.example.audio.ai.AudioFeatureExtractor
 import com.example.audio.ai.DiscoveredModelInfo
 import com.example.audio.ai.EndpointProbeResult
@@ -56,6 +57,7 @@ import com.example.audio.reference.ReferenceTrackConfig
 import com.example.audio.service.AudioEngineService
 import com.example.audio.model.AiMixProfile
 import com.example.audio.model.AudioClip
+import com.example.audio.model.AudioSourceFormat
 import com.example.audio.model.AudioTelemetry
 import com.example.audio.model.BufferSizePreset
 import com.example.audio.model.ChannelLimiterConfig
@@ -79,7 +81,10 @@ import com.example.audio.model.ReverbConfig
 import com.example.audio.model.SaturationConfig
 import com.example.audio.model.StemCategory
 import com.example.audio.model.StripSilenceMode
+import com.example.audio.model.TakeLane
 import com.example.audio.model.TimelineTool
+import com.example.audio.model.timelineEndFrame
+import com.example.audio.model.withCompedRange
 import com.overlay.audio.sample.SampleEdit
 import com.example.audio.model.TrackData
 import com.example.audio.model.TrackFeatures
@@ -145,8 +150,8 @@ data class EngineUiState(
     val trackGainReductions: FloatArray = FloatArray(16),
     val masterPeakL: Float = 0f,
     val masterPeakR: Float = 0f,
-    val momentaryLufs: Float = -60f,
-    val integratedLufs: Float = -60f,
+    val momentaryRmsDb: Float = -60f,
+    val latestRmsDb: Float = -60f,
     val telemetry: AudioTelemetry = AudioTelemetry(),
     val selectedTrackIndex: Int = 0,
     val selectedClipIds: Set<String> = emptySet(),
@@ -183,6 +188,8 @@ data class EngineUiState(
     val presentationMode: Boolean = false,
     val isImporting: Boolean = false,
     val importError: String? = null,
+    /** Format chosen in the upload dialog before the file picker opens. */
+    val importSourceFormat: AudioSourceFormat = AudioSourceFormat.STEMS,
     val voiceEngineer: VoiceEngineerState = VoiceEngineerState(),
     val statusMessage: String? = null,
     val statusKind: StatusKind = StatusKind.INFO,
@@ -193,7 +200,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
     private val sampleRate = 48000
     private val playbackEngine = AudioTrackPlaybackEngine(sampleRate)
-    private val audioRecorder = AudioRecorder(sampleRate)
+    private var audioRecorder = AudioRecorder(sampleRate)
     private val persistence = ProjectPersistence(application)
     private val undoManager = UndoManager(50)
 
@@ -457,7 +464,9 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         for (track in project.tracks) {
             val pool = trackSourcePools[track.index]
             pool.clear()
-            for (path in track.clips.map { it.sourcePath }.distinct()) {
+            // Alternate takes are audible after switching, so their audio has
+            // to be resident too — not just the clips of the active take.
+            for (path in track.audioSourcePaths) {
                 if (path == "built_in") continue
                 val f = File(path)
                 if (f.exists()) {
@@ -488,8 +497,22 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             }
         )
 
-        if (guard != null && _session.value !== guard) return@withContext
-        _session.value = cleanedProj
+        // Publish atomically with the guard check. Checking the guard and then
+        // assigning left a window where an edit made on another thread (a clip
+        // installed, a fader moved) was overwritten by the restore — the edit
+        // simply vanished. `update` closes that window.
+        if (guard != null) {
+            var superseded = false
+            _session.update { current ->
+                if (current !== guard) {
+                    superseded = true
+                    current
+                } else cleanedProj
+            }
+            if (superseded) return@withContext
+        } else {
+            _session.value = cleanedProj
+        }
         playbackEngine.setSessionLength(cleanedProj.totalLengthFrames)
         playbackEngine.syncFromProject(cleanedProj)
 
@@ -557,6 +580,15 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         WaveformCache.refreshClips(track.clips, pool)
     }
 
+    /**
+     * Test-only: swaps the microphone for a deterministic recorder. AudioRecord
+     * never produces usable frames under Robolectric, so the recording-to-take
+     * path is otherwise unreachable from a unit test.
+     */
+    internal fun useRecorderForTest(recorder: AudioRecorder) {
+        audioRecorder = recorder
+    }
+
     /** Test-only wait for the startup restore to finish. */
     internal suspend fun awaitSessionReady() {
         sessionReady.await()
@@ -573,9 +605,14 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         withAudio: Boolean = false
     ) {
         if (!sessionReady.isCompleted) runBlocking { sessionReady.await() } // audit-ignore CONC-002: test-only helper
-        // A persisted snapshot from an earlier test can be empty; the fixture still needs
-        // a track, so fall back to the shipped 16-track session.
-        if (_session.value.tracks.isEmpty()) _session.value = createInitialSession()
+        // A persisted snapshot from an earlier test can be empty or carry only a
+        // subset of lanes (some tests delete tracks). The fixture needs the target
+        // lane, so fall back to the shipped 16-track session unless that lane is
+        // already present; otherwise the helper returned silently and the test
+        // failed later with an empty clip list.
+        if (_session.value.tracks.getOrNull(trackIndex) == null) {
+            _session.value = createInitialSession()
+        }
         val track = _session.value.tracks.getOrNull(trackIndex) ?: return
         val sourcePath = "test_fixture_$trackIndex"
         val clip = AudioClip(
@@ -653,8 +690,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                 val grs = liveGrs.clone()
                 val pL = playbackEngine.masterPeakL
                 val pR = playbackEngine.masterPeakR
-                val lufs = playbackEngine.lufsMeter.integratedLufs
-                val momLufs = playbackEngine.lufsMeter.momentaryLufs
+                val rmsDb = playbackEngine.rmsMeter.latestRmsDb
+                val momentaryRmsDbValue = playbackEngine.rmsMeter.momentaryRmsDb
                 val tel = playbackEngine.latestTelemetry
 
                 _uiState.update { state ->
@@ -667,8 +704,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                         trackGainReductions = grs,
                         masterPeakL = pL,
                         masterPeakR = pR,
-                        momentaryLufs = momLufs,
-                        integratedLufs = lufs,
+                        momentaryRmsDb = momentaryRmsDbValue,
+                        latestRmsDb = rmsDb,
                         telemetry = tel
                     )
                 }
@@ -774,6 +811,29 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         val total = _session.value.totalLengthFrames
         val target = (fraction.coerceIn(0f, 1f) * total).toLong()
         playbackEngine.commandQueue.enqueue(AudioEngineCommand.Seek(target))
+    }
+
+    /**
+     * Absolute seek used by the draggable playhead and the rewind/fast-forward
+     * buttons. The UI position moves immediately so the marker never lags the
+     * finger while the engine drains the seek command.
+     */
+    fun seekToFrame(frame: Long) {
+        val total = _session.value.totalLengthFrames.coerceAtLeast(1L)
+        val target = frame.coerceIn(0L, total)
+        _uiState.update { it.copy(playheadFrame = target) }
+        playbackEngine.commandQueue.enqueue(AudioEngineCommand.Seek(target))
+    }
+
+    /** Rewind / fast-forward by whole bars, tempo-aware. */
+    fun nudgePlayhead(deltaBars: Int) {
+        if (deltaBars == 0) return
+        val barFrames = SnapEngine.framesPerStep(
+            GridResolution.BAR,
+            sampleRate,
+            _session.value.tempoBpm
+        )
+        seekToFrame(_uiState.value.playheadFrame + barFrames * deltaBars)
     }
 
     fun toggleLoop() {
@@ -951,6 +1011,148 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         playbackEngine.commandQueue.enqueue(AudioEngineCommand.SetVocalRider(trackIndex, config))
     }
 
+    /**
+     * Applies a discrete track edit as its own undo entry. Take switching,
+     * rating and deletion are single actions, not a slider drag, so they must
+     * not coalesce into the next fader move.
+     */
+    private fun applyDiscreteTrackEdit(before: TrackData, after: TrackData, description: String) {
+        flushPendingParamEdit()
+        val updatedList = _session.value.tracks.map { if (it.index == before.index) after else it }
+        val newSession = _session.value.copy(tracks = updatedList, revision = _session.value.revision + 1)
+        _session.value = newSession
+        undoManager.pushAction(
+            SessionCommand.UpdateTrackParams(description, before.index, before, after)
+        )
+        requestJournalWrite(newSession)
+    }
+
+    /** Switches which recorded take is audible on [trackIndex]. */
+    fun selectTakeLane(trackIndex: Int, laneId: String) {
+        val before = _session.value.tracks.getOrNull(trackIndex) ?: return
+        val lane = before.takeLanes.firstOrNull { it.id == laneId } ?: return
+        val after = before.withActiveTake(laneId)
+        if (after == before) return
+        applyDiscreteTrackEdit(before, after, "Select ${lane.name}")
+        scheduleRebuildTrack(trackIndex)
+        _uiState.update { it.copy(statusMessage = "${lane.name} selected on ${before.name}") }
+    }
+
+    /** Cycles an unrated take to 1..5 stars, then back to unrated. */
+    fun rateTakeLane(trackIndex: Int, laneId: String) {
+        val before = _session.value.tracks.getOrNull(trackIndex) ?: return
+        val lane = before.takeLanes.firstOrNull { it.id == laneId } ?: return
+        val nextRating = if (lane.rating >= 5) 0 else lane.rating + 1
+        val after = before.copy(
+            takeLanes = before.takeLanes.map { if (it.id == laneId) it.copy(rating = nextRating) else it }
+        )
+        applyDiscreteTrackEdit(before, after, "Rate ${lane.name}")
+    }
+
+    fun renameTakeLane(trackIndex: Int, laneId: String, name: String) {
+        val before = _session.value.tracks.getOrNull(trackIndex) ?: return
+        val cleaned = name.trim().take(40)
+        if (cleaned.isEmpty()) return
+        val after = before.copy(
+            takeLanes = before.takeLanes.map { if (it.id == laneId) it.copy(name = cleaned) else it }
+        )
+        applyDiscreteTrackEdit(before, after, "Rename take")
+    }
+
+    /**
+     * Deletes a take. The active take cannot be deleted while it is the only
+     * one: the user would lose the clips they can currently hear.
+     */
+    fun deleteTakeLane(trackIndex: Int, laneId: String) {
+        val before = _session.value.tracks.getOrNull(trackIndex) ?: return
+        if (before.takeLanes.size <= 1) {
+            _uiState.update {
+                it.copy(statusMessage = "Keep at least one take on ${before.name}.", statusKind = StatusKind.ERROR)
+            }
+            return
+        }
+        val remaining = before.takeLanes.filterNot { it.id == laneId }
+        val wasActive = before.activeTakeId == laneId
+        val nextActive = if (wasActive) remaining.first() else null
+        val after = before.copy(
+            takeLanes = remaining,
+            clips = nextActive?.clips ?: before.clips,
+            activeTakeId = nextActive?.id ?: before.activeTakeId
+        )
+        applyDiscreteTrackEdit(before, after, "Delete take")
+        if (wasActive) scheduleRebuildTrack(trackIndex)
+    }
+
+    /**
+     * Comps the [startFrame]..[endFrame] range of [laneId] into the take that is
+     * audible now. The borrowed audio replaces whatever the active take has
+     * there, which is the tape-style comp move: one phrase from take 3, one
+     * phrase from take 5, one performance on the timeline.
+     */
+    fun compTakeRange(trackIndex: Int, laneId: String, startFrame: Long, endFrame: Long) {
+        val before = _session.value.tracks.getOrNull(trackIndex) ?: return
+        val lane = before.takeLanes.firstOrNull { it.id == laneId } ?: return
+        val activeId = before.activeTakeId
+        if (activeId == null) {
+            _uiState.update {
+                it.copy(
+                    statusMessage = "Record a take on ${before.name} before comping.",
+                    statusKind = StatusKind.ERROR
+                )
+            }
+            return
+        }
+        if (activeId == laneId) {
+            _uiState.update {
+                it.copy(
+                    statusMessage = "${lane.name} is already the audible take on ${before.name}.",
+                    statusKind = StatusKind.ERROR
+                )
+            }
+            return
+        }
+        val start = minOf(startFrame, endFrame).coerceAtLeast(0L)
+        val end = maxOf(startFrame, endFrame)
+        if (end - start < sampleRate / 100) {
+            _uiState.update {
+                it.copy(
+                    statusMessage = "Select a longer range: comps shorter than 10 ms are not audible.",
+                    statusKind = StatusKind.ERROR
+                )
+            }
+            return
+        }
+        val compedClips = before.clips.withCompedRange(lane.clips, start, end)
+        if (compedClips == before.clips) {
+            _uiState.update {
+                it.copy(
+                    statusMessage = "${lane.name} has no audio in that range.",
+                    statusKind = StatusKind.ERROR
+                )
+            }
+            return
+        }
+        val after = before.copy(clips = compedClips)
+        applyDiscreteTrackEdit(before, after, "Comp ${lane.name}")
+        // A take can be longer than the project; the comp must not fall off the
+        // end of the timeline or out of the export.
+        val compEnd = compedClips.maxOfOrNull { it.timelineEndFrame } ?: 0L
+        val oldTotalLength = _session.value.totalLengthFrames
+        if (compEnd > oldTotalLength) {
+            _session.update { it.copy(totalLengthFrames = compEnd) }
+            playbackEngine.setSessionLength(compEnd)
+        }
+        scheduleRebuildTrack(trackIndex)
+        val seconds = String.format(java.util.Locale.US, "%.2f", (end - start).toFloat() / sampleRate)
+        _uiState.update {
+            it.copy(
+                statusMessage = "Comped ${seconds}s from ${lane.name} into ${before.name}",
+                statusKind = StatusKind.SUCCESS,
+                statusAction = StatusAction("Undo")
+            )
+        }
+    }
+
     // ---- Studio plugin rack & reference mix templates ----
 
     fun updateTrackPluginChain(trackIndex: Int, chain: List<com.overlay.audio.plugins.PluginSlot>) {
@@ -960,6 +1162,23 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         playbackEngine.commandQueue.enqueue(
             AudioEngineCommand.SetTrackPluginChain(trackIndex, com.overlay.audio.plugins.PluginChain(chain))
         )
+    }
+
+    /**
+     * Replaces the selected track's inserts with the canonical vocal chain.
+     * This is a normal rack change, so it is undoable and every slot can still
+     * be swapped, bypassed or moved afterwards.
+     */
+    fun applyVocalPluginChain(trackIndex: Int) {
+        val track = _session.value.tracks.getOrNull(trackIndex) ?: return
+        updateTrackPluginChain(trackIndex, com.example.audio.plugins.VocalChainPresets.standard())
+        _uiState.update {
+            it.copy(
+                statusMessage = "Vocal chain loaded on ${track.name}: clean, level, EQ, two compressors, then delay and reverb",
+                statusKind = StatusKind.SUCCESS,
+                statusAction = StatusAction("Undo")
+            )
+        }
     }
 
     fun setTrackOutputBus(trackIndex: Int, busId: String) {
@@ -1092,6 +1311,9 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     // the ViewModel's public API stable for the UI and tests.
 
     fun splitClipAtPlayhead(trackIndex: Int) = timelineEdits.splitClipAtPlayhead(trackIndex)
+
+    fun splitClipAtFrame(trackIndex: Int, clipId: String, frame: Long) =
+        timelineEdits.splitClipAtFrame(trackIndex, clipId, frame)
 
     fun beginClipGesture(trackIndex: Int, description: String) =
         timelineEdits.beginClipGesture(trackIndex, description)
@@ -1337,6 +1559,10 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         snapToleranceFrames: Long = TimelineEditController.DEFAULT_SNAP_TOLERANCE_FRAMES,
     ) = timelineEdits.moveClipToFrame(trackIndex, clipId, rawTargetFrame, snapToleranceFrames)
 
+    /** Drops a clip onto another track as one undoable edit. */
+    fun moveClipToTrack(sourceTrackIndex: Int, clipId: String, targetTrackIndex: Int) =
+        timelineEdits.moveClipToTrack(sourceTrackIndex, clipId, targetTrackIndex)
+
     fun toggleMagneticSnap() = timelineEdits.toggleMagneticSnap()
 
     fun cycleGridResolution() = timelineEdits.cycleGridResolution()
@@ -1375,9 +1601,15 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         when (command) {
             is SessionCommand.EditClips -> scheduleRebuildTrack(command.trackIndex)
             is SessionCommand.UpdateTrackParams -> {
-                if (command.beforeTrack.autoPitchConfig != command.afterTrack.autoPitchConfig) {
+                if (command.beforeTrack.autoPitchConfig != command.afterTrack.autoPitchConfig ||
+                    command.beforeTrack.clips != command.afterTrack.clips
+                ) {
                     scheduleRebuildTrack(command.trackIndex)
                 }
+            }
+            is SessionCommand.MoveClipAcrossTracks -> {
+                scheduleRebuildTrack(command.sourceTrackIndex)
+                scheduleRebuildTrack(command.targetTrackIndex)
             }
             is SessionCommand.BatchMixChange -> Unit
             is SessionCommand.ReplaceSession -> Unit
@@ -1461,8 +1693,12 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            // Every take keeps its own clips. The first overdub promotes the
+            // existing material to "Take 1" so nothing recorded is replaced.
+            val takeNumber = armedTrack.takeLanes.size +
+                if (armedTrack.activeTakeId == null && armedTrack.clips.isNotEmpty()) 2 else 1
             val newClip = AudioClip(
-                name = "Mic Take ${armedTrack.clips.size + 1}",
+                name = "Mic Take $takeNumber",
                 sourcePath = sourcePath,
                 sourceStartFrame = if (punchIn != null) (punchIn - currentRecordingStartFrame + latencyFrames).coerceAtLeast(0L) else 0L,
                 lengthFrames = takeLength,
@@ -1470,9 +1706,30 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                 trackIndex = armedTrack.index
             )
 
-            val updatedClips = armedTrack.clips + newClip
-            val newTracks = _session.value.tracks.map { if (it.index == armedTrack.index) it.copy(clips = updatedClips) else it }
-            _session.update { it.copy(tracks = newTracks, revision = it.revision + 1) }
+            val lane = TakeLane(
+                name = "Take $takeNumber",
+                clips = listOf(newClip),
+                recordedAtMillis = System.currentTimeMillis()
+            )
+            val updatedTrack = armedTrack.withNewTake(lane)
+            val newTracks = _session.value.tracks.map {
+                if (it.index == armedTrack.index) updatedTrack else it
+            }
+            // A take longer than the current project must extend the timeline,
+            // otherwise playback and export stop before the recording ends.
+            val takeEnd = alignedTimelineStart + takeLength
+            val oldTotalLength = _session.value.totalLengthFrames
+            val newTotalLength = max(oldTotalLength, takeEnd)
+            _session.update {
+                it.copy(
+                    tracks = newTracks,
+                    totalLengthFrames = newTotalLength,
+                    revision = it.revision + 1
+                )
+            }
+            if (newTotalLength > oldTotalLength) {
+                playbackEngine.setSessionLength(newTotalLength)
+            }
             requestJournalWrite(_session.value)
             scheduleRebuildTrack(armedTrack.index)
             _uiState.update { it.copy(statusMessage = "Take recorded (${String.format(java.util.Locale.US, "%.2f", framesRecorded.toFloat() / sampleRate)}s) with ${String.format(java.util.Locale.US, "%.1f", _session.value.latencyOffsetMs)}ms latency compensation.") }
@@ -1653,6 +1910,24 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(showImportDialog = show, importError = if (show) null else it.importError) }
     }
 
+    /** Chooses how the next upload will be interpreted: stems, 2-track or premaster. */
+    fun selectImportFormat(format: AudioSourceFormat) {
+        _uiState.update {
+            it.copy(
+                importSourceFormat = format,
+                importError = null,
+                statusMessage = when {
+                    format == AudioSourceFormat.TWO_TRACK_PREMASTER ->
+                        "Upload set to 2-track premaster: the engineer will protect the existing master."
+                    format == AudioSourceFormat.TWO_TRACK ->
+                        "Upload set to 2-track: the engineer will mix from the stereo file."
+                    else -> "Upload set to stems: the engineer can process each stem separately."
+                },
+                statusKind = StatusKind.INFO
+            )
+        }
+    }
+
     fun updateSettings(newSettings: DawSettings) {
         _settings.value = newSettings
         _session.update { it.copy(latencyOffsetMs = newSettings.latencyCompensationMs) }
@@ -1695,13 +1970,21 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Audio File Import / Upload
-    fun importAudioFile(uri: Uri, targetTrackIndex: Int) {
+    fun importAudioFile(
+        uri: Uri,
+        targetTrackIndex: Int,
+        sourceFormat: AudioSourceFormat = AudioSourceFormat.STEMS
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.update {
                 it.copy(
                     isImporting = true,
                     importError = null,
-                    statusMessage = "Importing & decoding audio file..."
+                    statusMessage = if (sourceFormat.isTwoTrack) {
+                        "Importing ${sourceFormat.displayName.lowercase()} and reading the stereo file..."
+                    } else {
+                        "Importing & decoding audio file..."
+                    }
                 )
             }
             try {
@@ -1720,12 +2003,31 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                     val track = _session.value.tracks.getOrNull(targetTrackIndex) ?: return@launch
                     val updatedTrack = track.copy(
                         name = result.originalFileName.substringBeforeLast("."),
-                        clips = listOf(result.clip)
+                        clips = listOf(result.clip),
+                        sourceFormat = sourceFormat,
+                        // A stereo beat is not a drum, bass or vocal stem. Keeping
+                        // it as OTHER stops auto-classification from inviting
+                        // surgical stem moves on a finished mix.
+                        stemCategory = if (sourceFormat.isTwoTrack) {
+                            StemCategory.OTHER
+                        } else {
+                            track.stemCategory
+                        }
                     )
 
                     val updatedTracks = _session.value.tracks.map { if (it.index == targetTrackIndex) updatedTrack else it }
+
+                    // A stem imported on top of a 2-track beat must not erase the
+                    // fact that the backing beat is still stereo.
+                    val sessionFormat = when {
+                        sourceFormat.isTwoTrack -> sourceFormat
+                        updatedTracks.any { it.isTwoTrackBeat } -> _session.value.sourceFormat
+                        else -> AudioSourceFormat.STEMS
+                    }
+
                     val newSession = _session.value.copy(
                         tracks = updatedTracks,
+                        sourceFormat = sessionFormat,
                         totalLengthFrames = max(_session.value.totalLengthFrames, result.clip.lengthFrames),
                         revision = _session.value.revision + 1
                     )
@@ -1734,10 +2036,21 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                     scheduleRebuildTrack(targetTrackIndex)
 
                     refreshAudioAnalysis()
-                    setStatus(
-                        "Imported \"${result.originalFileName}\" into Track ${targetTrackIndex + 1}!",
-                        StatusKind.SUCCESS
-                    )
+                    val successMessage = when (sourceFormat) {
+                        AudioSourceFormat.TWO_TRACK -> getApplication<Application>().getString(
+                            R.string.import_two_track_success,
+                            result.originalFileName,
+                            targetTrackIndex + 1
+                        )
+                        AudioSourceFormat.TWO_TRACK_PREMASTER -> getApplication<Application>().getString(
+                            R.string.import_premaster_success,
+                            result.originalFileName,
+                            targetTrackIndex + 1
+                        )
+                        AudioSourceFormat.STEMS ->
+                            "Imported \"${result.originalFileName}\" into Track ${targetTrackIndex + 1}!"
+                    }
+                    setStatus(successMessage, StatusKind.SUCCESS)
                 } else {
                     _uiState.update {
                         it.copy(
@@ -1841,7 +2154,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                             pan = p.pan,
                             isMuted = p.muted,
                             isSoloed = p.soloed,
-                            stemCategory = p.category
+                            stemCategory = p.category,
+                            sourceFormat = AudioSourceFormat.STEMS
                         ) else t
                     }
                     if (p.stemEntry != null) placeClip(p.sessionTrackIndex, p.stemEntry, p.clipName)
@@ -1858,6 +2172,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                     masterGainDb = plan.masterGainDb,
                     totalLengthFrames = maxLen,
                     beatSource = plan.beatSource,
+                    sourceFormat = AudioSourceFormat.STEMS,
                     revision = before.revision + 1
                 )
                 _session.value = newSession
@@ -1904,12 +2219,18 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             _features.value = feats
 
             // Automatically label stem categories only when the track actually
-            // contains audio. Empty tracks keep the category the user assigned.
+            // contains audio. Empty tracks keep the category the user assigned,
+            // and a 2-track beat stays OTHER: it is a finished stereo mix, not
+            // an isolated drum/bass/vocal stem.
             val newTracks = _session.value.tracks.map { trk ->
                 val f = feats.find { it.trackIndex == trk.index }
-                if (f != null && trk.stemCategory == StemCategory.UNKNOWN && f.rmsDb > -50f && f.peakDb > -50f) {
-                    trk.copy(stemCategory = f.classifiedStem)
-                } else trk
+                when {
+                    trk.isTwoTrackBeat -> trk.copy(stemCategory = StemCategory.OTHER)
+                    f != null && trk.stemCategory == StemCategory.UNKNOWN &&
+                        f.rmsDb > -50f && f.peakDb > -50f ->
+                        trk.copy(stemCategory = f.classifiedStem)
+                    else -> trk
+                }
             }
             _session.update { it.copy(tracks = newTracks) }
 
@@ -2032,18 +2353,26 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         val endpointOnline = active != null && detector.probedEndpoints.any {
             it.isOnline && it.endpoint.baseUrl == active.baseUrl
         }
+        val measuredFeatures = _features.value.ifEmpty {
+            (0 until 16).map { t ->
+                AudioFeatureExtractor.extractFeatures(t, trackAudioBuffers[t], sampleRate)
+            }
+        }
         if (_settings.value.enableLocalNeuralModel && active != null && endpointOnline) {
             val raw = try {
                 LocalModelDetector.generateWithLocalModel(
                     model = active,
                     prompt = transcript,
-                    systemPrompt = MixEngineerBrain.systemPromptFor(_session.value)
+                    systemPrompt = MixEngineerBrain.systemPromptFor(_session.value, measuredFeatures)
                 ).text.orEmpty()
             } catch (_: Throwable) {
                 ""
             }
-            val calls = ToolCallDispatcher.parseToolCalls(raw)
-                .filter { ToolCallDispatcher.isKnownTool(it.name) }
+            val calls = MixEngineerBrain.enforceSourceFormat(
+                ToolCallDispatcher.parseToolCalls(raw)
+                    .filter { ToolCallDispatcher.isKnownTool(it.name) },
+                _session.value
+            )
             if (calls.isNotEmpty()) {
                 return@withContext MixEngineerBrain.Plan(
                     calls = calls,
@@ -2052,16 +2381,30 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
-        MixEngineerBrain.plan(
+        val fallback = MixEngineerBrain.plan(
             transcript = transcript,
             session = _session.value,
             selectedTrackIndex = _uiState.value.selectedTrackIndex
         )
+        // If neither the model nor the command grammar produced a move, use the
+        // measured features rather than answering "I didn't catch a mix move".
+        if (fallback.calls.isEmpty() && fallback.clarification == null) {
+            val generic = MixEngineerBrain.genericMix(_session.value, measuredFeatures)
+            if (generic.calls.isNotEmpty()) return@withContext generic
+        }
+        fallback
     }
 
     private fun applyEngineerPlan(plan: MixEngineerBrain.Plan) {
-        if (plan.calls.isEmpty()) {
-            val message = plan.clarification ?: "I didn't catch a mix move. Try again."
+        val safeCalls = MixEngineerBrain.enforceSourceFormat(plan.calls, _session.value)
+        if (safeCalls.isEmpty()) {
+            val message = plan.clarification ?: if (
+                plan.calls.isNotEmpty() && _session.value.isTwoTrackBeat
+            ) {
+                "That move needs isolated stems. The beat is a 2-track stereo mix, so import the stem or record it first."
+            } else {
+                "I didn't catch a mix move. Try again."
+            }
             _uiState.update {
                 it.copy(
                     voiceEngineer = it.voiceEngineer.copy(
@@ -2078,8 +2421,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val sessionCalls = plan.calls.filter { it.name != "transport" }
-        val transportCalls = plan.calls.filter { it.name == "transport" }
+        val sessionCalls = safeCalls.filter { it.name != "transport" }
+        val transportCalls = safeCalls.filter { it.name == "transport" }
         val before = _session.value
         val after = ToolCallDispatcher.executeAll(before, sessionCalls)
         val changed = after != before
