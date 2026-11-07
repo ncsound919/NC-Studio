@@ -5,8 +5,8 @@ plugins {
 }
 
 android {
-  namespace = "com.example"
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
+  namespace = "com.ncstudio.daw"
+  compileSdk { version = release(37) }
 
   defaultConfig {
     applicationId = "com.ncstudio.daw"

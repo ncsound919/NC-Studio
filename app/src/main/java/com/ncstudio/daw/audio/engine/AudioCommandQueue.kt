@@ -1,0 +1,111 @@
+package com.ncstudio.daw.audio.engine
+
+import com.ncstudio.daw.audio.model.ChannelLimiterConfig
+import com.ncstudio.daw.audio.model.CompressorConfig
+import com.ncstudio.daw.audio.model.DuckingDelayConfig
+import com.ncstudio.daw.audio.model.EqConfig
+import com.ncstudio.daw.audio.model.MasterLimiterConfig
+import com.ncstudio.daw.audio.model.NoiseReductionConfig
+import com.ncstudio.daw.audio.model.ResonanceSmootherConfig
+import com.ncstudio.daw.audio.model.ReverbConfig
+import com.ncstudio.daw.audio.model.SaturationConfig
+import com.ncstudio.daw.audio.model.VocalRiderConfig
+import com.ncstudio.daw.audio.model.BusData
+import com.overlay.audio.plugins.PluginChain
+import java.util.concurrent.ConcurrentLinkedQueue
+
+/**
+ * Typed commands sent from UI/Worker threads to the real-time audio engine.
+ */
+sealed interface AudioEngineCommand {
+    data object Play : AudioEngineCommand
+    data object Pause : AudioEngineCommand
+    data object Stop : AudioEngineCommand
+    data class Seek(val targetFrame: Long) : AudioEngineCommand
+    data class SetGain(val trackIndex: Int, val gainDb: Float) : AudioEngineCommand
+    data class SetPan(val trackIndex: Int, val pan: Float) : AudioEngineCommand
+    data class SetMute(val trackIndex: Int, val isMuted: Boolean) : AudioEngineCommand
+    data class SetSolo(val trackIndex: Int, val isSoloed: Boolean) : AudioEngineCommand
+    data class SetEq(val trackIndex: Int, val eqConfig: EqConfig) : AudioEngineCommand
+    data class SetSaturation(val trackIndex: Int, val config: SaturationConfig) : AudioEngineCommand
+    data class SetCompressor(val trackIndex: Int, val compressorConfig: CompressorConfig) : AudioEngineCommand
+    data class SetChorus(val trackIndex: Int, val config: com.ncstudio.daw.audio.model.ChorusConfig) : AudioEngineCommand
+    data class SetDuckingDelay(val trackIndex: Int, val config: DuckingDelayConfig) : AudioEngineCommand
+    data class SetChannelLimiter(val trackIndex: Int, val config: ChannelLimiterConfig) : AudioEngineCommand
+    data class SetNoiseReduction(val trackIndex: Int, val config: NoiseReductionConfig) : AudioEngineCommand
+    data class SetResonanceSmoother(val trackIndex: Int, val config: ResonanceSmootherConfig) : AudioEngineCommand
+    data class SetVocalRider(val trackIndex: Int, val config: VocalRiderConfig) : AudioEngineCommand
+    data class SetReverbSend(val trackIndex: Int, val sendLevel: Float) : AudioEngineCommand
+    data class SetMasterGain(val gainDb: Float) : AudioEngineCommand
+    data class SetMasterLimiter(val config: MasterLimiterConfig) : AudioEngineCommand
+    data class SetMasterReverb(val config: ReverbConfig) : AudioEngineCommand
+    data class SetLoopRange(val startFrame: Long, val endFrame: Long, val enabled: Boolean) : AudioEngineCommand
+    data class SetLatencyOffset(val offsetMs: Float) : AudioEngineCommand
+    data class SetClickTrack(
+        val enabled: Boolean,
+        val bpm: Float,
+        val volumeDb: Float,
+        val beatsPerBar: Int = 4
+    ) : AudioEngineCommand
+
+    data class SetCountIn(val bpm: Float, val volumeDb: Float) : AudioEngineCommand
+    data class SetBufferSize(val frames: Int) : AudioEngineCommand
+
+    /** Ordered studio plugin chain for one track (empty list clears it). */
+    data class SetTrackPluginChain(val trackIndex: Int, val chain: PluginChain) : AudioEngineCommand
+
+    /** Which track keys this track's sidechain modules (kick -> bass, -1 = none). */
+    data class SetTrackSidechainSource(val trackIndex: Int, val sourceTrackIndex: Int) : AudioEngineCommand
+
+    /**
+     * Reference track for A/B auditioning: interleaved stereo at the engine
+     * sample rate, or null to clear. [offsetFrames] is the frame of the
+     * reference that lines up with the session's frame 0.
+     */
+    data class SetReferenceTrack(val samples: FloatArray?, val offsetFrames: Long = 0L) : AudioEngineCommand
+
+    /** Crossfades between the mix and the reference; [matchGainDb] levels the reference. */
+    data class SetReferenceAudition(val enabled: Boolean, val matchGainDb: Float) : AudioEngineCommand
+
+    /** Moves the alignment point of a loaded reference without reloading it. */
+    data class SetReferenceOffset(val offsetFrames: Long) : AudioEngineCommand
+
+    /** Which group bus this track feeds ("master" = straight to the mix bus). */
+    data class SetTrackOutputBus(val trackIndex: Int, val busId: String) : AudioEngineCommand
+
+    /** Ordered studio plugin chain for the mix bus (empty list restores the legacy limiter). */
+    data class SetMasterPluginChain(val chain: PluginChain) : AudioEngineCommand
+
+    /** Group bus definitions plus their chains, in one atomic update. */
+    data class SetBuses(
+        val buses: List<BusData>,
+        val busChains: Map<String, PluginChain>
+    ) : AudioEngineCommand
+    data class BatchParameterSnapshot(
+        val masterGainDb: Float,
+        val tracksGainDb: FloatArray,
+        val tracksPan: FloatArray,
+        val tracksMuted: BooleanArray,
+        val tracksSoloed: BooleanArray,
+        val tracksSend: FloatArray
+    ) : AudioEngineCommand
+}
+
+/**
+ * Lock-free typed command queue for communicating with the audio render thread.
+ */
+class AudioCommandQueue {
+    private val queue = ConcurrentLinkedQueue<AudioEngineCommand>()
+
+    fun enqueue(command: AudioEngineCommand) {
+        queue.offer(command)
+    }
+
+    fun poll(): AudioEngineCommand? {
+        return queue.poll()
+    }
+
+    fun clear() {
+        queue.clear()
+    }
+}
