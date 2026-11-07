@@ -16,6 +16,8 @@
 local.properties
 .env
 debug.keystore
+build_ncstudio_test.log
+*.log
 
 # signing + local secrets (audit SEC-011)
 *.jks
