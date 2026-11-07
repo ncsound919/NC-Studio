@@ -12,8 +12,8 @@ android {
     applicationId = "com.ncstudio.daw"
     minSdk = 24
     targetSdk = 36
-    versionCode = 131
-    versionName = "1.3.1"
+    versionCode = 132
+    versionName = "1.5.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

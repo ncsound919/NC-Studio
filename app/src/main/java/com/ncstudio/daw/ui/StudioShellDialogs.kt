@@ -62,7 +62,7 @@ import com.ncstudio.daw.ui.theme.TextPrimary
 import com.ncstudio.daw.ui.theme.TextSecondary
 import com.ncstudio.daw.ui.theme.OnAccent
 
-const val STUDIO_VERSION = "1.3.1"
+const val STUDIO_VERSION = "1.5.0"
 const val RELEASE_NOTES_VERSION = "1.3.1"
 const val ONBOARDING_PREF = "onboarding_complete"
 const val RELEASE_NOTES_PREF = "whats_new_seen_version"
