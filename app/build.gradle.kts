@@ -71,9 +71,20 @@ android {
   // One studio control implementation for NC Studio and NC Phone Beat. The
   // shared source directory is compiled into this app, not copied into it, so
   // a knob/meter/button change lands in both apps at once.
+  // Vendored `../shared/studio-ui` wins (clean clones + CI); the workspace
+  // checkout `../../shared/studio-ui` is the local-dev fallback.
   sourceSets {
     getByName("main") {
-      kotlin.srcDir("../../shared/studio-ui/src/main/kotlin")
+      val vendoredUi = file("../shared/studio-ui/src/main/kotlin")
+      val workspaceUi = file("../../shared/studio-ui/src/main/kotlin")
+      when {
+        vendoredUi.isDirectory -> kotlin.srcDir(vendoredUi)
+        workspaceUi.isDirectory -> kotlin.srcDir(workspaceUi)
+        else -> throw GradleException(
+          "Missing studio-ui sources: expected `../shared/studio-ui` " +
+          "or `../../shared/studio-ui`. See ../shared/README.md."
+        )
+      }
     }
   }
   testOptions {

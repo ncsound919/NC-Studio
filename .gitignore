@@ -19,6 +19,13 @@ debug.keystore
 build_ncstudio_test.log
 *.log
 
+# Vendored shared composite build outputs (Gradle recreates these on every
+# build; they must never dirty the pinned vendor tree).
+shared/kotlin-core/build/
+shared/kotlin-core/.gradle/
+shared/studio-ui/build/
+shared/studio-ui/.gradle/
+
 # signing + local secrets (audit SEC-011)
 *.jks
 *.keystore

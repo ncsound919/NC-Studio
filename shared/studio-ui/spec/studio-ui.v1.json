@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "name": "NC Studio shared controls",
+  "palette": {
+    "background": "#0A0D14",
+    "surface": "#131822",
+    "card": "#1C2230",
+    "border": "#2B3448",
+    "inset": "#070A0F",
+    "raised": "#232B3B",
+    "textPrimary": "#F0F4F8",
+    "textSecondary": "#B6B6C6",
+    "textMuted": "#74839A",
+    "accent": "#00E5FF",
+    "lime": "#00E676",
+    "amber": "#FFB300",
+    "purple": "#D05CE3",
+    "danger": "#FF5C7A",
+    "onAccent": "#061018"
+  },
+  "brand": {
+    "midnight": "#05060A",
+    "graphite": "#0E1117",
+    "slate": "#141924",
+    "cyanElec": "#22D3EE",
+    "gold": "#F5C451",
+    "goldSoft": "#F7D983",
+    "softWhite": "#F6F7F9",
+    "fontDisplay": "Bricolage Grotesque",
+    "fontBody": "Plus Jakarta Sans",
+    "fontMono": "JetBrains Mono"
+  },
+  "knob": {
+    "startAngleDeg": 135,
+    "sweepDeg": 270,
+    "fullRangeDragPx": 240,
+    "capRadiusRatio": 0.72,
+    "tickAnglesDeg": [135, 270, 405],
+    "defaultSizeDp": 58
+  },
+  "fader": {
+    "trackHeightDp": 150,
+    "defaultWidthDp": 58,
+    "capHeightDp": 18,
+    "tickDivisions": 6
+  },
+  "meter": {
+    "minDb": -60,
+    "maxDb": 0,
+    "referenceDb": -20,
+    "dangerDb": -3,
+    "warningDb": -12,
+    "peakHoldDecayPerTick": 0.006
+  },
+  "button": {
+    "minHeightDp": 48,
+    "cornerRadiusDp": 8,
+    "labelSizeSp": 10
+  },
+  "waveform": {
+    "cornerRadiusDp": 8,
+    "trimShadeOpacity": 0.5,
+    "gridDivisions": 8
+  }
+}

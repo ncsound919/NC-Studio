@@ -1,0 +1,4 @@
+# Vendored upstream sources must be byte-exact on every OS so the hash
+# manifest (shared/VENDOR_MANIFEST.sha256) verifies in CI and locally.
+# Never convert line endings under shared/.
+shared/** text eol=lf

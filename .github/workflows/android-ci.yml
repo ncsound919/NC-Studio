@@ -20,6 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify vendored shared libraries
+        # `shared/kotlin-core` + `shared/studio-ui` are vendored in this repo
+        # (see shared/README.md). No extra clone: a clean checkout must build.
+        # The hash manifest fails this step if any vendored file drifted from
+        # the pinned upstream commit in shared/VENDOR_SHA.txt.
+        run: sh shared/verify-vendor.sh
+
       - name: JDK 21
         uses: actions/setup-java@v4
         with:
