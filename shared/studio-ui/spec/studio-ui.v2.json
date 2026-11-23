@@ -1,0 +1,117 @@
+{
+  "version": 2,
+  "name": "NC Studio shared controls (Overlay UI Protocol)",
+  "protocol": "Overlay UI Protocol — `Downloads/ov/ui protocol/` (00-principles … 05-review-checklist, 17 Nov 2026 perfection pass). Canonical web tokens: `ui protocol/tokens.json`; canonical web CSS: Overlay-Master `ui-core/src/styles/tokens.css`.",
+  "palette": {
+    "background": "#08080A",
+    "surface": "#0E0E11",
+    "card": "#141417",
+    "border": "#26262C",
+    "inset": "#0A0A0C",
+    "raised": "#1A1A1F",
+    "control": "#202026",
+    "textPrimary": "#FBF9F5",
+    "textSecondary": "#F1EEE7",
+    "textMuted": "#8B867D",
+    "textBody": "#B5B0A6",
+    "textDim": "#63605A",
+    "accent": "#FF8A00",
+    "accentHot": "#FFC98A",
+    "accentDim": "rgba(255,138,0,0.14)",
+    "accentLine": "rgba(255,138,0,0.34)",
+    "lime": "#55D18B",
+    "amber": "#FF8A00",
+    "purple": "#B98CFF",
+    "danger": "#FF5A4A",
+    "gr": "#E0567A",
+    "mod": "#35D0D8",
+    "lcd": "#FFB347",
+    "lcdBg": "#120C05",
+    "onAccent": "#1A0D00"
+  },
+  "brand": {
+    "canvas": "#08080A",
+    "shell": "#0E0E11",
+    "panel": "#141417",
+    "raised": "#1A1A1F",
+    "accent": "#FF8A00",
+    "accentHot": "#FFC98A",
+    "accentDim": "rgba(255,138,0,0.14)",
+    "accentLine": "rgba(255,138,0,0.34)",
+    "mod": "#35D0D8",
+    "ok": "#55D18B",
+    "danger": "#FF5A4A",
+    "gr": "#E0567A",
+    "fontDisplay": "Archivo Variable",
+    "fontBody": "Archivo Variable",
+    "fontMono": "JetBrains Mono"
+  },
+  "knob": {
+    "startAngleDeg": 135,
+    "sweepDeg": 270,
+    "fullRangeDragPx": 240,
+    "capRadiusRatio": 0.72,
+    "tickAnglesDeg": [135, 270, 405],
+    "defaultSizeDp": 54,
+    "dialLadderDp": { "xs": 34, "sm": 42, "md": 54, "lg": 68, "xl": 82 },
+    "dialCompactDp": { "xs": 28, "sm": 32, "md": 40, "lg": 48 },
+    "capGradient": ["#2D2D34", "#1B1B20", "#101014"],
+    "pointerTip": "#FFD9A8",
+    "fineDragFactor": 0.12,
+    "gainSnapDb": 0.3
+  },
+  "fader": {
+    "trackHeightDp": 150,
+    "defaultWidthDp": 58,
+    "capHeightDp": 18,
+    "tickDivisions": 6,
+    "capGradient": ["#2D2D34", "#101014"]
+  },
+  "meter": {
+    "minDb": -60,
+    "maxDb": 0,
+    "referenceDb": -20,
+    "dangerDb": -3,
+    "warningDb": -12,
+    "peakHoldDecayPerTick": 0.006,
+    "scaleMarksDb": [0, -12, -24, -48],
+    "faderFloorDb": -60
+  },
+  "button": {
+    "minHeightDp": 48,
+    "cornerRadiusDp": 6,
+    "labelSizeSp": 10
+  },
+  "waveform": {
+    "cornerRadiusDp": 8,
+    "trimShadeOpacity": 0.5,
+    "gridDivisions": 8,
+    "emptyStateLabel": "NO SIGNAL"
+  },
+  "type": {
+    "fontUi": "Archivo Variable, Archivo, Segoe UI, sans-serif",
+    "fontMono": "JetBrains Mono, ui-monospace, Cascadia Mono, monospace",
+    "labelSizePx": 10,
+    "valueSizePx": 11,
+    "microSizePx": 9,
+    "labelTrackingEm": 0.12,
+    "typeFloorPx": 9,
+    "numbersTabular": true
+  },
+  "motion": {
+    "fastMs": 110,
+    "medMs": 170,
+    "ease": "cubic-bezier(0.2, 0.8, 0.2, 1)",
+    "pressTranslatePx": 1
+  },
+  "hitTargetMinPx": 24,
+  "radiusDp": { "chip": 4, "control": 6, "cardInner": 8, "card": 12 },
+  "rules": [
+    "One accent: amber #FF8A00 means live or selected — never a resting state.",
+    "State is luminance, not hue: disabled = same hue at lower luminance + 62% opacity.",
+    "Nothing below 9 px type, nothing below 24 px hit targets.",
+    "Scale the dial, never the type; labels move to an unscaled read row.",
+    "Numbers are mono (tabular), labels are 9–11 px caps.",
+    "Delete a repeated label before shrinking one."
+  ]
+}

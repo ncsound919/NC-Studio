@@ -14,6 +14,7 @@ val NeonCyan = Color(0xFFFF8A00) // protocol accent — amber; name kept for cal
 val ElectricBlue = Color(0xFF35D0D8) // protocol mod cyan — modulation only
 val ElectricLime = Color(0xFF55D18B) // protocol ok green
 val StudioAmber = Color(0xFFFF8A00)
+val AccentHot = Color(0xFFFFC98A)
 val ClipRed = Color(0xFFFF5A4A)
 val StudioPurple = Color(0xFFB98CFF)
 

@@ -8,15 +8,15 @@ import androidx.compose.ui.graphics.Color
 
 private val StudioColorScheme = darkColorScheme(
     primary = NeonCyan,
-    onPrimary = Color.Black,
-    primaryContainer = Color(0xFF004D5A),
-    onPrimaryContainer = NeonCyan,
+    onPrimary = OnAccent,
+    primaryContainer = Color(0xFF3D2300),
+    onPrimaryContainer = AccentHot,
     secondary = ElectricLime,
-    onSecondary = Color.Black,
-    secondaryContainer = Color(0xFF004D25),
+    onSecondary = OnAccent,
+    secondaryContainer = Color(0xFF143820),
     onSecondaryContainer = ElectricLime,
     tertiary = StudioPurple,
-    onTertiary = Color.White,
+    onTertiary = Color(0xFF140B1F),
     background = StudioBackground,
     onBackground = TextPrimary,
     surface = StudioSurface,
@@ -25,7 +25,7 @@ private val StudioColorScheme = darkColorScheme(
     onSurfaceVariant = TextSecondary,
     outline = StudioCardBorder,
     error = ClipRed,
-    onError = Color.White
+    onError = Color(0xFF3D0D0A)
 )
 
 @Composable
@@ -34,6 +34,9 @@ fun MyApplicationTheme(
     dynamicColor: Boolean = false, // Pro Audio DAW locks intentional high-contrast studio dark palette
     content: @Composable () -> Unit
 ) {
+    // Overlay UI Protocol fonts: bundled Archivo Variable + JetBrains Mono.
+    com.overlay.studio.ui.StudioFonts.ui = ArchivoFamily
+    com.overlay.studio.ui.StudioFonts.mono = JetBrainsMonoFamily
     MaterialTheme(
         colorScheme = StudioColorScheme,
         typography = Typography,

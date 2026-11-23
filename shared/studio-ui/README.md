@@ -3,9 +3,15 @@
 One implementation of the studio controls used by NC Studio and NC Phone Beat,
 with a strict desktop mirror in NC Sound Lab.
 
+Styling follows the **Overlay UI Protocol** (`Downloads/ov/ui protocol/`):
+near-black warm surfaces, one amber accent that only ever means "live or
+selected", luminance states, 9 px type floor, mono tabular numbers and the
+dial ladder cap sizes.
+
 | File | Role |
 |---|---|
-| `spec/studio-ui.v1.json` | Palette, knob/fader/meter geometry, button and waveform rules. Source of truth. |
+| `spec/studio-ui.v2.json` | Overlay palette, type, motion, dial ladder, knob/fader/meter geometry, button and waveform rules. Source of truth. |
+| `spec/studio-ui.v1.json` | Historical v1 spec (cyan/gold Midnight palette). Superseded; kept for provenance. |
 | `src/main/kotlin/com/overlay/studio/ui/StudioControls.kt` | Compose implementation: `StudioKnob`, `StudioFader` (vertical/horizontal), `StudioLevelMeter`, `StudioButton`, `StudioSection`, `StudioChoiceChip`, `StudioWaveformPeaks`. |
 | `new dsp/src/components/studio/tokens.ts` | Sound Lab token mirror, validated against the spec by `tokens.test.ts`. |
 | `new dsp/src/components/studio/StudioControls.tsx` | Sound Lab knob, fader, meter bar and button. |

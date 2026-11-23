@@ -56,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlin.math.PI
@@ -72,41 +73,84 @@ import kotlin.math.sin
  * knob, fader, meter, button or panel is literally the same implementation in
  * both apps. NC Sound Lab mirrors the geometry, colours and interaction rules
  * in `new dsp/src/components/studio` from the same spec
- * (`shared/studio-ui/spec/studio-ui.v1.json`).
+ * (`shared/studio-ui/spec/studio-ui.v2.json`, Overlay UI Protocol).
  *
  * The interaction model takes the best of both existing implementations:
  *  - NC Studio's 270-degree LED ring, hardware cap, notch and OLED readout;
  *  - Phone Beat's 240 dp full-range drag that feels identical at every size;
  *  - Pro Tools' mature fader rules: double-tap resets, fine readout, peak-hold
  *    meters with a fixed -20 dB reference and green/amber/red zones.
+ *  - Overlay protocol styling: one amber accent, luminance states, 9 px type
+ *    floor, mono tabular numbers, dial ladder caps and 110 ms motion.
  */
 object StudioPalette {
-    val Background = Color(0xFF0A0D14)
-    val Surface = Color(0xFF131822)
-    val Card = Color(0xFF1C2230)
-    val Border = Color(0xFF2B3448)
-    val Inset = Color(0xFF070A0F)
-    val Raised = Color(0xFF232B3B)
-    val TextPrimary = Color(0xFFF0F4F8)
-    val TextSecondary = Color(0xFFB6B6C6)
-    val TextMuted = Color(0xFF74839A)
-    val Accent = Color(0xFF00E5FF)
-    val Lime = Color(0xFF00E676)
-    val Amber = Color(0xFFFFB300)
-    val Purple = Color(0xFFD05CE3)
-    val Danger = Color(0xFFFF5C7A)
-    val OnAccent = Color(0xFF061018)
+    // Overlay UI Protocol v2 surfaces (`ui protocol/02-tokens.md`).
+    val Background = Color(0xFF08080A)
+    val Surface = Color(0xFF0E0E11)
+    val Card = Color(0xFF141417)
+    val Border = Color(0xFF26262C)
+    val Inset = Color(0xFF0A0A0C)
+    val Raised = Color(0xFF1A1A1F)
+    val Control = Color(0xFF202026)
+    val TextPrimary = Color(0xFFFBF9F5)
+    val TextSecondary = Color(0xFFF1EEE7)
+    val TextMuted = Color(0xFF8B867D)
+    val TextBody = Color(0xFFB5B0A6)
+    val TextDim = Color(0xFF63605A)
+    val Accent = Color(0xFFFF8A00)
+    val AccentHot = Color(0xFFFFC98A)
+    val Lime = Color(0xFF55D18B)
+    val Amber = Color(0xFFFF8A00)
+    val Purple = Color(0xFFB98CFF)
+    val Danger = Color(0xFFFF5A4A)
+    val Gr = Color(0xFFE0567A)
+    val Mod = Color(0xFF35D0D8)
+    val Lcd = Color(0xFFFFB347)
+    val LcdBg = Color(0xFF120C05)
+    val OnAccent = Color(0xFF1A0D00)
 
-    // Overlay365 brand chrome (marketing-studio DESIGN-KIT + brand/tokens).
-    // App headers and primary CTAs use these; knobs, faders and meters stay
-    // on the studio ramp above so mix reads never shift hue.
-    val BrandMidnight = Color(0xFF05060A)
-    val BrandGraphite = Color(0xFF0E1117)
-    val BrandSlate = Color(0xFF141924)
-    val BrandCyanElec = Color(0xFF22D3EE)
-    val BrandGold = Color(0xFFF5C451)
-    val BrandGoldSoft = Color(0xFFF7D983)
-    val BrandSoftWhite = Color(0xFFF6F7F9)
+    // Overlay365 brand chrome under the protocol: the near-black warm shell and
+    // the single amber accent. App headers and primary CTAs use these; knobs,
+    // faders and meters stay on the surface ramp so mix reads never shift hue.
+    val BrandCanvas = Color(0xFF08080A)
+    val BrandShell = Color(0xFF0E0E11)
+    val BrandPanel = Color(0xFF141417)
+    val BrandAccent = Color(0xFFFF8A00)
+    val BrandAccentHot = Color(0xFFFFC98A)
+    val BrandMod = Color(0xFF35D0D8)
+    val BrandOk = Color(0xFF55D18B)
+    val BrandDanger = Color(0xFFFF5A4A)
+    val BrandGr = Color(0xFFE0567A)
+}
+
+/** Dial ladder (knob cap diameter) from the Overlay protocol, in dp. */
+object StudioDial {
+    const val XS = 34
+    const val SM = 42
+    const val MD = 54
+    const val LG = 68
+    const val XL = 82
+    const val COMPACT_XS = 28
+    const val COMPACT_SM = 32
+    const val COMPACT_MD = 40
+    const val COMPACT_LG = 48
+}
+
+/** Protocol motion: fast 110 ms, medium 170 ms, shared easing curve. */
+object StudioMotion {
+    const val FAST_MS = 110
+    const val MED_MS = 170
+}
+
+/**
+ * Font families used by every shared control. Apps bundle the Overlay protocol
+ * fonts (`archivo_variable.ttf`, `jetbrains_mono_variable.ttf`) and assign the
+ * real families here at theme init; without that init the controls fall back
+ * to the platform sans/mono families with identical metrics rules.
+ */
+object StudioFonts {
+    var ui: FontFamily = FontFamily.SansSerif
+    var mono: FontFamily = FontFamily.Monospace
 }
 
 /** Full-range drag distance, matching Phone Beat's knob feel. */
@@ -121,7 +165,7 @@ fun StudioKnob(
     modifier: Modifier = Modifier,
     defaultValue: Float = range.start + (range.endInclusive - range.start) * 0.5f,
     accentColor: Color = StudioPalette.Accent,
-    knobSize: Dp = 58.dp,
+    knobSize: Dp = StudioDial.MD.dp,
     valueFormatter: (Float) -> String = { "%.2f".format(it) },
     testTag: String = "studio_knob_${label.lowercase().replace(' ', '_')}",
 ) {
@@ -138,7 +182,7 @@ fun StudioKnob(
 
     val animated by animateFloatAsState(
         targetValue = if (dragging) dragValue else value,
-        animationSpec = tween(durationMillis = if (dragging) 0 else 120),
+        animationSpec = tween(durationMillis = if (dragging) 0 else StudioMotion.FAST_MS),
         label = "knob_$label",
     )
     val normalized = ((animated - range.start) / span).coerceIn(0f, 1f)
@@ -153,10 +197,11 @@ fun StudioKnob(
     ) {
         Text(
             text = label.uppercase(),
-            color = if (dragging) accentColor else StudioPalette.TextSecondary,
+            color = if (dragging) StudioPalette.AccentHot else StudioPalette.TextMuted,
             fontSize = 9.sp,
             fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = StudioFonts.ui,
+            letterSpacing = 0.12.em,
             maxLines = 1,
             textAlign = TextAlign.Center,
         )
@@ -250,10 +295,10 @@ fun StudioKnob(
                     )
                 }
 
-                // Milled cap.
+                // Milled cap — protocol radial gradient (#2d2d34 → #1b1b20 → #101014).
                 drawCircle(
                     brush = Brush.radialGradient(
-                        colors = listOf(StudioPalette.Border, StudioPalette.Card, StudioPalette.Surface),
+                        colors = listOf(Color(0xFF2D2D34), Color(0xFF1B1B20), Color(0xFF101014)),
                         center = center,
                         radius = inner,
                     ),
@@ -261,7 +306,7 @@ fun StudioKnob(
                     center = center,
                 )
                 drawCircle(
-                    color = StudioPalette.Raised,
+                    color = StudioPalette.Border,
                     radius = inner,
                     center = center,
                     style = Stroke(width = 1.5f),
@@ -284,7 +329,7 @@ fun StudioKnob(
                     cap = StrokeCap.Round,
                 )
                 drawLine(
-                    color = Color.White,
+                    color = StudioPalette.AccentHot,
                     start = notchStart,
                     end = notchEnd,
                     strokeWidth = 2.2f,
@@ -303,9 +348,9 @@ fun StudioKnob(
         ) {
             Text(
                 text = valueFormatter(animated),
-                color = accentColor,
+                color = if (dragging) StudioPalette.AccentHot else StudioPalette.TextPrimary,
                 fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = StudioFonts.mono,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 textAlign = TextAlign.Center,
@@ -363,10 +408,10 @@ fun StudioFader(
                 )
                 Text(
                     valueFormatter(dragValue),
-                    color = if (dragValue > 0f) StudioPalette.Amber else accentColor,
+                    color = StudioPalette.TextPrimary,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = StudioFonts.mono,
                 )
             }
             Spacer(Modifier.height(4.dp))
@@ -538,7 +583,7 @@ fun StudioFader(
                     )
                 }
                 drawRoundRect(
-                    brush = Brush.verticalGradient(listOf(Color(0xFF4A4A5A), Color(0xFF20202A))),
+                    brush = Brush.verticalGradient(listOf(Color(0xFF2D2D34), Color(0xFF101014))),
                     topLeft = Offset(0f, (y - 9f).coerceIn(0f, size.height - 18f)),
                     size = Size(size.width, 18f),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(4f),
@@ -551,8 +596,15 @@ fun StudioFader(
                 )
             }
         }
-        Text(label.uppercase(), color = StudioPalette.TextMuted, fontSize = 8.sp, maxLines = 1)
-        Text(valueFormatter(dragValue), color = accentColor, fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        Text(label.uppercase(), color = StudioPalette.TextMuted, fontSize = 9.sp, maxLines = 1)
+        Text(
+            valueFormatter(dragValue),
+            color = StudioPalette.TextPrimary,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = StudioFonts.mono,
+            maxLines = 1,
+        )
     }
 }
 
@@ -670,7 +722,7 @@ fun StudioButton(
     Row(
         modifier = modifier
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(6.dp))
             .background(background)
             .border(
                 1.dp,
@@ -680,7 +732,7 @@ fun StudioButton(
                     variant == StudioButtonVariant.DANGER -> StudioPalette.Danger
                     else -> StudioPalette.Border
                 },
-                RoundedCornerShape(8.dp),
+                RoundedCornerShape(6.dp),
             )
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 10.dp)
@@ -701,7 +753,8 @@ fun StudioButton(
             color = foreground,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = StudioFonts.ui,
+            letterSpacing = 0.12.em,
             maxLines = 1,
             textAlign = TextAlign.Center,
         )
@@ -744,10 +797,11 @@ fun StudioSection(
                 )
                 Text(
                     title.uppercase(),
-                    color = accent,
-                    fontSize = 11.sp,
+                    color = StudioPalette.TextMuted,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = StudioFonts.ui,
+                    letterSpacing = 0.12.em,
                     modifier = Modifier.padding(start = 6.dp),
                 )
             }
@@ -770,9 +824,9 @@ fun StudioChoiceChip(
     Box(
         modifier = modifier
             .heightIn(min = 40.dp)
-            .clip(RoundedCornerShape(50))
+            .clip(RoundedCornerShape(6.dp))
             .background(if (selected) accent.copy(alpha = 0.9f) else StudioPalette.Card)
-            .border(1.dp, if (selected) accent else StudioPalette.Border, RoundedCornerShape(50))
+            .border(1.dp, if (selected) accent else StudioPalette.Border, RoundedCornerShape(6.dp))
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp)
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier)
@@ -784,9 +838,11 @@ fun StudioChoiceChip(
     ) {
         Text(
             label.uppercase(),
-            color = if (selected) StudioPalette.OnAccent else StudioPalette.TextSecondary,
+            color = if (selected) StudioPalette.OnAccent else StudioPalette.TextBody,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
+            fontFamily = StudioFonts.ui,
+            letterSpacing = 0.12.em,
             maxLines = 1,
         )
     }

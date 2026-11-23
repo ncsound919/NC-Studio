@@ -2,11 +2,17 @@ package com.ncstudio.daw.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.ncstudio.daw.R
 
-private val studioFamily = FontFamily.Default
+/** Overlay protocol fonts, bundled as app resources (variable TTFs). */
+val ArchivoFamily = FontFamily(Font(R.font.archivo_variable))
+val JetBrainsMonoFamily = FontFamily(Font(R.font.jetbrains_mono_variable))
+
+private val studioFamily = ArchivoFamily
 
 /** Material scale used by containers, dialogs, and navigation. */
 val Typography =
@@ -91,5 +97,5 @@ object StudioType {
     val body = TextStyle(fontFamily = studioFamily, fontWeight = FontWeight.Normal, fontSize = 13.sp, lineHeight = 18.sp)
     val caption = TextStyle(fontFamily = studioFamily, fontWeight = FontWeight.Normal, fontSize = 11.sp, lineHeight = 15.sp)
     val metadata = TextStyle(fontFamily = studioFamily, fontWeight = FontWeight.Medium, fontSize = 10.sp, lineHeight = 14.sp)
-    val metric = TextStyle(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 12.sp, lineHeight = 16.sp)
+    val metric = TextStyle(fontFamily = JetBrainsMonoFamily, fontWeight = FontWeight.Bold, fontSize = 12.sp, lineHeight = 16.sp)
 }
