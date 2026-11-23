@@ -13,7 +13,7 @@ private val previewSession = ProjectSession(
         TrackData(
             index = index,
             name = listOf("Kick", "Snare", "Hi-Hats", "Vocal")[index],
-            colorHex = longArrayOf(0xFFFF5722, 0xFFFF9800, 0xFFFFEB3B, 0xFF00E5FF)[index],
+            colorHex = longArrayOf(0xFFFF5722, 0xFFFF9800, 0xFFFFEB3B, 0xFF35D0D8)[index],
             clips = listOf(
                 AudioClip(
                     name = "Take ${index + 1}",

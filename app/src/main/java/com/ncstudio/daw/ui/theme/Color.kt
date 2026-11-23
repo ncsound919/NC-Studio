@@ -2,58 +2,60 @@ package com.ncstudio.daw.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Pro Studio Dark Audio Palette
-val StudioBackground = Color(0xFF0A0D14)
-val StudioSurface = Color(0xFF131822)
-val StudioCard = Color(0xFF1C2230)
-val StudioCardBorder = Color(0xFF2B3448)
+// Pro Studio Dark Audio Palette — Overlay UI Protocol v2 surfaces
+// (`shared/studio-ui/spec/studio-ui.v2.json`). Names are kept stable so
+// screens do not change; values follow the protocol token ladder.
+val StudioBackground = Color(0xFF08080A)
+val StudioSurface = Color(0xFF0E0E11)
+val StudioCard = Color(0xFF141417)
+val StudioCardBorder = Color(0xFF26262C)
 
-val NeonCyan = Color(0xFF00E5FF)
-val ElectricBlue = Color(0xFF00B0FF)
-val ElectricLime = Color(0xFF00E676)
-val StudioAmber = Color(0xFFFFB300)
-val ClipRed = Color(0xFFFF3D00)
-val StudioPurple = Color(0xFFD05CE3)
+val NeonCyan = Color(0xFFFF8A00) // protocol accent — amber; name kept for call-site stability
+val ElectricBlue = Color(0xFF35D0D8) // protocol mod cyan — modulation only
+val ElectricLime = Color(0xFF55D18B) // protocol ok green
+val StudioAmber = Color(0xFFFF8A00)
+val ClipRed = Color(0xFFFF5A4A)
+val StudioPurple = Color(0xFFB98CFF)
 
-// Overlay365 brand chrome (marketing-studio DESIGN-KIT + brand/tokens).
-// Meters and control states stay on the studio ramp above; headers and
-// primary CTAs may use BrandGold / BrandCyanElec for cross-app identity.
-val BrandMidnight = Color(0xFF05060A)
-val BrandGraphite = Color(0xFF0E1117)
-val BrandSlate = Color(0xFF141924)
-val BrandCyanElec = Color(0xFF22D3EE)
-val BrandGold = Color(0xFFF5C451)
-val BrandGoldSoft = Color(0xFFF7D983)
-val BrandSoftWhite = Color(0xFFF6F7F9)
+// Overlay365 brand chrome under the Overlay UI Protocol: near-black warm
+// shell, single amber accent. Meters and control states stay on the studio
+// ramp above; headers and primary CTAs may use BrandGold / BrandAccentHot.
+val BrandMidnight = Color(0xFF08080A)
+val BrandGraphite = Color(0xFF0E0E11)
+val BrandSlate = Color(0xFF141417)
+val BrandCyanElec = Color(0xFFFFC98A) // protocol accent-hot
+val BrandGold = Color(0xFFFF8A00)
+val BrandGoldSoft = Color(0xFFFFC98A)
+val BrandSoftWhite = Color(0xFFFBF9F5)
 
-val TextPrimary = Color(0xFFF0F4F8)
-val TextSecondary = Color(0xFF94A3B8)
-val TextMuted = Color(0xFF74839A) // ≥4.5:1 against StudioBackground
+val TextPrimary = Color(0xFFFBF9F5)
+val TextSecondary = Color(0xFFB5B0A6)
+val TextMuted = Color(0xFF8B867D) // ≥4.5:1 against StudioBackground
 
-val MeterGreen = Color(0xFF00E676)
-val MeterYellow = Color(0xFFFFEA00)
-val MeterRed = Color(0xFFFF1744)
+val MeterGreen = Color(0xFF55D18B)
+val MeterYellow = Color(0xFFFF8A00)
+val MeterRed = Color(0xFFFF5A4A)
 
-val FaderTrack = Color(0xFF0F141E)
-val FaderThumb = Color(0xFFCBD5E1)
+val FaderTrack = Color(0xFF0A0A0C)
+val FaderThumb = Color(0xFFF1EEE7)
 
 // Semantic panel tokens: screens must not declare raw hex values.
-val PanelInset = Color(0xFF070A0F)
-val PanelMuted = Color(0xFF0F1522)
-val PanelDeep = Color(0xFF0F1420)
-val TrackLaneBase = Color(0xFF090C12)
-val TrackLaneSelected = Color(0xFF141A26)
-val TrackHeader = Color(0xFF0F141E)
-val GridMajor = Color(0xFF2D3748)
-val GridMinor = Color(0xFF171E2D)
-val RulerTick = Color(0xFF475569)
-val MasterStrip = Color(0xFF161B26)
-val SurfaceRaised = Color(0xFF1E293B)
-val SurfaceSunken = Color(0xFF090D14)
+val PanelInset = Color(0xFF0A0A0C)
+val PanelMuted = Color(0xFF101014)
+val PanelDeep = Color(0xFF101014)
+val TrackLaneBase = Color(0xFF08080A)
+val TrackLaneSelected = Color(0xFF141417)
+val TrackHeader = Color(0xFF0E0E11)
+val GridMajor = Color(0xFF26262C)
+val GridMinor = Color(0xFF1B1B20)
+val RulerTick = Color(0xFF63605A)
+val MasterStrip = Color(0xFF141417)
+val SurfaceRaised = Color(0xFF1A1A1F)
+val SurfaceSunken = Color(0xFF0A0A0C)
 
 // Neutral roles that screens must not declare themselves: text/icons on the
 // bright accent buttons, white overlay glyphs, and scrims.
-val OnAccent = Color.Black
-val OverlayWhite = Color.White
+val OnAccent = Color(0xFF1A0D00)
+val OverlayWhite = Color(0xFFFBF9F5)
 val Scrim = Color.Black
 val Transparent = Color.Transparent

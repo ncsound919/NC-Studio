@@ -1087,7 +1087,7 @@ fun AiMixingStudio(
                                 modifier = Modifier
                                     .size(8.dp)
                                     .clip(RoundedCornerShape(Radius.sm))
-                                    .background(Color(trk?.colorHex ?: 0xFF00E5FF))
+                                    .background(Color(trk?.colorHex ?: 0xFF35D0D8))
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
