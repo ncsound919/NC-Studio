@@ -454,6 +454,12 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         playbackEngine.setSessionLength(cleanedProj.totalLengthFrames)
         playbackEngine.syncFromProject(cleanedProj)
 
+        // A/B mixer snapshots ride with the project, so a capture survives a
+        // reload. Keys are single chars in the UI and strings in the JSON.
+        _mixerSnapshots.value = cleanedProj.mixerSnapshots
+            .mapNotNull { (key, snapshot) -> key.firstOrNull()?.let { it to snapshot } }
+            .toMap()
+
         // Render the composited track playlists and push to the engine
         for (i in 0 until 16) {
             rebuildTrackAudioLocked(i)
@@ -906,6 +912,15 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             },
         )
         _mixerSnapshots.update { it + (slot to snapshot) }
+        // Persist the slot with the project: bump the revision so auto-save
+        // writes it, and keep the crash journal in step.
+        _session.update {
+            it.copy(
+                mixerSnapshots = it.mixerSnapshots + (slot.toString() to snapshot),
+                revision = it.revision + 1,
+            )
+        }
+        requestJournalWrite(_session.value)
         setStatus("Mixer $slot captured.", StatusKind.SUCCESS)
     }
 

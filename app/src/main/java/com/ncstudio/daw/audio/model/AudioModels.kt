@@ -529,6 +529,11 @@ data class ProjectSession(
     val tempoBpm: Float = 120f,
     val totalLengthFrames: Long = 48000L * 16L, // 16 seconds default loop
     val masterGainDb: Float = 0.0f,
+    /**
+     * A/B mixer capture-recall slots, keyed "A"/"B". Part of the project so a
+     * capture survives save/load and an A/B compare can resume after reopening.
+     */
+    val mixerSnapshots: Map<String, MixerSnapshot> = emptyMap(),
     val loopEnabled: Boolean = true,
     val loopStartFrame: Long = 0L,
     val loopEndFrame: Long = 48000L * 16L,
