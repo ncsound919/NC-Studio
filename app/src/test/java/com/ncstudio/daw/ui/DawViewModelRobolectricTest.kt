@@ -59,10 +59,10 @@ class DawViewModelRobolectricTest {
     @Test
     fun initialization_defaultTracksAndSettings() {
         val session = viewModel.session.value
-        assertEquals("Initial project must have 16 tracks", 16, session.tracks.size)
-        assertEquals("Kick Drum", session.tracks[0].name)
-        assertEquals("Snare & Clap", session.tracks[1].name)
-        assertEquals("Lead Vocal", session.tracks[13].name)
+        assertEquals("A blank project opens with four empty tracks", 4, session.tracks.size)
+        assertEquals("Audio 1", session.tracks[0].name)
+        assertEquals("Audio 2", session.tracks[1].name)
+        assertEquals("Audio 4", session.tracks[3].name)
 
         val settings = viewModel.settings.value
         assertEquals(48000, settings.sampleRateHz)
@@ -74,6 +74,35 @@ class DawViewModelRobolectricTest {
         assertFalse(uiState.isRecording)
         assertFalse(viewModel.canUndo())
         assertFalse(viewModel.canRedo())
+    }
+
+    @Test
+    fun genreTemplateLandsOnABlankSessionAndUndoesAsOneAction() {
+        viewModel.installSessionForTest(createInitialSession())
+        val blank = viewModel.session.value
+        assertEquals(4, blank.tracks.size)
+
+        viewModel.applyMixTemplate("pop")
+
+        val applied = viewModel.session.value
+        val template = com.ncstudio.daw.audio.plugins.MixReferenceTemplateLibrary.byId("pop")!!
+        assertTrue(
+            "a genre template must build role tracks on a blank session",
+            applied.tracks.size > blank.tracks.size,
+        )
+        assertTrue(applied.tracks.any { it.pluginChain.isNotEmpty() })
+        assertTrue(
+            com.ncstudio.daw.audio.plugins.TemplateApplier.matchedTrackCount(applied, template) > 0,
+        )
+        assertTrue(applied.masterPluginChain.isNotEmpty())
+
+        viewModel.undo()
+
+        val restored = viewModel.session.value
+        assertEquals("undo must put the blank four-track session back", 4, restored.tracks.size)
+        assertTrue(restored.tracks.all { it.pluginChain.isEmpty() })
+        assertTrue(restored.tracks.all { it.clips.isEmpty() })
+        assertTrue(restored.masterPluginChain.isEmpty())
     }
 
     @Test
@@ -130,14 +159,14 @@ class DawViewModelRobolectricTest {
         assertTrue(viewModel.session.value.tracks[3].isMuted)
 
         // Arm for recording (exclusive)
-        viewModel.toggleTrackArm(4)
-        assertTrue(viewModel.session.value.tracks[4].isArmedForRecording)
+        viewModel.toggleTrackArm(1)
+        assertTrue(viewModel.session.value.tracks[1].isArmedForRecording)
         assertFalse(viewModel.session.value.tracks[0].isArmedForRecording)
 
-        // Switch armed track to 5
-        viewModel.toggleTrackArm(5)
-        assertTrue(viewModel.session.value.tracks[5].isArmedForRecording)
-        assertFalse(viewModel.session.value.tracks[4].isArmedForRecording)
+        // Switch armed track to 2
+        viewModel.toggleTrackArm(2)
+        assertTrue(viewModel.session.value.tracks[2].isArmedForRecording)
+        assertFalse(viewModel.session.value.tracks[1].isArmedForRecording)
     }
 
     @Test

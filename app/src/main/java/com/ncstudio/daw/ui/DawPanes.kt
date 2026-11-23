@@ -28,6 +28,7 @@ internal fun MixerPane(
         onSetReverbSend = { idx, s -> viewModel.setTrackReverbSend(idx, s) },
         onSetMasterGain = { g -> viewModel.setMasterGain(g) },
         onApplyMasterPreset = { preset -> viewModel.applyMasterPreset(preset) },
+        onAddTrack = { viewModel.addTrack() },
         hapticsEnabled = settings.enableHapticFeedback
     )
 }
@@ -95,7 +96,9 @@ internal fun TimelinePane(
         onSelectTake = { trackIdx, laneId -> viewModel.selectTakeLane(trackIdx, laneId) },
         onCompTakeRange = { trackIdx, laneId, from, to ->
             viewModel.compTakeRange(trackIdx, laneId, from, to)
-        }
+        },
+        onDeleteTakeLane = { trackIdx, laneId -> viewModel.deleteTakeLane(trackIdx, laneId) },
+        onToggleArm = { trackIdx -> viewModel.toggleTrackArm(trackIdx) }
     )
 }
 

@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -95,6 +96,7 @@ import com.ncstudio.daw.audio.model.TrackData
 import com.ncstudio.daw.ui.components.AudioRotaryKnob
 import com.ncstudio.daw.ui.components.StudioTooltip
 import com.ncstudio.daw.ui.theme.Radius
+import com.ncstudio.daw.ui.theme.ClipRed
 import com.ncstudio.daw.ui.theme.ElectricLime
 import com.ncstudio.daw.ui.theme.GridMajor
 import com.ncstudio.daw.ui.theme.GridMinor
@@ -138,6 +140,7 @@ fun TrackLane(
     scrollState: ScrollState = rememberScrollState(),
     editSelectionRange: LongRange? = null,
     onSelect: () -> Unit,
+    onToggleArm: () -> Unit = {},
     onToggleClip: (String) -> Unit = {},
     onSplitClipAtFrame: (String, Long) -> Unit = { _, _ -> },
     onMoveClip: (String, Long, Long) -> Unit = { _, _, _ -> },
@@ -196,7 +199,7 @@ fun TrackLane(
                     .background(Color(track.colorHex))
             )
             Spacer(modifier = Modifier.width(6.dp))
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "${track.index + 1}. ${track.name}",
                     color = TextPrimary,
@@ -209,6 +212,33 @@ fun TrackLane(
                     text = "${track.stemCategory.displayName} • ${if (track.isMuted) "MUTED" else "ACTIVE"}",
                     color = if (track.isMuted) TextMuted else NeonCyan,
                     fontSize = 10.sp
+                )
+            }
+
+            // Arm where the audio is recorded. The only arm button used to live
+            // in the mixer, so on the timeline "record" looked broken.
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(if (track.isArmedForRecording) ClipRed else StudioCard)
+                    .border(
+                        1.dp,
+                        if (track.isArmedForRecording) ClipRed else StudioCardBorder,
+                        CircleShape
+                    )
+                    .clickable { onToggleArm() }
+                    .semantics {
+                        contentDescription = "Arm ${track.name} for recording"
+                        stateDescription = if (track.isArmedForRecording) "Armed" else "Not armed"
+                    }
+                    .testTag("lane_arm_${track.index}"),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "\u25cf",
+                    color = if (track.isArmedForRecording) OverlayWhite else TextMuted,
+                    fontSize = 11.sp
                 )
             }
         }
@@ -420,9 +450,16 @@ fun TrackLane(
                 }.coerceAtLeast(1f)
                 val framesPerPixel = totalFrames / contentWidthPx
                 val clipLeftPx = with(density) { (contentWidth * clipStartFrac).toPx() }
-                // A very short clip is still grabbable: the hit area is never
-                // narrower than a fingertip, even when the audio is 2 px wide.
-                val hitWidth = maxOf(contentWidth * clipLenFrac, 28.dp)
+                val clipWidthDp = contentWidth * clipLenFrac
+                val remainingDp = (contentWidth - contentWidth * clipStartFrac).coerceAtLeast(0.dp)
+                // A short clip still needs a fingertip-sized target, but the hit
+                // area may not spill over the next clip: overlapping boxes made
+                // taps land on the wrong clip.
+                val hitWidth = if (clipWidthDp >= 40.dp) {
+                    clipWidthDp
+                } else {
+                    minOf(40.dp, maxOf(clipWidthDp, remainingDp))
+                }
                 // Where the finger went down. A Smart tool decision has to come
                 // from the press point, not from wherever the drag finally
                 // crossed the touch slop, or a long body drag would trim.
@@ -472,7 +509,9 @@ fun TrackLane(
                             var selectionPointerX = 0f
                             var verticalDrag = 0f
                             var dropTrack = track.index
-                            val edgeZonePx = EDGE_ZONE_WIDTH.toPx()
+                            // A fixed edge on both sides of a narrow clip would
+                            // leave no body left to drag, so edges shrink with it.
+                            val edgeZonePx = minOf(EDGE_ZONE_WIDTH.toPx(), size.width / 3f)
                             val laneHeightPx = TRACK_LANE_HEIGHT.toPx()
                             val scrollEdgePx = 56.dp.toPx()
                             val scrollStepPx = 14.dp.toPx()
@@ -616,6 +655,9 @@ fun TrackLane(
                 val clipLenFrac = (clip.lengthFrames.toFloat() / totalFrames).coerceIn(0.01f, 1f)
                 val clipX = contentWidth * clipStartFrac
                 val clipW = contentWidth * clipLenFrac
+                // Two 48 dp grips cover a short clip completely; fades for those
+                // live in the clip sheet instead.
+                if (clipW < 80.dp) return@forEach
                 val durationMs = (clip.lengthFrames / 48f).coerceAtLeast(1f)
                 val density = androidx.compose.ui.platform.LocalDensity.current
                 val msPerPx = durationMs / with(density) { clipW.toPx() }.coerceAtLeast(1f)

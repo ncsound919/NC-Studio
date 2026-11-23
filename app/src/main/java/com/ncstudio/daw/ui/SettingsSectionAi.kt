@@ -339,7 +339,11 @@ internal fun Section5Card(settings: DawSettings, onUpdateSettings: (DawSettings)
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "${settings.activeLocalModelName} (${settings.activeLocalModelProvider})",
+                            text = if (settings.activeLocalModelName.isBlank()) {
+                                "No model selected — scan in AI Studio"
+                            } else {
+                                "${settings.activeLocalModelName} (${settings.activeLocalModelProvider})"
+                            },
                             color = NeonCyan,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold

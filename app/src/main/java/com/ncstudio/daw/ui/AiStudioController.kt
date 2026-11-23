@@ -28,6 +28,12 @@ class AiStudioController(
     private val currentSettings: () -> DawSettings,
     private val updateSettings: ((DawSettings) -> DawSettings) -> Unit,
     private val uiState: MutableStateFlow<EngineUiState>,
+    /** Injected so the two-phase scan can be tested without opening sockets. */
+    private val lanSubnetPrefix: () -> String? = LocalModelDetector::lanSubnetPrefix,
+    private val discoverLanEndpoints: (String) -> List<LocalModelEndpoint> =
+        { prefix -> LocalModelDetector.discoverLanEndpoints(prefix) },
+    private val probeEndpoint: (LocalModelEndpoint, Int, Int) -> EndpointProbeResult =
+        LocalModelDetector::probeEndpoint,
     /** Disabled unless the build supplies a Tondo endpoint and device key. */
     private val tondo: TondoResearchClient = TondoResearchClient(
         TondoResearchConfig(
@@ -38,8 +44,54 @@ class AiStudioController(
     ),
 ) {
 
+    /**
+     * Puts the last model the user picked back on screen before a scan runs.
+     *
+     * The selected model and endpoint are persisted with the rest of the
+     * studio settings, so "my LLM" survives an app restart instead of looking
+     * disconnected until someone finds the scan button again.
+     */
+    fun restoreFromSettings() {
+        val settings = currentSettings()
+        val name = settings.activeLocalModelName.trim()
+        val url = settings.customOllamaUrl.trim()
+        if (url.isNotEmpty()) {
+            uiState.update { current ->
+                current.copy(
+                    localModelDetectorState = current.localModelDetectorState.copy(
+                        customEndpointUrl = url,
+                    ),
+                )
+            }
+        }
+        if (name.isEmpty() || url.isEmpty()) return
+        val provider = LocalModelProvider.fromDisplayName(settings.activeLocalModelProvider)
+            ?: LocalModelProvider.OLLAMA
+        val restored = DiscoveredModelInfo(
+            name = name,
+            provider = provider,
+            baseUrl = url,
+            isSelected = true,
+        )
+        uiState.update { current ->
+            current.copy(
+                localModelDetectorState = current.localModelDetectorState.copy(
+                    activeModel = restored,
+                ),
+            )
+        }
+    }
+
+    /**
+     * Probes the local server endpoints.
+     *
+     * [deep] adds the Wi-Fi sweep. It is off for the automatic scan at launch:
+     * 254 hosts times three ports is a lot of sockets to spend every time the
+     * app opens, so the subnet is only searched when the user asks for it.
+     */
     fun scan(
         customUrl: String? = null,
+        deep: Boolean = false,
         dispatcher: CoroutineDispatcher = Dispatchers.IO,
     ) = scope.launch(dispatcher) {
         uiState.update { current ->
@@ -47,29 +99,45 @@ class AiStudioController(
                 localModelDetectorState = current.localModelDetectorState.copy(
                     isScanning = true,
                     endpointsChecked = 0,
+                    totalEndpointsToScan = 0,
                 ),
             )
         }
 
-        val endpointsToTest = mutableListOf<LocalModelEndpoint>()
-        endpointsToTest.addAll(LocalModelDetector.DEFAULT_ENDPOINTS)
-
-        val custom = customUrl ?: currentSettings().customOllamaUrl
-        if (custom.isNotBlank() && endpointsToTest.none { it.baseUrl == custom }) {
-            endpointsToTest.add(
-                LocalModelEndpoint(
-                    provider = LocalModelProvider.OLLAMA,
-                    baseUrl = custom,
-                    displayName = "Custom Endpoint ($custom)",
-                ),
-            )
+        // Phase 1: loopback / emulator host + the endpoint the user saved.
+        val localEndpoints = mutableListOf<LocalModelEndpoint>()
+        localEndpoints.addAll(LocalModelDetector.DEFAULT_ENDPOINTS)
+        val custom = (customUrl ?: currentSettings().customOllamaUrl).trim()
+        if (custom.isNotBlank()) {
+            val normalized = (if (custom.startsWith("http")) custom else "http://$custom").trimEnd('/')
+            if (localEndpoints.none { it.baseUrl == normalized }) {
+                localEndpoints.add(
+                    LocalModelEndpoint(
+                        provider = if (normalized.contains("11434")) {
+                            LocalModelProvider.OLLAMA
+                        } else {
+                            LocalModelProvider.LLAMA_CPP
+                        },
+                        baseUrl = normalized,
+                        displayName = "Saved endpoint ($normalized)",
+                    ),
+                )
+            }
         }
 
         val probedResults = mutableListOf<EndpointProbeResult>()
         val allDetectedModels = mutableListOf<DiscoveredModelInfo>()
 
-        for ((idx, endpoint) in endpointsToTest.withIndex()) {
-            val result = LocalModelDetector.probeEndpoint(endpoint)
+        uiState.update { current ->
+            current.copy(
+                localModelDetectorState = current.localModelDetectorState.copy(
+                    totalEndpointsToScan = localEndpoints.size,
+                ),
+            )
+        }
+
+        for ((idx, endpoint) in localEndpoints.withIndex()) {
+            val result = probeEndpoint(endpoint, 900, 1200)
             probedResults.add(result)
             if (result.isOnline && result.models.isNotEmpty()) {
                 allDetectedModels.addAll(result.models)
@@ -78,14 +146,60 @@ class AiStudioController(
                 current.copy(
                     localModelDetectorState = current.localModelDetectorState.copy(
                         endpointsChecked = idx + 1,
-                        totalEndpointsToScan = endpointsToTest.size,
+                        totalEndpointsToScan = localEndpoints.size,
                     ),
                 )
             }
         }
 
+        // Phase 2: the rest of the phone's Wi-Fi subnet. This is the case that
+        // matters on a real device: the model runs on the studio desktop, not
+        // on loopback and not on the emulator host alias. Only an explicit scan
+        // asks for this sweep.
+        val lanPrefix = lanSubnetPrefix()
+        var scannedSubnet = ""
+        if (deep && lanPrefix != null && allDetectedModels.isEmpty()) {
+            scannedSubnet = "$lanPrefix.1-254"
+            uiState.update { current ->
+                current.copy(
+                    localModelDetectorState = current.localModelDetectorState.copy(
+                        endpointsChecked = 0,
+                        totalEndpointsToScan = 0,
+                        scannedSubnet = scannedSubnet,
+                    ),
+                    statusMessage = "No server on this phone. Scanning Wi-Fi ($scannedSubnet)…",
+                    statusKind = StatusKind.INFO,
+                )
+            }
+            val lanEndpoints = discoverLanEndpoints(lanPrefix)
+            uiState.update { current ->
+                current.copy(
+                    localModelDetectorState = current.localModelDetectorState.copy(
+                        totalEndpointsToScan = lanEndpoints.size,
+                    ),
+                )
+            }
+            for ((idx, endpoint) in lanEndpoints.withIndex()) {
+                val result = probeEndpoint(endpoint, 900, 1500)
+                probedResults.add(result)
+                if (result.isOnline && result.models.isNotEmpty()) {
+                    allDetectedModels.addAll(result.models)
+                }
+                uiState.update { current ->
+                    current.copy(
+                        localModelDetectorState = current.localModelDetectorState.copy(
+                            endpointsChecked = idx + 1,
+                            totalEndpointsToScan = lanEndpoints.size,
+                        ),
+                    )
+                }
+            }
+        }
+
+        val previousActive = uiState.value.localModelDetectorState.activeModel
         val active = allDetectedModels.firstOrNull { it.name == currentSettings().activeLocalModelName }
             ?: allDetectedModels.firstOrNull()
+            ?: previousActive
         val markedModels = allDetectedModels.map { model ->
             model.copy(isSelected = model.name == active?.name)
         }
@@ -94,17 +208,27 @@ class AiStudioController(
             current.copy(
                 localModelDetectorState = current.localModelDetectorState.copy(
                     isScanning = false,
+                    // Keep an endpoint the user already had, even if the scan
+                    // found nothing: a sleeping server is not a lost setting.
                     probedEndpoints = probedResults,
-                    detectedModels = markedModels,
+                    detectedModels = markedModels.ifEmpty { current.localModelDetectorState.detectedModels },
                     activeModel = active,
+                    scannedSubnet = scannedSubnet,
                     lastScanTimestamp = System.currentTimeMillis(),
                 ),
-                statusMessage = if (markedModels.isEmpty()) {
-                    "No local model server answered. Start Ollama or Llama.cpp, then scan again."
-                } else {
-                    "Scanned ${endpointsToTest.size} local model endpoints. Found ${markedModels.size} model(s)."
+                statusMessage = when {
+                    markedModels.isNotEmpty() ->
+                        "Found ${markedModels.size} model(s) on ${markedModels.first().baseUrl}."
+                    previousActive != null ->
+                        "No server answered. ${previousActive.name} is still selected at ${previousActive.baseUrl}."
+                    !deep && lanPrefix != null ->
+                        "No server on this phone. Tap Scan to look for a model on your Wi-Fi ($lanPrefix.0/24)."
+                    scannedSubnet.isNotEmpty() ->
+                        "No local model answered on this phone or on Wi-Fi ($scannedSubnet). Start Ollama or llama.cpp on the same network, then scan again."
+                    else ->
+                        "No local model server answered. Start Ollama or llama.cpp, then scan again."
                 },
-                statusKind = if (markedModels.isEmpty()) StatusKind.INFO else StatusKind.SUCCESS,
+                statusKind = if (markedModels.isNotEmpty()) StatusKind.SUCCESS else StatusKind.INFO,
             )
         }
     }

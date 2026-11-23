@@ -52,8 +52,9 @@ on a LAN; a WebRTC/TURN stage is needed before this is usable over the internet.
    npm start          # prints http://0.0.0.0:8787
    ```
 2. **Engineer phone**: Settings → Remote Session → *I'm the engineer* → enter
-   the laptop's LAN address (`192.168.x.x:8787`) → **Create session**. A 6
-   character invite code appears; share it with the artist.
+   the laptop's `https://` address (the certificate's hostname; debug builds
+   refuse a bare `192.168.x.x:8787`) → **Create session**. A 6 character invite
+   code appears; share it with the artist.
 3. **Artist phone**: same entry point → *I'm the artist* → same server address,
    the invite code, and a name → **Join**.
 4. **Artist preflight**: grant microphone, connect wired headphones or a USB
@@ -72,11 +73,19 @@ on a LAN; a WebRTC/TURN stage is needed before this is usable over the internet.
 Wired headphones are required on both sides: the artist's mic would otherwise
 pick up the backing track, and talkback would feed back on the engineer's side.
 
-**TLS in release builds:** debug builds may use plain `http://`/`ws://` on the
-LAN. Release builds reject cleartext endpoints and require `https://`/`wss://`,
-so terminate TLS in front of the Node server (a reverse proxy is enough) for a
-production session. This keeps session tokens and monitor audio off the wire in
+**Addressing the server, and TLS:** use `https://`/`wss://` in every build.
+Terminate TLS in front of the Node server (a reverse proxy is enough) with a
+certificate the phone trusts; debug builds trust user-installed CAs, so a local
+CA works there. This keeps session tokens and monitor audio off the wire in
 clear text.
+
+Debug builds also allow plain `http://`/`ws://`, but only to loopback, the
+emulator host and `.local` names, because Android's network security config can
+list hosts but not a DHCP address. `.local` is not a dependable fallback: it
+needs the mDNS mainline update in the phone's DNS resolver (late 2021), the
+laptop advertising itself, and a Wi-Fi connection — VPN and mobile data never
+resolve `.local`. A bare `192.168.x.x:8787` entry is refused by the platform,
+and the connection screen warns about it before the attempt.
 
 ## 3. Take format and upload contract
 

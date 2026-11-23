@@ -1,7 +1,10 @@
 package com.ncstudio.daw.session.net
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConnectionSettingsSecurityTest {
@@ -51,5 +54,20 @@ class ConnectionSettingsSecurityTest {
         )
         assertEquals("http://192.168.1.20:8787/v1", local.baseUrl)
         assertEquals("ws://192.168.1.20:8787/ws", local.wsUrl)
+    }
+
+    @Test
+    fun debugBuildsWarnBeforePlainHttpToAHostTheConfigCannotName() {
+        // Loopback, the emulator host and mDNS names are allowed by the debug
+        // network security config; a bare LAN IP is not.
+        assertNull(ConnectionSettings.cleartextWarning("127.0.0.1:8787"))
+        assertNull(ConnectionSettings.cleartextWarning("10.0.2.2:8787"))
+        assertNull(ConnectionSettings.cleartextWarning("studio-laptop.local:8787"))
+        assertNull(ConnectionSettings.cleartextWarning("https://192.168.1.20:8787"))
+
+        val warning = ConnectionSettings.cleartextWarning("192.168.1.20:8787")
+        assertEquals(ConnectionSettings.CLEARTEXT_SESSION_ADVICE, warning)
+        assertTrue("the advice leads with TLS", warning!!.contains("HTTPS"))
+        assertNotNull(ConnectionSettings.cleartextWarning("http://session.example.com"))
     }
 }

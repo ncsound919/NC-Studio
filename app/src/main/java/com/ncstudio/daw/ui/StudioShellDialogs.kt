@@ -65,6 +65,10 @@ import com.ncstudio.daw.ui.theme.OnAccent
 const val STUDIO_VERSION = "1.5.0"
 const val RELEASE_NOTES_VERSION = "1.3.1"
 const val ONBOARDING_PREF = "onboarding_complete"
+/** Persisted local-model endpoint, so "my LLM" survives an app restart. */
+const val AI_MODEL_NAME_PREF = "ai_model_name"
+const val AI_MODEL_PROVIDER_PREF = "ai_model_provider"
+const val AI_ENDPOINT_PREF = "ai_endpoint_url"
 const val RELEASE_NOTES_PREF = "whats_new_seen_version"
 const val TIMELINE_TOOL_PREF = "timeline_tool"
 const val EDIT_MODE_PREF = "edit_mode"

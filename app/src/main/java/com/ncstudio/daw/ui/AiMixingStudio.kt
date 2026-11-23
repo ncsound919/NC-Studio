@@ -665,7 +665,21 @@ fun AiMixingStudio(
                         Column {
                             Text(text = stringResource(R.string.ui_status), color = TextMuted, fontSize = 10.sp)
                             Text(
-                                text = if (detectorState.isScanning) "Scanning..." else if (detectorState.detectedModels.isNotEmpty()) "Ready (${detectorState.detectedModels.size} models found)" else "No server found",
+                                text = when {
+                                    detectorState.isScanning && detectorState.totalEndpointsToScan > 0 ->
+                                        "Scanning ${detectorState.endpointsChecked}/${detectorState.totalEndpointsToScan}" +
+                                            detectorState.scannedSubnet.takeIf { it.isNotEmpty() }
+                                                ?.let { " on Wi-Fi $it" }.orEmpty()
+                                    detectorState.isScanning ->
+                                        "Scanning this phone" +
+                                            detectorState.scannedSubnet.takeIf { it.isNotEmpty() }
+                                                ?.let { " and Wi-Fi $it" }.orEmpty() + "…"
+                                    detectorState.detectedModels.isNotEmpty() ->
+                                        "Ready (${detectorState.detectedModels.size} models found)"
+                                    detectorState.activeModel != null ->
+                                        "Saved model, not answering"
+                                    else -> "No server found"
+                                },
                                 color = if (detectorState.detectedModels.isNotEmpty()) ElectricLime else StudioAmber,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold

@@ -96,7 +96,9 @@ data class TakeUiModel(
 data class SessionUiState(
     val stage: SessionStage = SessionStage.CHOOSING,
     val role: String? = null,
-    val serverHost: String = "192.168.1.20:8787",
+    // HTTPS by default: a plain address is refused by debug builds, and the
+    // field should not open on a value that already shows the warning.
+    val serverHost: String = "https://192.168.1.20:8787",
     val displayName: String = "",
     val inviteInput: String = "",
     val inviteCode: String? = null,
@@ -1064,6 +1066,8 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
         e is HttpStatusException && e.code == 404 -> "No session with that invite code on this server"
         e is HttpStatusException && e.code == 410 -> "That invite code has expired; ask for a new one"
         e is HttpStatusException -> "Server said ${e.code}: ${e.bodyText.take(120)}"
+        e.message?.contains("CLEARTEXT", ignoreCase = true) == true ->
+            ConnectionSettings.CLEARTEXT_SESSION_ADVICE
         else -> e.message ?: "Connection failed"
     }
 

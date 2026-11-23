@@ -183,6 +183,9 @@ class DawUiFunctionalTest {
     fun functionalTest_fadeAndLoopHandlesDrag() {
         val viewModel = newViewModel()
         viewModel.installTestClip(0)
+        // Fade grips only exist on a selected clip; an unselected clip showing
+        // grips is exactly what made them steal clip drags.
+        viewModel.toggleClipSelection(0, viewModel.session.value.tracks[0].clips.first().id)
         val session = viewModel.session.value
         var fadeInMs = -1f
         var loopStart = session.loopStartFrame

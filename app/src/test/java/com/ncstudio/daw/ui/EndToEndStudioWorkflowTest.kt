@@ -41,15 +41,19 @@ class EndToEndStudioWorkflowTest {
         // The app ships with an empty session; install a take for timeline edits.
         viewModel.installTestClip(0)
 
-        // Step 1: Verify project session initialization (16 multi-tracks)
+        // Step 1: Verify project session initialization (four empty tracks)
         val session = viewModel.session.value
-        assertEquals("Session should have 16 tracks", 16, session.tracks.size)
+        assertEquals("A blank session opens with four tracks", 4, session.tracks.size)
         assertFalse("Transport should start paused", viewModel.uiState.value.isPlaying)
 
-        // Step 2: Apply pro track preset to Lead Vocal (Track 13)
+        // Step 2: Apply pro track preset to the first track
         val vocalPreset = PresetLibrary.TRACK_PRESETS.first { it.name.contains("Vocal") }
-        viewModel.applyTrackPreset(13, vocalPreset)
-        assertEquals(vocalPreset.reverbSendLevel, session.tracks[13].reverbSendLevel, 0.001f)
+        viewModel.applyTrackPreset(0, vocalPreset)
+        assertEquals(
+            vocalPreset.reverbSendLevel,
+            viewModel.session.value.tracks[0].reverbSendLevel,
+            0.001f
+        )
 
         // Step 3: Apply commercial master bus preset & configure Schroeder Reverb parameters
         val masterPreset = PresetLibrary.MASTER_PRESETS.first()

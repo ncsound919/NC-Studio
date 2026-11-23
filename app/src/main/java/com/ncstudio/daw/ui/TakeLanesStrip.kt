@@ -15,9 +15,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -53,8 +58,8 @@ import com.ncstudio.daw.ui.theme.StudioSurface
 import com.ncstudio.daw.ui.theme.TextMuted
 import com.ncstudio.daw.ui.theme.TextPrimary
 
-/** Height of one take row. Slim: 16 tracks of takes must still fit on screen. */
-internal val TAKE_ROW_HEIGHT = 30.dp
+/** Height of one take row. Slim, but tall enough to hit the delete button. */
+internal val TAKE_ROW_HEIGHT = 36.dp
 
 /**
  * Take lanes under a track: every recorded alternate is visible against the same
@@ -73,9 +78,13 @@ fun TrackTakeLanes(
     scrollState: ScrollState = rememberScrollState(),
     onSelectTake: (String) -> Unit = {},
     onCompTake: (String, Long, Long) -> Unit = { _, _, _ -> },
+    onDeleteTake: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    if (track.takeLanes.size < 2) return
+    // A single take is still shown: it carries the only delete button for a bad
+    // first take, and the row makes it obvious that the track is a take, not a
+    // loose clip.
+    if (track.takeLanes.isEmpty()) return
     val total = totalFrames.coerceAtLeast(1L)
     Column(modifier = modifier.fillMaxWidth().testTag("take_lanes_${track.index}")) {
         track.takeLanes.forEach { lane ->
@@ -87,7 +96,8 @@ fun TrackTakeLanes(
                 scrollState = scrollState,
                 isActive = lane.id == track.activeTakeId,
                 onSelectTake = onSelectTake,
-                onCompTake = onCompTake
+                onCompTake = onCompTake,
+                onDeleteTake = onDeleteTake
             )
         }
     }
@@ -102,13 +112,15 @@ private fun TakeRow(
     scrollState: ScrollState,
     isActive: Boolean,
     onSelectTake: (String) -> Unit,
-    onCompTake: (String, Long, Long) -> Unit
+    onCompTake: (String, Long, Long) -> Unit,
+    onDeleteTake: (String) -> Unit
 ) {
     val density = LocalDensity.current
     var dragFrom by remember(lane.id) { mutableStateOf<Long?>(null) }
     var dragTo by remember(lane.id) { mutableStateOf<Long?>(null) }
     val laneColor = if (lane.colorHex != 0L) Color(lane.colorHex) else Color(track.colorHex)
     val selectCd = stringResource(R.string.take_select_cd, lane.name)
+    val deleteCd = stringResource(R.string.take_delete_cd, lane.name)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -229,6 +241,28 @@ private fun TakeRow(
                 }
               }
             }
+        }
+
+        // A bad take must be removable where it is heard, not only from the
+        // inspector. Fixed at the end of the row so it never scrolls away with
+        // the audio.
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(RoundedCornerShape(Radius.sm))
+                .clickable(role = androidx.compose.ui.semantics.Role.Button) {
+                    onDeleteTake(lane.id)
+                }
+                .testTag("delete_take_${lane.id}")
+                .semantics { contentDescription = deleteCd },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.DeleteOutline,
+                contentDescription = null,
+                tint = ElectricLime.copy(alpha = 0.85f),
+                modifier = Modifier.size(16.dp)
+            )
         }
     }
 }

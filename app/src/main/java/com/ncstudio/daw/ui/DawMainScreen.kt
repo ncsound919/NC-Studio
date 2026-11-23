@@ -681,7 +681,6 @@ fun DawMainScreen(
                                 settings = settings,
                                 onSelectTrack = { idx ->
                                     viewModel.selectTrack(idx)
-                                    activeTab = DawTab.INSPECTOR
                                 }
                             )
                         }
@@ -728,7 +727,7 @@ fun DawMainScreen(
                                 onApplyAllSuggestions = { viewModel.applyAllSuggestions() },
                                 onToggleAbCompare = { viewModel.toggleAbCompare() },
                                 onNaturalLanguagePrompt = { p -> viewModel.handleNaturalLanguageMixPrompt(p) },
-                                onScanLocalModels = { url -> viewModel.scanForLocalModels(url) },
+                                onScanLocalModels = { url -> viewModel.scanForLocalModels(url, deep = true) },
                                 onSelectLocalModel = { model -> viewModel.selectLocalModel(model) },
                                 onSendQueryToLocalModel = { prompt -> viewModel.sendPromptToLocalModel(prompt) },
                                 onStartVoiceCommand = { viewModel.startVoiceCommand() },

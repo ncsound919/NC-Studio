@@ -2,17 +2,25 @@ package com.ncstudio.daw.audio.ai
 
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
+import java.net.Inet4Address
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
+import java.net.Socket
 import java.util.UUID
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 enum class LocalModelProvider(val displayName: String, val defaultPort: Int) {
     OLLAMA("Ollama REST", 11434),
     LLAMA_CPP("Llama.cpp Server", 8080),
-    OPEN_AI_REST("OpenAI REST API", 8000)
+    OPEN_AI_REST("OpenAI REST API", 8000);
+
+    companion object {
+        /** Maps a persisted display name back to its provider. */
+        fun fromDisplayName(name: String?): LocalModelProvider? =
+            values().firstOrNull { it.displayName == name }
+    }
 }
 
 data class LocalModelEndpoint(
@@ -49,6 +57,8 @@ data class LocalModelDetectorState(
     val detectedModels: List<DiscoveredModelInfo> = emptyList(),
     val activeModel: DiscoveredModelInfo? = null,
     val customEndpointUrl: String = "http://10.0.2.2:11434",
+    /** The Wi-Fi subnet the last scan swept, empty when no LAN scan ran. */
+    val scannedSubnet: String = "",
     val lastScanTimestamp: Long = 0L,
     val lastInferenceResponse: String? = null,
     val isInferenceRunning: Boolean = false
@@ -78,13 +88,92 @@ object LocalModelDetector {
     // app-wide entry point and switches the adapter by x-llm-app, so a scan
     // selects it before a direct llama.cpp/Ollama instance.
     val DEFAULT_ENDPOINTS = listOf(
-        LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://127.0.0.1:8788", "Overlay mesh (Localhost 127.0.0.1:8788)"),
-        LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://10.0.2.2:8788", "Overlay mesh (Emulator Host 10.0.2.2:8788)"),
-        LocalModelEndpoint(LocalModelProvider.OLLAMA, "http://10.0.2.2:11434", "Ollama (Emulator Host 10.0.2.2:11434)"),
-        LocalModelEndpoint(LocalModelProvider.OLLAMA, "http://127.0.0.1:11434", "Ollama (Localhost 127.0.0.1:11434)"),
-        LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://10.0.2.2:8080", "Llama.cpp (Emulator Host 10.0.2.2:8080)"),
-        LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://127.0.0.1:8080", "Llama.cpp (Localhost 127.0.0.1:8080)")
+        LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://127.0.0.1:8788", "Overlay mesh (this phone:8788)"),
+        LocalModelEndpoint(LocalModelProvider.OLLAMA, "http://127.0.0.1:11434", "Ollama (this phone:11434)"),
+        LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://127.0.0.1:8080", "Llama.cpp (this phone:8080)"),
+        LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://10.0.2.2:8788", "Overlay mesh (emulator host:8788)"),
+        LocalModelEndpoint(LocalModelProvider.OLLAMA, "http://10.0.2.2:11434", "Ollama (emulator host:11434)"),
+        LocalModelEndpoint(LocalModelProvider.LLAMA_CPP, "http://10.0.2.2:8080", "Llama.cpp (emulator host:8080)")
     )
+
+    /** Ports the studio looks for on the local Wi-Fi network. */
+    val LAN_PORTS = listOf(
+        LocalModelProvider.LLAMA_CPP.defaultPort, // llama.cpp / mesh
+        11434,                                    // Ollama
+        8788                                      // Overlay mesh dev port
+    )
+
+    /**
+     * The /24 the phone is currently on, e.g. "192.168.1". This is what makes a
+     * model running on the studio desktop visible from the phone: the desktop
+     * is not loopback and not 10.0.2.2, it is just another host on the Wi-Fi.
+     */
+    fun lanSubnetPrefix(): String? {
+        return try {
+            NetworkInterface.getNetworkInterfaces().toList()
+                .asSequence()
+                .filter { runCatching { it.isUp }.getOrDefault(false) }
+                .filterNot { runCatching { it.isLoopback }.getOrDefault(true) }
+                .flatMap { it.inetAddresses.toList().asSequence() }
+                .filterIsInstance<Inet4Address>()
+                .firstOrNull { it.isSiteLocalAddress && !it.isLoopbackAddress }
+                ?.hostAddress
+                ?.substringBefore('%')
+                ?.split('.')
+                ?.take(3)
+                ?.joinToString(".")
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Finds model servers listening on [prefix].0/24.
+     *
+     * A TCP connect is used as the filter, so a subnet of 254 hosts costs a few
+     * hundred milliseconds instead of an HTTP timeout per address. Only hosts
+     * that accept a connection are then probed over HTTP.
+     */
+    fun discoverLanEndpoints(
+        prefix: String,
+        ports: List<Int> = LAN_PORTS,
+        connectTimeoutMs: Int = 220,
+    ): List<LocalModelEndpoint> {
+        val pool = Executors.newFixedThreadPool(48)
+        val jobs = ArrayList<Callable<LocalModelEndpoint?>>(254 * ports.size)
+        for (host in 1..254) {
+            val address = "$prefix.$host"
+            for (port in ports) {
+                jobs.add(Callable {
+                    try {
+                        Socket().use { socket ->
+                            socket.connect(InetSocketAddress(address, port), connectTimeoutMs)
+                        }
+                        val provider = when (port) {
+                            11434 -> LocalModelProvider.OLLAMA
+                            8080, 8788 -> LocalModelProvider.LLAMA_CPP
+                            else -> LocalModelProvider.OPEN_AI_REST
+                        }
+                        LocalModelEndpoint(
+                            provider = provider,
+                            baseUrl = "http://$address:$port",
+                            displayName = "Wi-Fi $address:$port",
+                        )
+                    } catch (_: Exception) {
+                        null
+                    }
+                })
+            }
+        }
+        return try {
+            pool.invokeAll(jobs, 15, TimeUnit.SECONDS)
+                .mapNotNull { future -> runCatching { future.get() }.getOrNull() }
+        } catch (_: Exception) {
+            emptyList()
+        } finally {
+            pool.shutdownNow()
+        }
+    }
 
     fun parseOllamaTagsResponse(jsonString: String, baseUrl: String): List<DiscoveredModelInfo> {
         val list = mutableListOf<DiscoveredModelInfo>()
@@ -140,73 +229,49 @@ object LocalModelDetector {
         return list
     }
 
-    fun probeEndpoint(endpoint: LocalModelEndpoint): EndpointProbeResult {
+    fun probeEndpoint(
+        endpoint: LocalModelEndpoint,
+        connectTimeoutMs: Int = 2500,
+        readTimeoutMs: Int = 3000,
+    ): EndpointProbeResult {
         val startTime = System.currentTimeMillis()
-        return try {
-            val isOllama = endpoint.provider == LocalModelProvider.OLLAMA
-            val versionUrlStr = if (isOllama) "${endpoint.baseUrl}/api/version" else "${endpoint.baseUrl}/health"
-            val versionUrl = URL(versionUrlStr)
+        val isOllama = endpoint.provider == LocalModelProvider.OLLAMA
+        val baseUrl = endpoint.baseUrl.trimEnd('/')
+        val versionPath = if (isOllama) "/api/version" else "/health"
+        val version = LocalHttpTransport.get("$baseUrl$versionPath", connectTimeoutMs, readTimeoutMs)
+        val latency = System.currentTimeMillis() - startTime
 
-            val conn = (versionUrl.openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 2500
-                readTimeout = 3000
-                doInput = true
-            }
-
-            val code = conn.responseCode
-            val endTime = System.currentTimeMillis()
-            val latency = endTime - startTime
-
-            if (code in 200..299) {
-                val reader = BufferedReader(InputStreamReader(conn.inputStream))
-                val versionText = reader.use { it.readText() }
-                conn.disconnect()
-
-                // Fetch models
-                val modelsUrlStr = if (isOllama) "${endpoint.baseUrl}/api/tags" else "${endpoint.baseUrl}/v1/models"
-                val modelsUrl = URL(modelsUrlStr)
-                val mConn = (modelsUrl.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 2500
-                    readTimeout = 3000
-                    doInput = true
-                }
-
-                val mCode = mConn.responseCode
-                val models = if (mCode in 200..299) {
-                    val mReader = BufferedReader(InputStreamReader(mConn.inputStream))
-                    val mJson = mReader.use { it.readText() }
-                    if (isOllama) parseOllamaTagsResponse(mJson, endpoint.baseUrl)
-                    else parseLlamaCppModelsResponse(mJson, endpoint.baseUrl)
-                } else emptyList()
-                mConn.disconnect()
-
-                EndpointProbeResult(
-                    endpoint = endpoint,
-                    isOnline = true,
-                    latencyMs = latency,
-                    version = versionText.take(50),
-                    models = models
-                )
-            } else {
-                conn.disconnect()
-                EndpointProbeResult(
-                    endpoint = endpoint,
-                    isOnline = false,
-                    latencyMs = latency,
-                    errorMessage = "HTTP $code"
-                )
-            }
-        } catch (e: Exception) {
-            val latency = System.currentTimeMillis() - startTime
-            EndpointProbeResult(
+        if (version == null) {
+            return EndpointProbeResult(
                 endpoint = endpoint,
                 isOnline = false,
                 latencyMs = latency,
-                errorMessage = e.message ?: "Connection refused"
+                errorMessage = "Connection failed"
             )
         }
+        if (version.code !in 200..299) {
+            return EndpointProbeResult(
+                endpoint = endpoint,
+                isOnline = false,
+                latencyMs = latency,
+                errorMessage = "HTTP ${version.code}"
+            )
+        }
+
+        val modelsPath = if (isOllama) "/api/tags" else "/v1/models"
+        val modelsResponse = LocalHttpTransport.get("$baseUrl$modelsPath", connectTimeoutMs, readTimeoutMs)
+        val models = if (modelsResponse != null && modelsResponse.code in 200..299) {
+            if (isOllama) parseOllamaTagsResponse(modelsResponse.body, endpoint.baseUrl)
+            else parseLlamaCppModelsResponse(modelsResponse.body, endpoint.baseUrl)
+        } else emptyList()
+
+        return EndpointProbeResult(
+            endpoint = endpoint,
+            isOnline = true,
+            latencyMs = latency,
+            version = version.body.take(50),
+            models = models
+        )
     }
 
     fun generateWithLocalModel(
@@ -216,18 +281,6 @@ object LocalModelDetector {
     ): LocalModelReply {
         return try {
             if (model.provider == LocalModelProvider.OLLAMA) {
-                val url = URL("${model.baseUrl}/api/generate")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 5000
-                    readTimeout = GENERATION_READ_TIMEOUT_MS
-                    doOutput = true
-                    doInput = true
-                    setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("x-llm-app", MESH_APP_ID)
-                    setRequestProperty("x-llm-task", MESH_TASK)
-                }
-
                 val body = JSONObject().apply {
                     put("model", model.name)
                     put("prompt", "$systemPrompt\n\nUser Question: $prompt")
@@ -238,32 +291,22 @@ object LocalModelDetector {
                     })
                 }
 
-                OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+                val response = LocalHttpTransport.postJson(
+                    "${model.baseUrl.trimEnd('/')}/api/generate",
+                    body.toString(),
+                    5000,
+                    GENERATION_READ_TIMEOUT_MS,
+                    meshHeaders(),
+                ) ?: return LocalModelReply(error = "No response from ${model.name}: connection failed")
 
-                val code = conn.responseCode
-                if (code in 200..299) {
-                    val responseJson = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
-                    conn.disconnect()
-                    val jsonObj = JSONObject(responseJson)
+                if (response.code in 200..299) {
+                    val jsonObj = JSONObject(response.body)
                     LocalModelReply(text = jsonObj.optString("response", ""))
                 } else {
-                    conn.disconnect()
-                    LocalModelReply(error = "Ollama returned HTTP $code")
+                    LocalModelReply(error = "Ollama returned HTTP ${response.code}")
                 }
             } else {
                 // Llama.cpp / OpenAI Chat Completions
-                val url = URL("${model.baseUrl}/v1/chat/completions")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 5000
-                    readTimeout = GENERATION_READ_TIMEOUT_MS
-                    doOutput = true
-                    doInput = true
-                    setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("x-llm-app", MESH_APP_ID)
-                    setRequestProperty("x-llm-task", MESH_TASK)
-                }
-
                 val messages = JSONArray().apply {
                     put(JSONObject().apply {
                         put("role", "system")
@@ -284,13 +327,16 @@ object LocalModelDetector {
                     put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
                 }
 
-                OutputStreamWriter(conn.outputStream).use { it.write(body.toString()) }
+                val response = LocalHttpTransport.postJson(
+                    "${model.baseUrl.trimEnd('/')}/v1/chat/completions",
+                    body.toString(),
+                    5000,
+                    GENERATION_READ_TIMEOUT_MS,
+                    meshHeaders(),
+                ) ?: return LocalModelReply(error = "No response from ${model.name}: connection failed")
 
-                val code = conn.responseCode
-                if (code in 200..299) {
-                    val responseJson = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
-                    conn.disconnect()
-                    val jsonObj = JSONObject(responseJson)
+                if (response.code in 200..299) {
+                    val jsonObj = JSONObject(response.body)
                     val choices = jsonObj.optJSONArray("choices")
                     val firstChoice = choices?.optJSONObject(0)
                     val message = firstChoice?.optJSONObject("message")
@@ -300,12 +346,17 @@ object LocalModelDetector {
                     val reasoning = message?.optString("reasoning_content", "").orEmpty()
                     LocalModelReply(text = content.ifBlank { reasoning })
                 } else {
-                    conn.disconnect()
-                    LocalModelReply(error = "Llama.cpp returned HTTP $code")
+                    LocalModelReply(error = "Llama.cpp returned HTTP ${response.code}")
                 }
             }
         } catch (e: Exception) {
             LocalModelReply(error = "No response from ${model.name}: ${e.message ?: "connection failed"}")
         }
     }
+
+    /** Lets the overlay mesh gateway pick this app's adapter; direct servers ignore them. */
+    private fun meshHeaders(): Map<String, String> = mapOf(
+        "x-llm-app" to MESH_APP_ID,
+        "x-llm-task" to MESH_TASK,
+    )
 }

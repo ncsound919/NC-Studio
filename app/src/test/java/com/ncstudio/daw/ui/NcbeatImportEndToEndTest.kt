@@ -102,7 +102,7 @@ class NcbeatImportEndToEndTest {
         }
 
         // Untouched tracks stay untouched, and no error was reported.
-        assertTrue(session.tracks[5].clips.isEmpty())
+        assertTrue(session.tracks.last().clips.isEmpty())
         assertNull(viewModel.uiState.value.importError)
         assertTrue("timeline must cover the loop", session.totalLengthFrames >= 4_800L)
     }

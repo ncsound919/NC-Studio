@@ -166,6 +166,10 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     // Recording session state (transport truth at punch-in)
     private var currentRecordingStartFrame = 0L
     private var lastRecordingFile: File? = null
+    /** Track the current take belongs to, captured at punch-in. */
+    private var recordingTrackIndex: Int = -1
+    /** True when record started the transport, so stopping the take ends it. */
+    private var playbackStartedByRecording = false
 
     // Debounced persistence + coalesced undo state
     private var journalJob: Job? = null
@@ -325,6 +329,19 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+        // Restore the AI endpoint chosen last time before the startup scan, so
+        // a saved model is not "lost" on every launch and can be probed as-is.
+        _settings.update { current ->
+            current.copy(
+                activeLocalModelName = uiPrefs.getString(AI_MODEL_NAME_PREF, null)
+                    ?: current.activeLocalModelName,
+                activeLocalModelProvider = uiPrefs.getString(AI_MODEL_PROVIDER_PREF, null)
+                    ?: current.activeLocalModelProvider,
+                customOllamaUrl = uiPrefs.getString(AI_ENDPOINT_PREF, null)
+                    ?: current.customOllamaUrl
+            )
+        }
+        aiStudio.restoreFromSettings()
         val onboardingComplete = uiPrefs.getBoolean(ONBOARDING_PREF, false)
         _uiState.update {
             it.copy(
@@ -513,6 +530,12 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         sessionReady.await()
     }
 
+    /** Test-only: publish a prepared session instead of waiting for disk I/O. */
+    internal fun installSessionForTest(project: ProjectSession) {
+        if (!sessionReady.isCompleted) runBlocking { sessionReady.await() } // audit-ignore CONC-002: test-only helper
+        _session.value = project
+    }
+
     /**
      * Installs a deterministic clip fixture for tests. The app no longer opens
      * with stock demo music, so clip-editing tests opt in to their own take.
@@ -671,6 +694,9 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stop() {
+        // Stop must end an open take, not leave the microphone capturing into a
+        // file nobody will ever see.
+        if (_uiState.value.isRecording) stopRecording()
         resumeOnFocusGain = false
         playbackEngine.commandQueue.enqueue(AudioEngineCommand.Stop)
         _uiState.update { it.copy(isPlaying = false, playheadFrame = 0L) }
@@ -853,6 +879,33 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Appends an empty track, up to the engine's 16-channel ceiling.
+     *
+     * A blank session opens with four tracks instead of sixteen, so adding is
+     * the normal way to grow a project rather than fighting empty lanes.
+     */
+    fun addTrack() {
+        val session = _session.value
+        if (session.tracks.size >= MAX_SESSION_TRACKS) {
+            setStatus(
+                "All $MAX_SESSION_TRACKS engine channels are in use.",
+                StatusKind.ERROR
+            )
+            return
+        }
+        val track = blankTrack(session.tracks.size)
+        _session.update {
+            it.copy(
+                tracks = it.tracks + track,
+                revision = it.revision + 1
+            )
+        }
+        requestJournalWrite(_session.value)
+        selectTrack(track.index)
+        setStatus("Added ${track.name}.", StatusKind.SUCCESS)
+    }
+
     fun setTrackReverbSend(trackIndex: Int, sendLevel: Float) {
         val before = _session.value.tracks[trackIndex]
         val after = before.copy(reverbSendLevel = sendLevel)
@@ -984,22 +1037,30 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun deleteTakeLane(trackIndex: Int, laneId: String) {
         val before = _session.value.tracks.getOrNull(trackIndex) ?: return
-        if (before.takeLanes.size <= 1) {
-            _uiState.update {
-                it.copy(statusMessage = "Keep at least one take on ${before.name}.", statusKind = StatusKind.ERROR)
-            }
-            return
-        }
         val remaining = before.takeLanes.filterNot { it.id == laneId }
         val wasActive = before.activeTakeId == laneId
-        val nextActive = if (wasActive) remaining.first() else null
-        val after = before.copy(
-            takeLanes = remaining,
-            clips = nextActive?.clips ?: before.clips,
-            activeTakeId = nextActive?.id ?: before.activeTakeId
-        )
+        // Deleting the last take clears the audio. Leaving the clips behind
+        // made the lane vanish while the take the user rejected kept playing.
+        val after = if (remaining.isEmpty() && wasActive) {
+            before.copy(takeLanes = emptyList(), clips = emptyList(), activeTakeId = null)
+        } else {
+            val nextActive = if (wasActive) remaining.firstOrNull() else null
+            before.copy(
+                takeLanes = remaining,
+                clips = nextActive?.clips ?: before.clips,
+                activeTakeId = if (wasActive) nextActive?.id else before.activeTakeId
+            )
+        }
+        if (after == before) return
         applyDiscreteTrackEdit(before, after, "Delete take")
-        if (wasActive) scheduleRebuildTrack(trackIndex)
+        scheduleRebuildTrack(trackIndex)
+        _uiState.update {
+            it.copy(
+                statusMessage = "Take deleted from ${before.name}.",
+                statusKind = StatusKind.SUCCESS,
+                statusAction = StatusAction("Undo")
+            )
+        }
     }
 
     /**
@@ -1119,7 +1180,14 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     fun applyMixTemplate(templateId: String) {
         val template = com.ncstudio.daw.audio.plugins.MixReferenceTemplateLibrary.byId(templateId) ?: return
         val before = _session.value
-        val applied = com.ncstudio.daw.audio.plugins.TemplateApplier.applyToSession(before, template)
+        // A blank session names its tracks "Audio 1..4", so no role matches and
+        // the template would do nothing at all. Lay the template's own source
+        // roles out first, so the button builds a real starting point on a new
+        // project instead of quietly failing.
+        val laysOutTracks = com.ncstudio.daw.audio.plugins.TemplateApplier
+            .matchedTrackCount(before, template) == 0 && isPristineBlankSession(before)
+        val scaffolded = if (laysOutTracks) layOutTemplateTracks(before, template) else before
+        val applied = com.ncstudio.daw.audio.plugins.TemplateApplier.applyToSession(scaffolded, template)
         val after = applied.copy(revision = before.revision + 1)
         if (after == before) {
             setStatus(
@@ -1133,12 +1201,49 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         )
         _session.value = after
         playbackEngine.syncFromProject(_session.value)
-        val matched = com.ncstudio.daw.audio.plugins.TemplateApplier.matchedTrackCount(before, template)
+        val matched = com.ncstudio.daw.audio.plugins.TemplateApplier.matchedTrackCount(scaffolded, template)
         setStatus(
-            message = "${template.name} applied: $matched tracks chained, buses routed, mix bus set. Reference: ${template.referenceTrack}.",
+            message = if (laysOutTracks) {
+                "${template.name} laid out ${scaffolded.tracks.size} role tracks for this blank session: " +
+                    "$matched chained, buses routed, mix bus set. Reference: ${template.referenceTrack}."
+            } else {
+                "${template.name} applied: $matched tracks chained, buses routed, mix bus set. Reference: ${template.referenceTrack}."
+            },
             kind = StatusKind.SUCCESS,
             action = StatusAction("Undo")
         )
+    }
+
+    /**
+     * True while nothing has been recorded or named yet: every track still has
+     * its stock "Audio N" name and no audio. Renaming roles into such a session
+     * is safe; doing it to real work would not be.
+     */
+    private fun isPristineBlankSession(session: com.ncstudio.daw.audio.model.ProjectSession): Boolean =
+        session.tracks.isNotEmpty() && session.tracks.all { track ->
+            track.name == "Audio ${track.index + 1}" &&
+                track.clips.isEmpty() &&
+                track.takeLanes.isEmpty()
+        }
+
+    /** Renames (and, if needed, adds) tracks so a template's roles have somewhere to land. */
+    private fun layOutTemplateTracks(
+        session: com.ncstudio.daw.audio.model.ProjectSession,
+        template: com.ncstudio.daw.audio.plugins.MixReferenceTemplate,
+    ): com.ncstudio.daw.audio.model.ProjectSession {
+        // The template's own chain order is the order its tracks are laid out
+        // in; roles it does not chain get no track.
+        val roles = template.roleChains.keys.toList()
+        if (roles.isEmpty()) return session
+        val laidOut = roles.mapIndexed { position, role ->
+            val existing = session.tracks.getOrNull(position)
+            if (existing == null) {
+                blankTrack(position, role.displayName)
+            } else {
+                existing.copy(name = role.displayName)
+            }
+        } + session.tracks.drop(roles.size)
+        return session.copy(tracks = laidOut)
     }
 
     /** Applies one role chain of a template to a single track. */
@@ -1537,22 +1642,37 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
     // Recording & Latency Calibration
     fun startRecording() {
+        if (_uiState.value.isRecording) return
         val armedTrack = _session.value.tracks.find { it.isArmedForRecording }
         if (armedTrack == null) {
-            _uiState.update { it.copy(statusMessage = "Please arm a track (tap ● on track strip) to record!", statusKind = StatusKind.ERROR) }
+            _uiState.update { it.copy(statusMessage = "Arm a track first: tap the ● on its lane, then press record.", statusKind = StatusKind.ERROR) }
             return
         }
 
         val takesDir = File(getApplication<Application>().filesDir, "takes").apply { mkdirs() }
         val takeFile = File(takesDir, "take_${System.currentTimeMillis()}.wav")
 
+        // A punch-in defines where the take lands, so capture has to start
+        // there too. Previously it recorded wherever the playhead was and then
+        // placed the audio at the punch point, shifting the performance.
+        val punchIn = _uiState.value.punchInFrame
+        val recordStart = punchIn ?: _uiState.value.playheadFrame.coerceAtLeast(0L)
+        // Park the engine exactly where capture starts. The UI playhead and the
+        // engine position can drift (a stop resets the engine); without this the
+        // backing tracks and the take line up only by luck.
+        seekToFrame(recordStart)
+
         val success = audioRecorder.startRecording(takeFile)
         if (success) {
             lastRecordingFile = takeFile
-            // Capture transport truth at punch-in for accurate alignment
-            currentRecordingStartFrame = _uiState.value.playheadFrame
-            // Also start playback if not already playing so user hears backing tracks
-            if (!_uiState.value.isPlaying) startPlayback()
+            // Capture transport truth at punch-in for accurate alignment, and
+            // remember the armed track: it must not be re-resolved at stop time
+            // after the user has armed something else.
+            recordingTrackIndex = armedTrack.index
+            currentRecordingStartFrame = recordStart
+            playbackStartedByRecording = !_uiState.value.isPlaying
+            // Roll the backing tracks only when the transport was stopped.
+            if (playbackStartedByRecording) startPlayback()
             _uiState.update { it.copy(isRecording = true, statusMessage = "Recording to Track ${armedTrack.index + 1} (${armedTrack.name})...") }
         } else {
             _uiState.update { it.copy(statusMessage = "Microphone error. Check permission.", statusKind = StatusKind.ERROR) }
@@ -1565,6 +1685,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(isRecording = false) }
 
         if (framesRecorded < 0L) {
+            recordingTrackIndex = -1
+            playbackStartedByRecording = false
             // The writer is still finalising the WAV. Do not delete or re-read
             // the file while it is open — that discards a valid take.
             _uiState.update {
@@ -1576,16 +1698,25 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val armedTrack = _session.value.tracks.find { it.isArmedForRecording } ?: return
-        if (framesRecorded > 2000L) {
-            // Apply latency calibration offset so overdubs align perfectly
-            val latencyFrames = ((_session.value.latencyOffsetMs / 1000f) * sampleRate).toLong()
-            val punchIn = _uiState.value.punchInFrame
+        val takeTrackIndex = recordingTrackIndex
+        recordingTrackIndex = -1
+        val stoppedTransport = playbackStartedByRecording
+        playbackStartedByRecording = false
+        if (stoppedTransport) pausePlayback()
+
+        val armedTrack = _session.value.tracks.getOrNull(takeTrackIndex) ?: return
+        // The first `latencyOffsetMs` of the file is the converter round-trip,
+        // so a take shorter than that contains no performance at all.
+        val latencyFrames = ((_session.value.latencyOffsetMs / 1000f) * sampleRate).toLong()
+        val usableFrames = (framesRecorded - latencyFrames).coerceAtLeast(0L)
+        if (usableFrames > 2000L) {
             val punchOut = _uiState.value.punchOutFrame
-            val alignedTimelineStart = if (punchIn != null) punchIn else maxOf(0L, _uiState.value.playheadFrame - framesRecorded - latencyFrames)
-            val takeLength = if (punchIn != null && punchOut != null) {
-                (punchOut - punchIn).coerceAtLeast(0L)
-            } else framesRecorded
+            // The clip starts where capture started; the latency is skipped
+            // inside the source instead of sliding the whole take earlier.
+            val alignedTimelineStart = currentRecordingStartFrame.coerceAtLeast(0L)
+            val takeLength = if (punchOut != null) {
+                (punchOut - alignedTimelineStart).coerceIn(0L, usableFrames)
+            } else usableFrames
 
             // Prefer the exact file handed to the recorder; scanning for the most
             // recently modified WAV can pick up a different take.
@@ -1619,7 +1750,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             val newClip = AudioClip(
                 name = "Mic Take $takeNumber",
                 sourcePath = sourcePath,
-                sourceStartFrame = if (punchIn != null) (punchIn - currentRecordingStartFrame + latencyFrames).coerceAtLeast(0L) else 0L,
+                sourceStartFrame = latencyFrames,
                 lengthFrames = takeLength,
                 timelineStartFrame = alignedTimelineStart,
                 trackIndex = armedTrack.index
@@ -1651,6 +1782,8 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             }
             requestJournalWrite(_session.value)
             scheduleRebuildTrack(armedTrack.index)
+            // Leave the playhead on the take so the result is visible at once.
+            seekToFrame(alignedTimelineStart)
             _uiState.update { it.copy(statusMessage = "Take recorded (${String.format(java.util.Locale.US, "%.2f", framesRecorded.toFloat() / sampleRate)}s) with ${String.format(java.util.Locale.US, "%.1f", _session.value.latencyOffsetMs)}ms latency compensation.") }
         } else {
             // Too short to be a usable take: discard it and say why, instead of
@@ -1849,6 +1982,7 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateSettings(newSettings: DawSettings) {
         _settings.value = newSettings
+        persistAiEndpoint(newSettings)
         _session.update { it.copy(latencyOffsetMs = newSettings.latencyCompensationMs) }
         // Propagate buffer size + metronome to the audio engine thread-safely
         playbackEngine.commandQueue.enqueue(AudioEngineCommand.SetBufferSize(newSettings.bufferSize.frames))
@@ -1859,8 +1993,26 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     fun resetSettingsToDefaults() {
         val defaults = DawSettings()
         _settings.value = defaults
+        uiPrefs.edit()
+            .remove(AI_MODEL_NAME_PREF)
+            .remove(AI_MODEL_PROVIDER_PREF)
+            .remove(AI_ENDPOINT_PREF)
+            .apply()
         _session.update { it.copy(latencyOffsetMs = defaults.latencyCompensationMs) }
         _uiState.update { it.copy(statusMessage = "All studio parameters reset to factory calibration.") }
+    }
+
+    /**
+     * The local model and its endpoint are the one part of [DawSettings] that
+     * cannot be inferred again: without this, every launch forgot which server
+     * the engineer had found and the AI tab looked disconnected.
+     */
+    private fun persistAiEndpoint(settings: DawSettings) {
+        uiPrefs.edit()
+            .putString(AI_MODEL_NAME_PREF, settings.activeLocalModelName)
+            .putString(AI_MODEL_PROVIDER_PREF, settings.activeLocalModelProvider)
+            .putString(AI_ENDPOINT_PREF, settings.customOllamaUrl)
+            .apply()
     }
 
     fun refreshCacheSize() {
@@ -2042,6 +2194,15 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
                 var newTracks = _session.value.tracks
                 var maxLen = _session.value.totalLengthFrames
                 var clippedTracks = 0
+
+                // A blank session opens with four tracks, but an imported beat
+                // can have more. Grow the session to fit instead of silently
+                // dropping every stem past the fourth.
+                val requiredTracks =
+                    (plan.tracks.maxOfOrNull { it.sessionTrackIndex } ?: -1) + 1
+                if (newTracks.size < requiredTracks) {
+                    newTracks = newTracks + (newTracks.size until requiredTracks).map { blankTrack(it) }
+                }
 
                 fun placeClip(trackIndex: Int, entry: String, name: String): Boolean {
                     val (path, samples) = decoded[entry] ?: return false
@@ -2414,9 +2575,10 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
     // methods keep the existing call sites stable.
     fun scanForLocalModels(
         customUrl: String? = null,
+        deep: Boolean = false,
         dispatcher: CoroutineDispatcher = Dispatchers.IO,
     ) {
-        aiStudio.scan(customUrl, dispatcher)
+        aiStudio.scan(customUrl, deep = deep, dispatcher = dispatcher)
     }
 
     fun selectLocalModel(model: DiscoveredModelInfo) = aiStudio.select(model)

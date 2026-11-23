@@ -42,8 +42,10 @@ Environment knobs:
 | `TOKEN_TTL_MS` | 12 h | session token lifetime |
 | `CHUNK_MAX_BYTES` | 8 MiB | rejected above this |
 
-Find the LAN address the phones will use (`ipconfig` on Windows, `ip addr` on
-Linux) and point both apps at `host:8787` — for example `192.168.1.20:8787`.
+Point both apps at the server's `https://` address. Debug builds also accept a
+plain `http://host:8787` for loopback and `.local` names, but refuse a bare LAN
+IP, because Android's network security config cannot name a DHCP address. TLS in
+front of this server is the dependable path; see `SESSION_MODE_MVP.md`.
 Windows Firewall may prompt on first run; allow private networks.
 
 ## Tests

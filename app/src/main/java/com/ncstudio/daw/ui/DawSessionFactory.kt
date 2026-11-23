@@ -1,99 +1,59 @@
 package com.ncstudio.daw.ui
 
 import com.ncstudio.daw.audio.model.ProjectSession
-import com.ncstudio.daw.audio.model.StemCategory
 import com.ncstudio.daw.audio.model.TrackData
 
-internal fun createInitialSession(): ProjectSession {
-        val trackColors = longArrayOf(
-            0xFFFF5722, // 1. Kick: Deep Orange
-            0xFFFF9800, // 2. Snare: Amber
-            0xFFFFEB3B, // 3. Hi-Hats: Yellow
-            0xFF8BC34A, // 4. Toms: Light Green
-            0xFF4CAF50, // 5. Sub Bass: Green
-            0xFF009688, // 6. Synth Bass: Teal
-            0xFF00BCD4, // 7. Rhythm Guitars L: Cyan
-            0xFF03A9F4, // 8. Rhythm Guitars R: Light Blue
-            0xFF2196F3, // 9. Lead Guitar: Blue
-            0xFF3F51B5, // 10. Acoustic Piano: Indigo
-            0xFF673AB7, // 11. Rhodes E-Piano: Deep Purple
-            0xFF9C27B0, // 12. Synth Pad: Purple
-            0xFFE91E63, // 13. Synth Lead: Pink
-            0xFFF44336, // 14. Lead Vocal: Red / Rose
-            0xFFFF4081, // 15. Vocal Harmonies: Magenta
-            0xFFCDDC39  // 16. FX Riser & Drops: Lime
-        )
-        val trackNames = arrayOf(
-            "Kick Drum",
-            "Snare & Clap",
-            "Hi-Hats Groove",
-            "Toms & Percs",
-            "808 Sub Bass",
-            "Synth Bass",
-            "Rhythm Guitar L",
-            "Rhythm Guitar R",
-            "Lead Guitar",
-            "Acoustic Piano",
-            "Rhodes E-Piano",
-            "Synth Pad",
-            "Synth Lead",
-            "Lead Vocal",
-            "Vocal Harmonies",
-            "FX Riser & Drops"
-        )
-        val defaultCategories = arrayOf(
-            StemCategory.DRUMS,
-            StemCategory.DRUMS,
-            StemCategory.DRUMS,
-            StemCategory.DRUMS,
-            StemCategory.BASS,
-            StemCategory.BASS,
-            StemCategory.GUITAR,
-            StemCategory.GUITAR,
-            StemCategory.GUITAR,
-            StemCategory.KEYS,
-            StemCategory.KEYS,
-            StemCategory.KEYS,
-            StemCategory.KEYS,
-            StemCategory.VOCAL,
-            StemCategory.VOCAL,
-            StemCategory.OTHER
-        )
+/**
+ * Tracks a brand-new project opens with.
+ *
+ * A blank session used to allocate all 16 engine channels with genre names
+ * ("Kick Drum", "Lead Vocal"...), which made an empty project look like
+ * somebody else's template and buried the arrangement under empty lanes. Four
+ * empty tracks is an empty desk you can actually see; more can be added.
+ */
+internal const val DEFAULT_BLANK_TRACKS = 4
 
-        val tracks = (0 until 16).map { i ->
-            TrackData(
-                index = i,
-                name = trackNames[i],
-                colorHex = trackColors[i],
-                gainDb = when (i) {
-                    0, 4 -> -1.5f // Kick and Sub
-                    6 -> -3.5f    // Guitar L
-                    7 -> -3.5f    // Guitar R
-                    else -> -3.0f
-                },
-                pan = when (i) {
-                    2 -> 0.20f   // Hi-hats
-                    6 -> -0.40f  // Rhythm Guitar L
-                    7 -> 0.40f   // Rhythm Guitar R
-                    10 -> -0.25f // Rhodes
-                    14 -> 0.30f  // Harmonies
-                    else -> 0.0f
-                },
-                reverbSendLevel = when (i) {
-                    1 -> 0.35f  // Snare
-                    9 -> 0.25f  // Acoustic Piano
-                    11 -> 0.45f // Synth Pad
-                    13 -> 0.30f // Lead Vocal
-                    14 -> 0.50f // Harmonies
-                    15 -> 0.60f // FX Riser
-                    else -> 0.05f
-                },
-                stemCategory = defaultCategories[i],
-                // Tracks start empty. Audio arrives from import or recording;
-                // no stock music is baked into a new session.
-                clips = emptyList()
-            )
-        }
+/** Hard ceiling of the DSP engine: 16 fixed channel strips. */
+internal const val MAX_SESSION_TRACKS = 16
 
-        return ProjectSession(tracks = tracks)
-    }
+/** Track colours handed out in order, shared by blank sessions and new tracks. */
+private val BLANK_TRACK_COLORS = longArrayOf(
+    0xFF00BCD4, // cyan
+    0xFFFF9800, // amber
+    0xFF8BC34A, // green
+    0xFFE91E63, // pink
+    0xFF9C27B0, // purple
+    0xFF2196F3, // blue
+    0xFFFF5722, // deep orange
+    0xFF009688, // teal
+    0xFFFFEB3B, // yellow
+    0xFF3F51B5, // indigo
+    0xFF4CAF50, // green (dark)
+    0xFFCDDC39, // lime
+    0xFF673AB7, // deep purple
+    0xFFF44336, // red
+    0xFFFF4081, // magenta
+    0xFF03A9F4  // light blue
+)
+
+/**
+ * A neutral, empty track. No stock clips are baked in: audio arrives from
+ * import or recording only.
+ */
+internal fun blankTrack(index: Int, name: String = "Audio ${index + 1}"): TrackData =
+    TrackData(
+        index = index,
+        name = name,
+        colorHex = BLANK_TRACK_COLORS[index % BLANK_TRACK_COLORS.size],
+        gainDb = 0f,
+        pan = 0f,
+        reverbSendLevel = 0f,
+        clips = emptyList()
+    )
+
+internal fun createInitialSession(
+    trackCount: Int = DEFAULT_BLANK_TRACKS
+): ProjectSession {
+    val count = trackCount.coerceIn(1, MAX_SESSION_TRACKS)
+    return ProjectSession(tracks = (0 until count).map { blankTrack(it) })
+}

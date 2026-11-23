@@ -718,10 +718,13 @@ data class DawSettings(
     val aiStemAutoClassification: Boolean = true,
     val enableLocalNeuralModel: Boolean = true,
     val localNeuralModelMode: String = "ON_DEVICE_QUANTIZED", // "ON_DEVICE_QUANTIZED", "SPECTRAL_RULES", "HYBRID_ENSEMBLE"
-    val customOllamaUrl: String = "http://10.0.2.2:11434",
+    // Empty until a scan finds a model: the studio does not claim a model is
+    // loaded before one has answered. Loopback is the on-device server; the
+    // phone's Wi-Fi subnet is scanned as well.
+    val customOllamaUrl: String = "http://127.0.0.1:11434",
     val autoDetectLocalModelsOnStartup: Boolean = true,
-    val activeLocalModelName: String = "llama3.2:1b",
-    val activeLocalModelProvider: String = "Ollama REST",
+    val activeLocalModelName: String = "",
+    val activeLocalModelProvider: String = "",
     val aiMaxEqBoostDb: Float = 6.0f,
     val highResolutionWaveforms: Boolean = true,
     val editMode: EditMode = EditMode.GRID,

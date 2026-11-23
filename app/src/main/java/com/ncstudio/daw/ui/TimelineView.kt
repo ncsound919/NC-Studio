@@ -36,6 +36,7 @@ import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FitScreen
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Tune
@@ -96,6 +97,7 @@ import com.ncstudio.daw.audio.model.TrackData
 import com.ncstudio.daw.ui.components.AudioRotaryKnob
 import com.ncstudio.daw.ui.components.StudioTooltip
 import com.ncstudio.daw.ui.theme.Radius
+import com.ncstudio.daw.ui.theme.ClipRed
 import com.ncstudio.daw.ui.theme.ElectricLime
 import com.ncstudio.daw.ui.theme.GridMajor
 import com.ncstudio.daw.ui.theme.GridMinor
@@ -162,6 +164,8 @@ fun TimelineView(
     onStripSilence: (SampleEdit.StripSettings, StripSilenceMode) -> Unit = { _, _ -> },
     onSelectTake: (Int, String) -> Unit = { _, _ -> },
     onCompTakeRange: (Int, String, Long, Long) -> Unit = { _, _, _, _ -> },
+    onDeleteTakeLane: (Int, String) -> Unit = { _, _ -> },
+    onToggleArm: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val totalFrames = session.totalLengthFrames.toFloat().coerceAtLeast(1f)
@@ -170,11 +174,11 @@ fun TimelineView(
     val selectedClips = selectedTrack?.clips
         ?.filter { it.id in uiState.selectedClipIds }
         .orEmpty()
+    // Only a real selection drives the clip actions. Falling back to the first
+    // clip made FADE/CLIP/delete act on a clip the user never touched (and
+    // painted fade grips over the first clip of every track).
     val firstSelectedClip = selectedClips.firstOrNull()
-        ?: selectedTrack?.clips?.firstOrNull()
-    val activeClips = selectedClips.ifEmpty {
-        selectedTrack?.clips?.firstOrNull()?.let { listOf(it) }.orEmpty()
-    }
+    val activeClips = selectedClips
     val framesPerBeat = session.sampleRate * 60.0 / session.tempoBpm.coerceAtLeast(1f)
     val framesPerBar = framesPerBeat * 4.0
     val canSplitAtPlayhead = selectedTrack?.clips?.any { clip ->
@@ -421,131 +425,39 @@ fun TimelineView(
                     .background(StudioCardBorder)
             )
 
-            EditMode.values().forEach { mode ->
-                val active = settings.editMode == mode
-                Box(
-                    modifier = Modifier
-                        .heightIn(min = 48.dp)
-                        .clip(RoundedCornerShape(Radius.md))
-                        .background(if (active) StudioAmber.copy(alpha = 0.2f) else StudioCard)
-                        .border(1.dp, if (active) StudioAmber else StudioCardBorder, RoundedCornerShape(Radius.md))
-                        .clickable(role = androidx.compose.ui.semantics.Role.Button) {
-                            haptics.studioTick(settings.enableHapticFeedback)
-                            onSetEditMode(mode)
-                        }
-                        .semantics {
-                            contentDescription = "${mode.displayName} edit mode"
-                            stateDescription = if (active) "Active. ${mode.description}" else mode.description
-                        }
-                        .padding(horizontal = 10.dp)
-                        .testTag("edit_mode_${mode.name.lowercase()}"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = mode.displayName.uppercase(),
-                        color = if (active) StudioAmber else TextMuted,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1
-                    )
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .width(1.dp)
-                    .height(28.dp)
-                    .background(StudioCardBorder)
-            )
-
-            // Pro Tools edit commands, also on keyboard: B separates at the
-            // playhead, Ctrl+E at the selection, Ctrl+H heals, Ctrl+F crossfades.
+            // One mode button that cycles GRID -> SLIP -> SPOT. Four always-on
+            // chips for a setting changed twice a session crowded out the tools
+            // that are used on every edit.
+            val nextEditMode =
+                EditMode.values()[(settings.editMode.ordinal + 1) % EditMode.values().size]
             Box(
                 modifier = Modifier
                     .heightIn(min = 48.dp)
                     .clip(RoundedCornerShape(Radius.md))
-                    .background(if (uiState.editSelection != null) NeonCyan.copy(alpha = 0.18f) else StudioCard)
-                    .border(
-                        1.dp,
-                        if (uiState.editSelection != null) NeonCyan else StudioCardBorder,
-                        RoundedCornerShape(Radius.md)
-                    )
-                    .clickable(role = androidx.compose.ui.semantics.Role.Button) { onSeparateAtSelection() }
-                    .semantics { contentDescription = "Separate clips at the selection" }
-                    .padding(horizontal = 10.dp)
-                    .testTag("action_separate_at_selection"),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = stringResource(R.string.timeline_sep),
-                    color = if (uiState.editSelection != null) NeonCyan else TextMuted,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
-                )
-            }
-
-            Box(
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .clip(RoundedCornerShape(Radius.md))
-                    .background(StudioCard)
+                    .background(StudioAmber.copy(alpha = 0.2f))
+                    .border(1.dp, StudioAmber, RoundedCornerShape(Radius.md))
                     .clickable(role = androidx.compose.ui.semantics.Role.Button) {
-                        firstSelectedClip?.let { onHealClip(selectedTrack?.index ?: 0, it.id) }
+                        haptics.studioTick(settings.enableHapticFeedback)
+                        onSetEditMode(nextEditMode)
                     }
-                    .semantics { contentDescription = "Heal separation" }
+                    .semantics {
+                        contentDescription =
+                            "Edit mode: ${settings.editMode.displayName}. Tap for ${nextEditMode.displayName}."
+                        stateDescription = settings.editMode.description
+                    }
                     .padding(horizontal = 10.dp)
-                    .testTag("action_heal_clip"),
+                    .testTag("cycle_edit_mode_button"),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = stringResource(R.string.timeline_heal),
-                    color = if (firstSelectedClip != null) TextPrimary else TextMuted,
+                    text = "MODE ${settings.editMode.displayName.uppercase()}",
+                    color = StudioAmber,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1
                 )
             }
 
-            Box(
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .clip(RoundedCornerShape(Radius.md))
-                    .background(StudioCard)
-                    .clickable(role = androidx.compose.ui.semantics.Role.Button) { onCrossfadeClips() }
-                    .semantics { contentDescription = "Crossfade selected clips" }
-                    .padding(horizontal = 10.dp)
-                    .testTag("action_crossfade_clips"),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = stringResource(R.string.timeline_crossfade),
-                    color = if (selectedClips.size >= 2) TextPrimary else TextMuted,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
-                )
-            }
-
-            Box(
-                modifier = Modifier
-                    .heightIn(min = 48.dp)
-                    .clip(RoundedCornerShape(Radius.md))
-                    .background(StudioCard)
-                    .clickable(role = androidx.compose.ui.semantics.Role.Button) { onClearSelectedClips() }
-                    .semantics { contentDescription = "Clear selected clips" }
-                    .padding(horizontal = 10.dp)
-                    .testTag("action_clear_clips"),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = stringResource(R.string.timeline_clear),
-                    color = if (selectedClips.isNotEmpty()) TextPrimary else TextMuted,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
-                )
-            }
         }
 
         Row(
@@ -668,6 +580,54 @@ fun TimelineView(
                         Text(
                             text = stringResource(R.string.timeline_split),
                             color = if (canSplitAtPlayhead) StudioPurple else TextMuted,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+
+            // Delete sits next to split because removing a bad take is the
+            // other half of recording one. Undo covers the mistake.
+            StudioTooltip("Delete the selected clips") {
+                Box(
+                    modifier = Modifier
+                        .padding(start = 6.dp)
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(Radius.md))
+                        .background(if (firstSelectedClip != null) ClipRed.copy(alpha = 0.18f) else StudioCard)
+                        .border(
+                            1.dp,
+                            if (firstSelectedClip != null) ClipRed else StudioCardBorder,
+                            RoundedCornerShape(Radius.md)
+                        )
+                        .clickable(
+                            enabled = firstSelectedClip != null,
+                            role = androidx.compose.ui.semantics.Role.Button
+                        ) {
+                            haptics.studioConfirm(settings.enableHapticFeedback)
+                            onClearSelectedClips()
+                        }
+                        .semantics { contentDescription = "Delete selected clips" }
+                        .padding(horizontal = 12.dp)
+                        .testTag("delete_selected_clips_button"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = null,
+                            tint = if (firstSelectedClip != null) ClipRed else TextMuted,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = "DELETE",
+                            color = if (firstSelectedClip != null) ClipRed else TextMuted,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace,
@@ -1078,6 +1038,7 @@ fun TimelineView(
                             ?.takeIf { it.trackIndex == index }
                             ?.let { it.startFrame..it.endFrame },
                         onSelect = { onSelectTrack(index) },
+                        onToggleArm = { onToggleArm(index) },
                         onToggleClip = { clipId -> onToggleClipSelection(index, clipId) },
                         onSplitClipAtFrame = { clipId, frame ->
                             onSplitClipAtFrame(index, clipId, frame)
@@ -1128,7 +1089,8 @@ fun TimelineView(
                         contentZoom = zoom,
                         scrollState = contentScroll,
                         onSelectTake = { laneId -> onSelectTake(index, laneId) },
-                        onCompTake = { laneId, from, to -> onCompTakeRange(index, laneId, from, to) }
+                        onCompTake = { laneId, from, to -> onCompTakeRange(index, laneId, from, to) },
+                        onDeleteTake = { laneId -> onDeleteTakeLane(index, laneId) }
                     )
                   }
                 }

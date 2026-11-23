@@ -133,13 +133,23 @@ fun SessionScreen(viewModel: SessionViewModel, modifier: Modifier = Modifier) {
 
 @Composable
 internal fun ServerField(value: String, onChange: (String) -> Unit) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onChange,
-        label = { Text(stringResource(R.string.session_server_host)) },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-    )
+    Column(modifier = Modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onChange,
+            label = { Text(stringResource(R.string.session_server_host)) },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+        )
+        ConnectionSettings.cleartextWarning(value)?.let { warning ->
+            Text(
+                text = warning,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
 }
 
 @Composable

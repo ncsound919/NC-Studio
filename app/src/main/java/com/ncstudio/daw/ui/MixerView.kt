@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
@@ -68,6 +70,7 @@ import com.ncstudio.daw.ui.theme.StudioBackground
 import com.ncstudio.daw.ui.theme.MasterStrip
 import com.ncstudio.daw.ui.theme.PanelInset
 import com.ncstudio.daw.ui.theme.PanelMuted
+import com.ncstudio.daw.ui.theme.Radius
 import com.ncstudio.daw.ui.theme.StudioCard
 import com.ncstudio.daw.ui.theme.StudioCardBorder
 import com.ncstudio.daw.ui.theme.StudioPurple
@@ -102,6 +105,7 @@ fun MixerView(
     onSetReverbSend: (Int, Float) -> Unit,
     onSetMasterGain: (Float) -> Unit,
     onApplyMasterPreset: (MasterPreset) -> Unit = {},
+    onAddTrack: () -> Unit = {},
     hapticsEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
@@ -203,6 +207,39 @@ fun MixerView(
                     contentDescription = null,
                     tint = if (uiState.selectedTrackIndex < session.tracks.size - 1) NeonCyan else TextMuted
                 )
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            // Blank sessions open with four tracks, so growing the session is
+            // one tap away instead of being a hidden project setting.
+            Box(
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .clip(RoundedCornerShape(Radius.md))
+                    .background(StudioCard)
+                    .border(1.dp, StudioCardBorder, RoundedCornerShape(Radius.md))
+                    .clickable { onAddTrack() }
+                    .padding(horizontal = 12.dp)
+                    .semantics { contentDescription = "Add an empty track" }
+                    .testTag("add_track_button"),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = null,
+                        tint = ElectricLime,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "TRACK",
+                        color = ElectricLime,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
     }

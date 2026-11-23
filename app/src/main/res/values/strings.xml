@@ -72,7 +72,7 @@
     <string name="ui_auto_calibrate">Auto-calibrate</string>
     <string name="ui_auto_classify_stems_on_import">Auto-Classify Stems on Import</string>
     <string name="ui_auto_detect_local_models_ollama_llama">Auto-Detect Local Models (Ollama &amp; Llama)</string>
-    <string name="ui_auto_discovers_ollama_11434_llama_cpp_8080_serve">Auto-discovers Ollama (11434) &amp; Llama.cpp (8080) servers</string>
+    <string name="ui_auto_discovers_ollama_11434_llama_cpp_8080_serve">Scans this phone, then your Wi-Fi, for Ollama (11434), Llama.cpp (8080) and the AI mesh</string>
     <string name="ui_auto_pitch_correction">AUTO PITCH CORRECTION</string>
     <string name="ui_auto_save_interval">Auto-Save Interval</string>
     <string name="ui_automatically_commits_project_changes_to_disk_in">Writes a recovery snapshot on this interval. Crash recovery journals edits between saves; Manual disables auto-save.</string>
@@ -174,7 +174,7 @@
     <string name="ui_pulse_daw">NC Studio</string>
     <string name="ui_pulseneural_v1_16x32x7">NCNeural-v1 (16x32x7)</string>
     <string name="ui_quantization">Quantization</string>
-    <string name="ui_record_a_take_with_the_red_button_or_import_a_st">Record a take with the red button, or import a stem from the top bar.</string>
+    <string name="ui_record_a_take_with_the_red_button_or_import_a_st">Arm a track (tap the ● on its lane), then press the red record button. Or import a stem from the top bar.</string>
     <string name="ui_recording_count_in_pre_roll">Recording Count-In Pre-Roll</string>
     <string name="ui_reference_target_matcher">REFERENCE TARGET MATCHER</string>
     <string name="ui_refresh">Refresh</string>

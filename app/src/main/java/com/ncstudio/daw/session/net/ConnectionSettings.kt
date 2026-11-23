@@ -65,6 +65,36 @@ data class ConnectionSettings(
                 displayName = displayName,
             )
         }
+
+        /**
+         * Shown whenever a plain-HTTP session target cannot work in this build.
+         *
+         * TLS is the only dependable answer here: `.local` resolution needs
+         * both mDNS support in the phone's resolver and the laptop advertising
+         * itself, and a DHCP address cannot be listed in the network security
+         * config at all.
+         */
+        const val CLEARTEXT_SESSION_ADVICE =
+            "This build needs HTTPS for the session server. Put TLS in front of it " +
+                "(for example https://studio.example.com:8787), or use a loopback address."
+
+        /**
+         * Why plain HTTP to [hostInput] will be refused, or null when it can
+         * connect. The debug network security config can only name hosts -
+         * loopback, the emulator host and `.local` names - because the format
+         * cannot list a DHCP address, so the connection screen says it in
+         * advance instead of letting the platform throw.
+         */
+        fun cleartextWarning(hostInput: String): String? {
+            if (!BuildConfig.DEBUG) return null
+            val lower = hostInput.trim().lowercase()
+            if (lower.isEmpty() || lower.startsWith("https://")) return null
+            val host = lower.removePrefix("http://").substringBefore('/').substringBefore(':')
+            if (host in CLEARTEXT_HOSTS || host.endsWith(".local")) return null
+            return CLEARTEXT_SESSION_ADVICE
+        }
+
+        private val CLEARTEXT_HOSTS = setOf("", "localhost", "127.0.0.1", "10.0.2.2")
     }
 }
 

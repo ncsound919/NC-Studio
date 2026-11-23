@@ -9,6 +9,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -114,5 +119,108 @@ class LocalModelDetectorTest {
         assertNotNull(reply.error)
         assertTrue(reply.error!!.contains("No response from llama3.2:1b"))
         assertFalse(reply.error!!.contains("vocal clarity"))
+    }
+
+    @Test
+    fun localTransportRefusesHostsThatAreNotOnTheLocalNetwork() {
+        // A public literal address never gets a socket: the transport is the
+        // only cleartext path in the app, and it is limited to loopback/LAN.
+        assertNull(LocalHttpTransport.get("http://93.184.216.34/health", 200, 200))
+        // Loopback is allowed, but nothing is listening on this port.
+        assertNull(LocalHttpTransport.get("http://127.0.0.1:59999/health", 200, 200))
+    }
+
+    @Test
+    fun localTransportReadsAContentLengthBody() {
+        val body = """{"models":[]}"""
+        val server = serveOnce { socket ->
+            readHeaders(socket)
+            writeRaw(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +
+                    "Content-Length: ${body.toByteArray().size}\r\nConnection: close\r\n\r\n$body",
+            )
+        }
+
+        val response = LocalHttpTransport.get("http://127.0.0.1:${server.localPort}/api/tags", 1000, 2000)
+        server.close()
+
+        assertEquals(200, response?.code)
+        assertEquals(body, response?.body)
+    }
+
+    @Test
+    fun localTransportReadsAChunkedBody() {
+        val server = serveOnce { socket ->
+            readHeaders(socket)
+            writeRaw(
+                socket,
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" +
+                    "9\r\n{\"models\"\r\n" +
+                    "4\r\n:[]}\r\n" +
+                    "0\r\n\r\n",
+            )
+        }
+
+        val response = LocalHttpTransport.get("http://127.0.0.1:${server.localPort}/v1/models", 1000, 2000)
+        server.close()
+
+        assertEquals(200, response?.code)
+        assertEquals("""{"models":[]}""", response?.body)
+    }
+
+    @Test
+    fun localTransportPostsJsonWithAContentLength() {
+        val sent = AtomicReference("")
+        val body = """{"model":"x"}"""
+        val responseBody = """{"ok":true}"""
+        val server = serveOnce { socket ->
+            sent.set(readHeaders(socket))
+            writeRaw(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +
+                    "Content-Length: ${responseBody.toByteArray().size}\r\nConnection: close\r\n\r\n$responseBody",
+            )
+        }
+
+        val response = LocalHttpTransport.postJson(
+            "http://127.0.0.1:${server.localPort}/v1/chat/completions",
+            body,
+            connectTimeoutMs = 1000,
+            readTimeoutMs = 2000,
+        )
+        server.close()
+
+        assertEquals(200, response?.code)
+        assertEquals(responseBody, response?.body)
+        val request = sent.get()
+        assertTrue(request.startsWith("POST /v1/chat/completions HTTP/1.1"))
+        assertTrue(request.contains("Content-Type: application/json"))
+        assertTrue(request.contains("Content-Length: ${body.toByteArray().size}"))
+    }
+
+    private fun serveOnce(handler: (Socket) -> Unit): ServerSocket {
+        val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+        thread(isDaemon = true) { server.accept().use(handler) }
+        return server
+    }
+
+    private fun readHeaders(socket: Socket): String {
+        val input = socket.getInputStream()
+        val text = StringBuilder()
+        val buffer = ByteArray(1024)
+        while (!text.contains("\r\n\r\n")) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            text.append(String(buffer, 0, read))
+        }
+        return text.toString()
+    }
+
+    private fun writeRaw(socket: Socket, raw: String) {
+        socket.getOutputStream().apply {
+            write(raw.toByteArray())
+            flush()
+        }
     }
 }

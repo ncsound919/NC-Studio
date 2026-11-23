@@ -5,6 +5,10 @@ import androidx.test.core.app.ApplicationProvider
 import com.ncstudio.daw.audio.plugins.ChainRole
 import com.ncstudio.daw.audio.plugins.MixBuses
 import com.ncstudio.daw.audio.plugins.MixReferenceTemplateLibrary
+import com.ncstudio.daw.audio.model.ProjectSession
+import com.ncstudio.daw.audio.model.StemCategory
+import com.ncstudio.daw.audio.model.TrackData
+import kotlinx.coroutines.runBlocking
 import com.overlay.audio.plugins.PluginCatalog
 import com.overlay.audio.plugins.PluginKind
 import org.junit.Assert.assertEquals
@@ -29,6 +33,36 @@ class PluginRackViewModelTest {
         application.getSharedPreferences("pulse_ui_prefs", 0).edit().clear().commit()
         application.deleteFile("recovery_journal.json")
         viewModel = DawViewModel(application)
+        // Templates match tracks by role, so these tests need a role-named
+        // session. A blank project now opens with four unnamed tracks.
+        runBlocking { viewModel.awaitSessionReady() }
+        viewModel.installSessionForTest(templateSession())
+    }
+
+    private fun templateSession(): ProjectSession {
+        val roles = listOf(
+            "Kick Drum" to StemCategory.DRUMS,
+            "Snare & Clap" to StemCategory.DRUMS,
+            "Hi-Hats Groove" to StemCategory.DRUMS,
+            "Toms & Percs" to StemCategory.DRUMS,
+            "808 Sub Bass" to StemCategory.BASS,
+            "Synth Bass" to StemCategory.BASS,
+            "Rhythm Guitar L" to StemCategory.GUITAR,
+            "Rhythm Guitar R" to StemCategory.GUITAR,
+            "Lead Guitar" to StemCategory.GUITAR,
+            "Acoustic Piano" to StemCategory.KEYS,
+            "Rhodes E-Piano" to StemCategory.KEYS,
+            "Synth Pad" to StemCategory.KEYS,
+            "Synth Lead" to StemCategory.KEYS,
+            "Lead Vocal" to StemCategory.VOCAL,
+            "Vocal Harmonies" to StemCategory.VOCAL,
+            "FX Riser & Drops" to StemCategory.OTHER
+        )
+        return ProjectSession(
+            tracks = roles.mapIndexed { index, (name, category) ->
+                TrackData(index = index, name = name, colorHex = 0xFFFF5722, stemCategory = category)
+            }
+        )
     }
 
     @Test

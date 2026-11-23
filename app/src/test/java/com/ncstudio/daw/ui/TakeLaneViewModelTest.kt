@@ -100,7 +100,7 @@ class TakeLaneViewModelTest {
     }
 
     @Test
-    fun deletingTheOnlyTakeIsRefused() {
+    fun deletingTheLastTakeClearsTheTrackAndIsUndoable() {
         recordTake(0)
         val track = viewModel.session.value.tracks[0]
         viewModel.deleteTakeLane(0, track.takeLanes[1].id)
@@ -108,17 +108,22 @@ class TakeLaneViewModelTest {
 
         viewModel.deleteTakeLane(0, remaining.id)
 
-        assertEquals(1, viewModel.session.value.tracks[0].takeLanes.size)
-        assertTrue(
-            "Deleting the last take must explain why it was refused",
-            viewModel.uiState.value.statusMessage?.contains("Keep at least one take") == true
-        )
+        val after = viewModel.session.value.tracks[0]
+        assertEquals(0, after.takeLanes.size)
+        assertTrue("Deleting the last take must remove its audio", after.clips.isEmpty())
+
+        viewModel.undo()
+        val restored = viewModel.session.value.tracks[0]
+        assertEquals(1, restored.takeLanes.size)
+        assertEquals(remaining.id, restored.takeLanes.single().id)
     }
 
     @Test
     fun ratingCyclesThroughStarsAndBackToUnrated() {
         recordTake(0)
-        val laneId = viewModel.session.value.tracks[0].takeLanes[1].id
+        // The newest take is the one that was just recorded; which lane the
+        // pre-existing clip was promoted into is covered by the take tests.
+        val laneId = viewModel.session.value.tracks[0].takeLanes.last().id
 
         repeat(5) { viewModel.rateTakeLane(0, laneId) }
         assertEquals(5, ratingOf(laneId))
