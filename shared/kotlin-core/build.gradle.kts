@@ -20,6 +20,7 @@ java {
 dependencies {
     // Android provides org.json at runtime; this is compile-time only.
     compileOnly("org.json:json:20240303")
+    implementation("com.squareup.okhttp3:okhttp:4.12.1")
     testImplementation("org.json:json:20240303")
     testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")

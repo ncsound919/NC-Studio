@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.NewReleases
@@ -56,6 +57,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -200,6 +202,14 @@ fun DawMainScreen(
     ) { mutableStateOf(DawTab.MIXER) }
     var showOverflow by remember { mutableStateOf(false) }
     var showSharedLibrary by remember { mutableStateOf(false) }
+    var showRemoteDialog by remember { mutableStateOf(false) }
+    val remoteHost = remember { RemoteHostController(viewModel) }
+    LaunchedEffect(showRemoteDialog) {
+        if (showRemoteDialog) remoteHost.start() else remoteHost.stop()
+    }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { remoteHost.stop() }
+    }
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val isWide = screenWidthDp >= 700
     val isThreePane = screenWidthDp >= 840
@@ -467,6 +477,21 @@ fun DawMainScreen(
                             imageVector = Icons.Default.Download,
                             contentDescription = stringResource(R.string.export_audio),
                             tint = ElectricLime
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { showRemoteDialog = true },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("mixer_remote_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Wifi,
+                            contentDescription = "Mixer remote",
+                            tint = if (remoteHost.state.collectAsState().value.status ==
+                                com.overlay.remote.HostStatus.LIVE
+                            ) ElectricLime else TextSecondary
                         )
                     }
 
@@ -794,6 +819,10 @@ fun DawMainScreen(
             isImporting = uiState.isImporting,
             errorMessage = uiState.importError
         )
+    }
+
+    if (showRemoteDialog) {
+        RemoteHostDialog(remoteHost) { showRemoteDialog = false }
     }
 
     if (showSharedLibrary) {
