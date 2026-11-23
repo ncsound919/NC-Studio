@@ -70,13 +70,17 @@ class RemoteHostController(private val vm: DawViewModel) {
     private var host: HostSession? = null
     private var started = false
     private var sessionWatch: Job? = null
+    private var meterJob: Job? = null
 
     /** LAN address guests should type, resolved when hosting starts. */
     @Volatile var address: String = ""
+    @Volatile var relayOnly: Boolean = false
+        private set
 
-    fun start() {
+    fun start(relayOnly: Boolean = false) {
         if (started) return
         started = true
+        this.relayOnly = relayOnly
         val bound = runCatching { relay.start() }
         if (bound.isFailure) {
             _state.value = HostUiState(status = HostStatus.ERROR, notice = "port 8787 is busy")
@@ -84,6 +88,15 @@ class RemoteHostController(private val vm: DawViewModel) {
             return
         }
         address = RemoteRelay.localAddresses().firstOrNull() ?: "127.0.0.1"
+        if (relayOnly) {
+            // Pure forwarder: the desktop (or another DAW) becomes host and owns
+            // the session; this phone just provides the relay on the LAN.
+            _state.value = HostUiState(
+                status = HostStatus.LIVE,
+                notice = "Relay running — point the DAW at ws://${address}:8787",
+            )
+            return
+        }
         rev = vm.session.value.revision.coerceAtLeast(1L)
         val h = HostSession(
             url = "ws://127.0.0.1:8787",
@@ -102,17 +115,44 @@ class RemoteHostController(private val vm: DawViewModel) {
                 .distinctUntilChanged()
                 .collect { h.publishState() }
         }
+        // Peak meters at ~20 Hz while anyone is attached. L/R are synthesized
+        // from mono track peaks + pan, the same rule the desktop demo used.
+        meterJob = scope.launch {
+            while (started) {
+                if (_state.value.guests.isNotEmpty()) {
+                    h.publishMeters(buildLevels())
+                }
+                kotlinx.coroutines.delay(50)
+            }
+        }
+    }
+
+    private fun buildLevels(): Map<String, List<Float>> {
+        val ui = vm.uiState.value
+        val session = vm.session.value
+        val levels = HashMap<String, List<Float>>(session.tracks.size)
+        for (t in session.tracks) {
+            val mono = ui.trackPeaks.getOrElse(t.index) { 0f }.coerceIn(0f, 1f)
+            val pan = t.pan.coerceIn(-1f, 1f)
+            val left = if (pan > 0f) mono * (1f - pan) else mono
+            val right = if (pan < 0f) mono * (1f + pan) else mono
+            levels["t${t.index}"] = listOf(left, right)
+        }
+        return levels
     }
 
     fun stop() {
         sessionWatch?.cancel()
         sessionWatch = null
+        meterJob?.cancel()
+        meterJob = null
         host?.end()
         host?.disconnect()
         host = null
         relay.stop()
         scope.cancel()
         started = false
+        relayOnly = false
         _state.value = HostUiState()
     }
 
@@ -214,10 +254,34 @@ fun RemoteHostDialog(controller: RemoteHostController, onDismiss: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (state.status != HostStatus.LIVE) {
                     Text(
-                        state.notice ?: "Starting the relay…",
+                        state.notice ?: "Start the relay, or provide it for a desktop host.",
                         color = TextSecondary,
                         fontSize = 12.sp,
                     )
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = { controller.start(false) }) {
+                            Text("HOST HERE", color = ElectricLime, fontSize = 11.sp)
+                        }
+                        TextButton(onClick = { controller.start(true) }) {
+                            Text("RELAY ONLY", color = TextMuted, fontSize = 11.sp)
+                        }
+                    }
+                } else if (controller.relayOnly) {
+                    Column(Modifier.fillMaxWidth().testTag("remote_relay_panel")) {
+                        Text("RELAY ONLY", color = TextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            "ws://${controller.address}:8787",
+                            color = ElectricLime,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                        Text(
+                            "Type this in the desktop DAW's Mixer remote panel; it will show the join code for phones.",
+                            color = TextSecondary,
+                            fontSize = 10.sp,
+                        )
+                    }
                 } else {
                     Column(
                         Modifier

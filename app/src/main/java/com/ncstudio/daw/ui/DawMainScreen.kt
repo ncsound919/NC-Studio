@@ -205,7 +205,7 @@ fun DawMainScreen(
     var showRemoteDialog by remember { mutableStateOf(false) }
     val remoteHost = remember { RemoteHostController(viewModel) }
     LaunchedEffect(showRemoteDialog) {
-        if (showRemoteDialog) remoteHost.start() else remoteHost.stop()
+        if (!showRemoteDialog) remoteHost.stop()
     }
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose { remoteHost.stop() }
