@@ -65,6 +65,8 @@ import com.ncstudio.daw.audio.model.CompressorConfig
 import com.ncstudio.daw.audio.model.DawSettings
 import com.ncstudio.daw.audio.model.DuckingDelayConfig
 import com.ncstudio.daw.audio.model.EditMode
+import com.ncstudio.daw.audio.model.MixerSnapshot
+import com.ncstudio.daw.audio.model.TrackMixerState
 import com.ncstudio.daw.audio.model.EditSelection
 import com.ncstudio.daw.audio.model.EqBand
 import com.ncstudio.daw.audio.model.EqConfig
@@ -877,6 +879,80 @@ class DawViewModel(application: Application) : AndroidViewModel(application) {
             }
             s.copy(tracks = newTracks)
         }
+    }
+
+    // ---- Mixer A/B capture-recall snapshots (desktop MixRack behaviour) ----
+
+    private val _mixerSnapshots = MutableStateFlow<Map<Char, MixerSnapshot>>(emptyMap())
+    val mixerSnapshots: StateFlow<Map<Char, MixerSnapshot>> = _mixerSnapshots.asStateFlow()
+
+    /** Capture the current mixer state into slot A or B. */
+    fun captureMixerSnapshot(slot: Char) {
+        flushPendingParamEdit()
+        val session = _session.value
+        val snapshot = MixerSnapshot(
+            name = slot.toString(),
+            capturedAtMs = System.currentTimeMillis(),
+            masterGainDb = session.masterGainDb,
+            tracks = session.tracks.map {
+                TrackMixerState(
+                    index = it.index,
+                    gainDb = it.gainDb,
+                    pan = it.pan,
+                    isMuted = it.isMuted,
+                    isSoloed = it.isSoloed,
+                    reverbSendLevel = it.reverbSendLevel,
+                )
+            },
+        )
+        _mixerSnapshots.update { it + (slot to snapshot) }
+        setStatus("Mixer $slot captured.", StatusKind.SUCCESS)
+    }
+
+    /**
+     * Recall a captured snapshot in one atomic step, following the
+     * [applyAllSuggestions] pattern: flush any pending fader edit, push one
+     * [SessionCommand.BatchMixChange] so undo/redo restores the whole mix, then
+     * hand the engine the updated session. An A/B compare must never step
+     * through faders one by one.
+     */
+    fun recallMixerSnapshot(slot: Char) {
+        val snapshot = _mixerSnapshots.value[slot] ?: run {
+            setStatus("Mixer $slot is empty. Capture first.", StatusKind.INFO)
+            return
+        }
+        flushPendingParamEdit()
+        val session = _session.value
+        val beforeTracks = session.tracks
+        val byIndex = snapshot.tracks.associateBy { it.index }
+        var anyChanged = session.masterGainDb != snapshot.masterGainDb
+        val newTracks = beforeTracks.map { t ->
+            val s = byIndex[t.index] ?: return@map t
+            val changed = t.gainDb != s.gainDb || t.pan != s.pan ||
+                t.isMuted != s.isMuted || t.isSoloed != s.isSoloed ||
+                t.reverbSendLevel != s.reverbSendLevel
+            if (changed) anyChanged = true
+            if (!changed) t
+            else t.copy(gainDb = s.gainDb, pan = s.pan, isMuted = s.isMuted, isSoloed = s.isSoloed, reverbSendLevel = s.reverbSendLevel)
+        }
+        if (!anyChanged) {
+            setStatus("Mixer already matches $slot.", StatusKind.INFO)
+            return
+        }
+        val updated = session.copy(tracks = newTracks, masterGainDb = snapshot.masterGainDb, revision = session.revision + 1)
+        undoManager.pushAction(
+            SessionCommand.BatchMixChange(
+                "Recall mixer $slot",
+                beforeTracks,
+                updated.tracks,
+                session.masterGainDb,
+                updated.masterGainDb
+            )
+        )
+        _session.value = updated
+        playbackEngine.syncFromProject(updated)
+        requestJournalWrite(updated)
+        setStatus("Mixer $slot recalled.", StatusKind.SUCCESS)
     }
 
     /**

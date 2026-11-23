@@ -2,9 +2,11 @@ package com.ncstudio.daw.ui
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -57,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ncstudio.daw.R
 import com.ncstudio.daw.audio.model.MasterPreset
+import com.ncstudio.daw.audio.model.MixerSnapshot
 import com.ncstudio.daw.audio.model.ProjectSession
 import com.ncstudio.daw.audio.model.TrackData
 import com.ncstudio.daw.ui.theme.ClipRed
@@ -92,6 +95,7 @@ fun snapPanToCenter(pan: Float, threshold: Float = 0.05f): Float {
     return if (kotlin.math.abs(pan) < threshold) 0f else pan
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MixerView(
     session: ProjectSession,
@@ -106,6 +110,9 @@ fun MixerView(
     onSetMasterGain: (Float) -> Unit,
     onApplyMasterPreset: (MasterPreset) -> Unit = {},
     onAddTrack: () -> Unit = {},
+    mixerSnapshots: Map<Char, MixerSnapshot> = emptyMap(),
+    onCaptureSnapshot: (Char) -> Unit = {},
+    onRecallSnapshot: (Char) -> Unit = {},
     hapticsEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
@@ -160,6 +167,52 @@ fun MixerView(
         }
 
         Spacer(modifier = Modifier.height(8.dp))
+
+        // A/B capture-recall snapshots: tap = recall, long-press = capture.
+        // The desktop MixRack workflow, kept to two slots so the phone mixer
+        // stays a fixed instrument rather than a list.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            listOf('A', 'B').forEach { slot ->
+                val captured = mixerSnapshots.containsKey(slot)
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .combinedClickable(
+                            onClick = { onRecallSnapshot(slot) },
+                            onLongClick = { onCaptureSnapshot(slot) },
+                        )
+                        .background(if (captured) PanelMuted else Color.Transparent)
+                        .border(
+                            1.dp,
+                            if (captured) TextPrimary.copy(alpha = 0.6f) else TextMuted.copy(alpha = 0.4f),
+                            RoundedCornerShape(6.dp),
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = if (captured) slot.toString() else "$slot ·",
+                        color = if (captured) TextPrimary else TextMuted,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            Text(
+                text = "tap recall · hold capture",
+                color = TextMuted,
+                fontSize = 9.sp,
+                modifier = Modifier.padding(start = 4.dp),
+            )
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
 
         // Track selector at bottom for better visibility
         Row(

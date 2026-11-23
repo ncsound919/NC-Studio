@@ -1,6 +1,7 @@
 package com.ncstudio.daw.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,6 +30,9 @@ internal fun MixerPane(
         onSetMasterGain = { g -> viewModel.setMasterGain(g) },
         onApplyMasterPreset = { preset -> viewModel.applyMasterPreset(preset) },
         onAddTrack = { viewModel.addTrack() },
+        mixerSnapshots = viewModel.mixerSnapshots.collectAsState().value,
+        onCaptureSnapshot = { slot -> viewModel.captureMixerSnapshot(slot) },
+        onRecallSnapshot = { slot -> viewModel.recallMixerSnapshot(slot) },
         hapticsEnabled = settings.enableHapticFeedback
     )
 }
